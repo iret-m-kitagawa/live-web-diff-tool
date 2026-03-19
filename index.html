@@ -177,9 +177,14 @@
     }
     .change-action-group {
       position: absolute;
-      display: flex; flex-direction: column; gap: 2px;
+      display: flex; flex-direction: row; gap: 2px;
       pointer-events: auto;
       transform: translateX(-50%);
+      opacity: 0;
+      transition: opacity 0.15s ease;
+    }
+    .change-action-group.visible {
+      opacity: 1;
     }
     .change-action-btn {
       width: 24px; height: 20px;
@@ -192,10 +197,8 @@
       display: flex; align-items: center; justify-content: center;
       padding: 0;
       transition: all 0.12s ease;
-      opacity: 0.7;
     }
     .change-action-btn:hover {
-      opacity: 1;
       transform: scale(1.15);
     }
     .change-action-btn.accept-right:hover {
@@ -208,13 +211,8 @@
       border-color: rgba(100, 149, 237, 0.5);
       color: #6495ed;
     }
-    .change-action-btn.revert-btn:hover {
-      background: rgba(248, 81, 73, 0.15);
-      border-color: rgba(248, 81, 73, 0.4);
-      color: #f85149;
-    }
 
-    /* Undo toast */
+    /* Undo bar */
     .undo-bar {
       position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
       background: var(--bg-panel); border: 1px solid var(--border-color);
@@ -300,7 +298,6 @@
     </div>
   </div>
 
-  <!-- Undo bar -->
   <div class="undo-bar" id="undoBar">
     <span id="undoMsg">Change applied.</span>
     <button class="undo-action" id="undoBtn">Undo</button>
@@ -367,7 +364,6 @@
     let afterFocused = false;
     let isInlineView = false;
 
-    // Undo stack: each entry = { origBefore, origAfter, modBefore, modAfter, description }
     let undoStack = [];
     let undoTimer = null;
 
@@ -409,14 +405,15 @@
         fontLigatures: true,
         scrollBeyondLastLine: false,
         padding: { top: 16, bottom: 16 },
-        lineNumbersMinChars: 4,           
+        lineNumbersMinChars: 2,
+        lineDecorationsWidth: 12,
         folding: false,                   
         glyphMargin: false,               
         scrollbar: { verticalScrollbarSize: 14, horizontal: 'hidden', useShadows: false }, 
         hideCursorInOverviewRuler: true,
         renderLineHighlight: 'none',
         minimap: { enabled: true, renderCharacters: false, scale: 0.75 }, 
-        renderOverviewRuler: true 
+        renderOverviewRuler: false
       };
 
       beforeModel = monaco.editor.createModel('', 'plaintext');
@@ -431,7 +428,7 @@
         splitViewDefaultRatio: 0.5,       
         enableSplitViewResizing: true,
         renderMarginRevertIcon: false,
-        renderIndicators: true,
+        renderIndicators: false,
         diffCodeLens: false
       });
 
@@ -439,8 +436,20 @@
       diffOrig = diffEditor.getOriginalEditor();
       diffMod = diffEditor.getModifiedEditor();
       
-      diffOrig.updateOptions({ wordWrap: 'on' });
-      diffMod.updateOptions({ wordWrap: 'on' });
+      diffOrig.updateOptions({ wordWrap: 'on', renderOverviewRuler: false });
+      diffMod.updateOptions({ wordWrap: 'on', renderOverviewRuler: false });
+
+      // ===== Dynamic line number width =====
+      function updateLineNumberWidth(editor) {
+        const lineCount = editor.getModel().getLineCount();
+        const minChars = Math.max(2, String(lineCount).length + 1);
+        editor.updateOptions({ lineNumbersMinChars: minChars });
+      }
+
+      [diffOrig, diffMod].forEach(editor => {
+        updateLineNumberWidth(editor);
+        editor.getModel().onDidChangeContent(() => updateLineNumberWidth(editor));
+      });
 
       // ===== Change action buttons =====
       let changeActionsTimer = null;
@@ -455,16 +464,14 @@
         if (!container) return;
         container.innerHTML = '';
 
-        if (isInlineView) return; // Only show in side-by-side mode
+        if (isInlineView) return;
 
         const changes = diffEditor.getLineChanges();
         if (!changes || changes.length === 0) return;
 
-        // Find the sash element to position buttons on it
         const mainContainer = document.getElementById('mainContainer');
         const mainRect = mainContainer.getBoundingClientRect();
 
-        // Get the sash position by finding the boundary between the two editors
         const origDom = diffOrig.getDomNode();
         const modDom = diffMod.getDomNode();
         if (!origDom || !modDom) return;
@@ -472,7 +479,6 @@
         const origRect = origDom.getBoundingClientRect();
         const modRect = modDom.getBoundingClientRect();
         
-        // The sash/gutter center is between right edge of original and left edge of modified
         const sashCenterX = ((origRect.right + modRect.left) / 2) - mainRect.left;
 
         const modScrollTop = diffMod.getScrollTop();
@@ -481,25 +487,17 @@
         const editorTopInContainer = modRect.top - mainRect.top;
 
         changes.forEach((change, idx) => {
-          // Calculate the vertical midpoint of the change in the modified editor
-          // ILineChange: originalStartLineNumber, originalEndLineNumber, modifiedStartLineNumber, modifiedEndLineNumber
-          // When originalEndLineNumber === 0: pure insertion (nothing removed from original)
-          // When modifiedEndLineNumber === 0: pure deletion (nothing added to modified)
-
           let midY;
 
           if (change.modifiedEndLineNumber === 0) {
-            // Pure deletion - use position in original editor
             const startY = diffOrig.getTopForLineNumber(change.originalStartLineNumber) - origScrollTop;
             const endY = diffOrig.getTopForLineNumber(change.originalEndLineNumber) + lineH - origScrollTop;
             midY = (startY + endY) / 2 + editorTopInContainer;
           } else if (change.originalEndLineNumber === 0) {
-            // Pure insertion - use position in modified editor
             const startY = diffMod.getTopForLineNumber(change.modifiedStartLineNumber) - modScrollTop;
             const endY = diffMod.getTopForLineNumber(change.modifiedEndLineNumber) + lineH - modScrollTop;
             midY = (startY + endY) / 2 + editorTopInContainer;
           } else {
-            // Modification - average both sides
             const origStartY = diffOrig.getTopForLineNumber(change.originalStartLineNumber) - origScrollTop;
             const origEndY = diffOrig.getTopForLineNumber(change.originalEndLineNumber) + lineH - origScrollTop;
             const modStartY = diffMod.getTopForLineNumber(change.modifiedStartLineNumber) - modScrollTop;
@@ -507,18 +505,16 @@
             midY = ((origStartY + origEndY + modStartY + modEndY) / 4) + editorTopInContainer;
           }
 
-          // Skip if outside visible area
           if (midY < editorTopInContainer - 30 || midY > mainRect.height + 30) return;
 
           const group = document.createElement('div');
           group.className = 'change-action-group';
           group.style.left = sashCenterX + 'px';
-          group.style.top = (midY - 22) + 'px';
+          group.style.top = (midY - 10) + 'px';
 
-          // Accept right button (apply original→modified: overwrite modified with original)
           const btnAcceptRight = document.createElement('button');
           btnAcceptRight.className = 'change-action-btn accept-right';
-          btnAcceptRight.innerHTML = '&#x276D;'; // ❯
+          btnAcceptRight.innerHTML = '&#x276D;';
           btnAcceptRight.title = 'Apply original → modified (overwrite right with left)';
           btnAcceptRight.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -526,10 +522,9 @@
           });
           group.appendChild(btnAcceptRight);
 
-          // Accept left button (apply modified→original: overwrite original with modified)
           const btnAcceptLeft = document.createElement('button');
           btnAcceptLeft.className = 'change-action-btn accept-left';
-          btnAcceptLeft.innerHTML = '&#x276C;'; // ❬
+          btnAcceptLeft.innerHTML = '&#x276C;';
           btnAcceptLeft.title = 'Apply modified → original (overwrite left with right)';
           btnAcceptLeft.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -541,15 +536,39 @@
         });
       }
 
+      // ===== Sash hover detection via mousemove =====
+      document.getElementById('mainContainer').addEventListener('mousemove', (e) => {
+        if (isInlineView) return;
+        const origDom = diffOrig.getDomNode();
+        const modDom = diffMod.getDomNode();
+        if (!origDom || !modDom) return;
+
+        const origRect = origDom.getBoundingClientRect();
+        const modRect = modDom.getBoundingClientRect();
+        const mouseX = e.clientX;
+
+        const sashLeft = origRect.right - 40;
+        const sashRight = modRect.left + 40;
+        const isNearSash = mouseX >= sashLeft && mouseX <= sashRight;
+
+        document.querySelectorAll('.change-action-group').forEach(g => {
+          g.classList.toggle('visible', isNearSash);
+        });
+      });
+
+      document.getElementById('mainContainer').addEventListener('mouseleave', () => {
+        document.querySelectorAll('.change-action-group').forEach(g => {
+          g.classList.remove('visible');
+        });
+      });
+
       // ===== Apply change functions =====
 
       function applyChangeToModified(change) {
-        // Save undo state
         const origBefore = beforeModel.getValue();
         const modBefore = afterModel.getValue();
 
         if (change.originalEndLineNumber === 0) {
-          // Pure insertion in modified → delete those lines from modified
           const startLine = change.modifiedStartLineNumber;
           const endLine = change.modifiedEndLineNumber;
           const totalLines = afterModel.getLineCount();
@@ -561,15 +580,10 @@
           } else {
             range = new monaco.Range(1, 1, endLine, afterModel.getLineMaxColumn(endLine));
           }
-          afterModel.pushEditOperations([], [{ range, text: (startLine > 1 && endLine >= totalLines) ? '' : '' }], () => null);
-          // More robust: just set the text for the range
           afterModel.applyEdits([{ range, text: '' }]);
         } else if (change.modifiedEndLineNumber === 0) {
-          // Pure deletion from original → insert those lines into modified
           const textToInsert = getOriginalLines(change.originalStartLineNumber, change.originalEndLineNumber);
-          const insertAt = change.modifiedStartLineNumber; // insert after this line
-          const insertPos = new monaco.Range(insertAt + 1, 1, insertAt + 1, 1);
-          // If inserting at the end
+          const insertAt = change.modifiedStartLineNumber;
           if (insertAt >= afterModel.getLineCount()) {
             const lastLine = afterModel.getLineCount();
             const lastCol = afterModel.getLineMaxColumn(lastLine);
@@ -578,7 +592,6 @@
             afterModel.applyEdits([{ range: new monaco.Range(insertAt + 1, 1, insertAt + 1, 1), text: textToInsert + '\n' }]);
           }
         } else {
-          // Modification → replace modified range with original range
           const textToInsert = getOriginalLines(change.originalStartLineNumber, change.originalEndLineNumber);
           const range = new monaco.Range(
             change.modifiedStartLineNumber, 1,
@@ -595,7 +608,6 @@
         const modBefore = afterModel.getValue();
 
         if (change.modifiedEndLineNumber === 0) {
-          // Pure deletion in modified → delete those lines from original
           const startLine = change.originalStartLineNumber;
           const endLine = change.originalEndLineNumber;
           const totalLines = beforeModel.getLineCount();
@@ -609,7 +621,6 @@
           }
           beforeModel.applyEdits([{ range, text: '' }]);
         } else if (change.originalEndLineNumber === 0) {
-          // Pure insertion in modified → insert those lines into original
           const textToInsert = getModifiedLines(change.modifiedStartLineNumber, change.modifiedEndLineNumber);
           const insertAt = change.originalStartLineNumber;
           if (insertAt >= beforeModel.getLineCount()) {
@@ -620,7 +631,6 @@
             beforeModel.applyEdits([{ range: new monaco.Range(insertAt + 1, 1, insertAt + 1, 1), text: textToInsert + '\n' }]);
           }
         } else {
-          // Modification → replace original range with modified range
           const textToInsert = getModifiedLines(change.modifiedStartLineNumber, change.modifiedEndLineNumber);
           const range = new monaco.Range(
             change.originalStartLineNumber, 1,
@@ -651,7 +661,6 @@
       // ===== Undo system =====
       function pushUndo(origBefore, modBefore, origAfter, modAfter, description) {
         undoStack.push({ origBefore, modBefore, origAfter, modAfter, description });
-        // Limit stack size
         if (undoStack.length > 50) undoStack.shift();
         showUndoBar(description);
       }
@@ -680,10 +689,8 @@
         clearTimeout(undoTimer);
       });
 
-      // Keyboard shortcut: Ctrl+Z in the context of undo bar
       document.addEventListener('keydown', (e) => {
         if ((e.ctrlKey || e.metaKey) && e.key === 'z' && undoStack.length > 0) {
-          // Only intercept if the undo bar is visible (i.e., a recent apply action)
           const bar = document.getElementById('undoBar');
           if (bar.classList.contains('show')) {
             e.preventDefault();
@@ -693,7 +700,7 @@
         }
       });
 
-      // ===== Listen to diff changes and scroll to update action buttons =====
+      // ===== Listen to diff changes and scroll =====
       diffEditor.onDidUpdateDiff(updateChangeActions);
       diffOrig.onDidScrollChange(updateChangeActions);
       diffMod.onDidScrollChange(updateChangeActions);
@@ -816,7 +823,6 @@
       setTimeout(updatePlaceholders, 150);
     });
 
-    // ===== Clear =====
     document.getElementById('clearBtn').addEventListener('click', () => {
       beforeModel.setValue(''); afterModel.setValue('');
       window.history.replaceState(null, null, window.location.pathname);
@@ -824,7 +830,6 @@
       undoStack = [];
     });
 
-    // ===== Share =====
     document.getElementById('shareBtn').addEventListener('click', () => {
       const lang = document.getElementById('langSelect').value;
       const theme = document.getElementById('themeSelect').value;
@@ -842,7 +847,6 @@
       }
     });
 
-    // ===== Load from URL =====
     function loadFromUrl() {
       const h = window.location.hash.slice(1);
       if (h && beforeModel) {
