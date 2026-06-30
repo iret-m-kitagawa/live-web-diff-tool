@@ -7,7 +7,7 @@
   
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Noto+Sans+Mono:wght@400;700&display=swap" rel="stylesheet">
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.5.0/lz-string.min.js"></script>
   
@@ -68,26 +68,6 @@
 
     .main-container { display: flex; flex: 1; position: relative; min-height: 0; }
 
-    #centerKnob {
-      position: absolute;
-      left: calc(100% * var(--split-x));
-      top: 50%;
-      width: 16px; height: 36px;
-      transform: translate(-50%, -50%);
-      background-color: var(--text-muted);
-      border-radius: 8px;
-      cursor: col-resize;
-      z-index: 1000;
-      opacity: 0.6;
-      transition: opacity 0.2s, transform 0.2s;
-      display: flex; justify-content: center; align-items: center;
-    }
-    #centerKnob:hover, #centerKnob.active {
-      opacity: 1;
-      transform: translate(-50%, -50%) scale(1.1);
-    }
-    .inline-mode #centerKnob { display: none !important; }
-
     .jump-controls {
       position: absolute; bottom: 24px; right: 48px;
       display: flex; flex-direction: column; gap: 8px; z-index: 100;
@@ -100,17 +80,6 @@
     }
     .jump-btn:hover { background-color: var(--border-color); color: var(--text-main); transform: scale(1.05); }
     .jump-btn:active { transform: scale(0.95); }
-
-    .drag-overlay {
-      position: absolute; top: 0; bottom: 0;
-      background-color: rgba(10, 132, 255, 0.1);
-      box-shadow: inset 0 0 0 2px #0a84ff;
-      z-index: 100; pointer-events: none; opacity: 0; transition: opacity 0.1s;
-    }
-    #dragLeft { left: 0; width: calc(100% * var(--split-x)); }
-    #dragRight { right: 0; width: calc(100% * (1 - var(--split-x))); }
-    .inline-mode #dragLeft { width: 50%; }
-    .inline-mode #dragRight { width: 50%; }
 
     .editor-placeholder {
       position: absolute; inset: 0;
@@ -154,16 +123,7 @@
       content: ""; position: absolute; top: 0; bottom: 0; left: 50%;
       width: 1px; background-color: var(--border-color); transform: translateX(-50%);
     }
-    body .monaco-sash.vertical::before {
-      content: ""; position: absolute; top: 50%; left: 50%;
-      width: 8px; height: 32px; background-color: var(--text-muted);
-      border-radius: 4px; transform: translate(-50%, -50%);
-      opacity: 0.5; transition: opacity 0.2s, transform 0.2s;
-    }
-    body .monaco-sash.vertical:hover::before,
-    body .monaco-sash.vertical.active::before {
-      opacity: 1; transform: translate(-50%, -50%) scale(1.1);
-    }
+
     .monaco-editor.drag-over::after {
       content: ""; position: absolute; inset: 0;
       background-color: rgba(10, 132, 255, 0.1);
@@ -182,6 +142,7 @@
       transform: translateX(-50%);
       opacity: 0;
       transition: opacity 0.15s ease;
+      will-change: transform, top, left;
     }
     .change-action-group.visible {
       opacity: 1;
@@ -211,32 +172,6 @@
       border-color: rgba(100, 149, 237, 0.5);
       color: #6495ed;
     }
-
-    /* Undo bar */
-    .undo-bar {
-      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
-      background: var(--bg-panel); border: 1px solid var(--border-color);
-      padding: 8px 16px; border-radius: 8px;
-      display: flex; align-items: center; gap: 12px;
-      font-size: 13px; color: var(--text-main);
-      box-shadow: 0 4px 16px rgba(0,0,0,0.3);
-      z-index: 3000;
-      opacity: 0; pointer-events: none;
-      transition: opacity 0.2s, transform 0.2s;
-    }
-    .undo-bar.show {
-      opacity: 1; pointer-events: auto;
-    }
-    .undo-bar .undo-action {
-      color: #58a6ff; cursor: pointer; font-weight: bold;
-      text-decoration: underline; background: none; border: none;
-      font-size: 13px; padding: 0;
-    }
-    .undo-bar .undo-action:hover { color: #79c0ff; }
-    .undo-bar .undo-dismiss {
-      color: var(--text-muted); cursor: pointer; background: none; border: none;
-      font-size: 16px; padding: 0 0 0 4px; line-height: 1;
-    }
   </style>
 </head>
 <body>
@@ -245,11 +180,10 @@
     <div class="toolbar-left">
       <div class="toolbar-title">Live Web Diff Tool</div>
       <select id="themeSelect" class="theme-select">
-        <option value="vs-dark">Dark (Default)</option>
-        <option value="vs-light">Light (Clean White)</option>
+        <option value="vs-light">Light</option>
+        <option value="vs-dark">Dark</option>
         <option value="github-dark">GitHub Dark</option>
         <option value="noctis-hc">Noctis High Contrast</option>
-        <option value="monokai">Monokai</option>
       </select>
       <select id="langSelect" class="theme-select" style="margin-left: 8px;">
         <option value="plaintext">Plaintext</option>
@@ -261,6 +195,14 @@
         <option value="java">Java</option>
         <option value="sql">SQL</option>
         <option value="markdown">Markdown</option>
+      </select>
+      <select id="fontSizeSelect" class="theme-select" style="margin-left: 8px;">
+        <option value="11">11px</option>
+        <option value="12">12px</option>
+        <option value="13">13px</option>
+        <option value="14">14px</option>
+        <option value="15">15px</option>
+        <option value="16">16px</option>
       </select>
     </div>
     <div class="toolbar-right">
@@ -298,12 +240,6 @@
     </div>
   </div>
 
-  <div class="undo-bar" id="undoBar">
-    <span id="undoMsg">Change applied.</span>
-    <button class="undo-action" id="undoBtn">Undo</button>
-    <button class="undo-dismiss" id="undoDismiss">&times;</button>
-  </div>
-
   <div id="placeholderTemplates" style="display: none;">
     <div id="beforePlaceholder" class="editor-placeholder">
       <div class="placeholder-box">
@@ -338,10 +274,6 @@
       'github-dark': {
         css: { '--bg-main': '#0d1117', '--bg-panel': '#161b22', '--border-color': '#30363d', '--text-main': '#c9d1d9', '--text-muted': '#8b949e' },
         monaco: 'custom-github-dark'
-      },
-      'monokai': {
-        css: { '--bg-main': '#272822', '--bg-panel': '#1e1f1c', '--border-color': '#414339', '--text-main': '#f8f8f2', '--text-muted': '#75715e' },
-        monaco: 'custom-monokai'
       }
     };
 
@@ -356,16 +288,13 @@
     
     document.getElementById('themeSelect').addEventListener('change', (e) => applyTheme(e.target.value));
     const savedTheme = localStorage.getItem('diffToolTheme') || 'vs-dark';
-    document.getElementById('themeSelect').value = THEMES[savedTheme] ? savedTheme : 'noctis-hc';
+    document.getElementById('themeSelect').value = THEMES[savedTheme] ? savedTheme : 'vs-dark';
 
     let diffEditor, diffOrig, diffMod;
     let beforeModel, afterModel;
     let beforeFocused = false;
     let afterFocused = false;
     let isInlineView = false;
-
-    let undoStack = [];
-    let undoTimer = null;
 
     require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs' } });
     require(['vs/editor/editor.main'], function () {
@@ -380,7 +309,6 @@
       monaco.editor.defineTheme('custom-vs-dark', { base: 'vs-dark', inherit: true, rules: [], colors: { ...commonColors, 'editor.background': '#1e1e1e' }});
       monaco.editor.defineTheme('custom-vs-light', { base: 'vs', inherit: true, rules: [], colors: { ...commonColors, 'editor.background': '#fffffe' }});
       monaco.editor.defineTheme('custom-github-dark', { base: 'vs-dark', inherit: true, rules: [], colors: { ...commonColors, 'editor.background': '#0d1117' }});
-      monaco.editor.defineTheme('custom-monokai', { base: 'vs-dark', inherit: true, rules: [], colors: { ...commonColors, 'editor.background': '#272822' }});
       monaco.editor.defineTheme('custom-noctis-hc', { 
         base: 'vs-dark', inherit: true, 
         rules: [ { background: '000000' } ], 
@@ -396,12 +324,17 @@
       
       applyTheme(document.getElementById('themeSelect').value);
 
+      const savedFontSize = localStorage.getItem('diffToolFontSize') || '12';
+      if (document.getElementById('fontSizeSelect')) {
+          document.getElementById('fontSizeSelect').value = savedFontSize;
+      }
+
       const commonOptions = {
         language: 'plaintext',
         wordWrap: 'on',
         automaticLayout: true,
-        fontSize: 14,
-        fontFamily: "'JetBrains Mono', Consolas, Menlo, monospace",
+        fontSize: parseInt(savedFontSize, 10),
+        fontFamily: "'Source Han Mono', '源ノ等幅', 'Source Han Code JP', '源ノ角ゴシック Code JP', 'JetBrains Mono', 'Noto Sans Mono', Consolas, Menlo, monospace",
         fontLigatures: true,
         scrollBeyondLastLine: false,
         padding: { top: 16, bottom: 16 },
@@ -439,7 +372,15 @@
       diffOrig.updateOptions({ wordWrap: 'on', renderOverviewRuler: false });
       diffMod.updateOptions({ wordWrap: 'on', renderOverviewRuler: false });
 
-      // ===== Dynamic line number width =====
+      document.getElementById('fontSizeSelect').addEventListener('change', (e) => {
+        const size = parseInt(e.target.value, 10);
+        localStorage.setItem('diffToolFontSize', e.target.value);
+        diffEditor.updateOptions({ fontSize: size });
+        diffOrig.updateOptions({ fontSize: size });
+        diffMod.updateOptions({ fontSize: size });
+        rebuildChangeActions();
+      });
+
       function updateLineNumberWidth(editor) {
         const lineCount = editor.getModel().getLineCount();
         const minChars = Math.max(2, String(lineCount).length + 1);
@@ -451,23 +392,52 @@
         editor.getModel().onDidChangeContent(() => updateLineNumberWidth(editor));
       });
 
-      // ===== Change action buttons =====
-      let changeActionsTimer = null;
+      let changeElements = [];
 
-      function updateChangeActions() {
-        clearTimeout(changeActionsTimer);
-        changeActionsTimer = setTimeout(_updateChangeActions, 80);
-      }
-
-      function _updateChangeActions() {
+      function rebuildChangeActions() {
         const container = document.getElementById('changeActions');
         if (!container) return;
         container.innerHTML = '';
+        changeElements = [];
 
         if (isInlineView) return;
 
         const changes = diffEditor.getLineChanges();
         if (!changes || changes.length === 0) return;
+
+        changes.forEach((change) => {
+          const group = document.createElement('div');
+          group.className = 'change-action-group';
+
+          const btnAcceptRight = document.createElement('button');
+          btnAcceptRight.className = 'change-action-btn accept-right';
+          btnAcceptRight.innerHTML = '&#x276D;';
+          btnAcceptRight.title = 'Apply original → modified';
+          btnAcceptRight.addEventListener('click', (e) => {
+            e.stopPropagation();
+            applyChangeToModified(change);
+          });
+          group.appendChild(btnAcceptRight);
+
+          const btnAcceptLeft = document.createElement('button');
+          btnAcceptLeft.className = 'change-action-btn accept-left';
+          btnAcceptLeft.innerHTML = '&#x276C;';
+          btnAcceptLeft.title = 'Apply modified → original';
+          btnAcceptLeft.addEventListener('click', (e) => {
+            e.stopPropagation();
+            applyChangeToOriginal(change);
+          });
+          group.appendChild(btnAcceptLeft);
+
+          container.appendChild(group);
+          changeElements.push({ change, el: group });
+        });
+
+        updateChangeActionsPosition();
+      }
+
+      function updateChangeActionsPosition() {
+        if (changeElements.length === 0 || isInlineView) return;
 
         const mainContainer = document.getElementById('mainContainer');
         const mainRect = mainContainer.getBoundingClientRect();
@@ -478,7 +448,6 @@
 
         const origRect = origDom.getBoundingClientRect();
         const modRect = modDom.getBoundingClientRect();
-        
         const sashCenterX = ((origRect.right + modRect.left) / 2) - mainRect.left;
 
         const modScrollTop = diffMod.getScrollTop();
@@ -486,7 +455,8 @@
         const lineH = diffMod.getOption(monaco.editor.EditorOption.lineHeight);
         const editorTopInContainer = modRect.top - mainRect.top;
 
-        changes.forEach((change, idx) => {
+        changeElements.forEach(item => {
+          const change = item.change;
           let midY;
 
           if (change.modifiedEndLineNumber === 0) {
@@ -505,40 +475,24 @@
             midY = ((origStartY + origEndY + modStartY + modEndY) / 4) + editorTopInContainer;
           }
 
-          if (midY < editorTopInContainer - 30 || midY > mainRect.height + 30) return;
-
-          const group = document.createElement('div');
-          group.className = 'change-action-group';
-          group.style.left = sashCenterX + 'px';
-          group.style.top = (midY - 10) + 'px';
-
-          const btnAcceptRight = document.createElement('button');
-          btnAcceptRight.className = 'change-action-btn accept-right';
-          btnAcceptRight.innerHTML = '&#x276D;';
-          btnAcceptRight.title = 'Apply original → modified (overwrite right with left)';
-          btnAcceptRight.addEventListener('click', (e) => {
-            e.stopPropagation();
-            applyChangeToModified(change);
-          });
-          group.appendChild(btnAcceptRight);
-
-          const btnAcceptLeft = document.createElement('button');
-          btnAcceptLeft.className = 'change-action-btn accept-left';
-          btnAcceptLeft.innerHTML = '&#x276C;';
-          btnAcceptLeft.title = 'Apply modified → original (overwrite left with right)';
-          btnAcceptLeft.addEventListener('click', (e) => {
-            e.stopPropagation();
-            applyChangeToOriginal(change);
-          });
-          group.appendChild(btnAcceptLeft);
-
-          container.appendChild(group);
+          if (midY < editorTopInContainer - 30 || midY > mainRect.height + 30) {
+            item.el.style.display = 'none';
+          } else {
+            item.el.style.display = 'flex';
+            item.el.style.left = sashCenterX + 'px';
+            item.el.style.top = (midY - 10) + 'px';
+          }
         });
       }
 
-      // ===== Sash hover detection via mousemove =====
+      let rafId;
+      function onScroll() {
+        cancelAnimationFrame(rafId);
+        rafId = requestAnimationFrame(updateChangeActionsPosition);
+      }
+
       document.getElementById('mainContainer').addEventListener('mousemove', (e) => {
-        if (isInlineView) return;
+        if (isInlineView || changeElements.length === 0) return;
         const origDom = diffOrig.getDomNode();
         const modDom = diffMod.getDomNode();
         if (!origDom || !modDom) return;
@@ -551,95 +505,91 @@
         const sashRight = modRect.left + 40;
         const isNearSash = mouseX >= sashLeft && mouseX <= sashRight;
 
-        document.querySelectorAll('.change-action-group').forEach(g => {
-          g.classList.toggle('visible', isNearSash);
+        changeElements.forEach(item => {
+          item.el.classList.toggle('visible', isNearSash);
         });
       });
 
       document.getElementById('mainContainer').addEventListener('mouseleave', () => {
-        document.querySelectorAll('.change-action-group').forEach(g => {
-          g.classList.remove('visible');
+        changeElements.forEach(item => {
+          item.el.classList.remove('visible');
         });
       });
 
-      // ===== Apply change functions =====
-
       function applyChangeToModified(change) {
-        const origBefore = beforeModel.getValue();
-        const modBefore = afterModel.getValue();
-
-        if (change.originalEndLineNumber === 0) {
-          const startLine = change.modifiedStartLineNumber;
-          const endLine = change.modifiedEndLineNumber;
-          const totalLines = afterModel.getLineCount();
-          let range;
-          if (endLine < totalLines) {
-            range = new monaco.Range(startLine, 1, endLine + 1, 1);
-          } else if (startLine > 1) {
-            range = new monaco.Range(startLine - 1, afterModel.getLineMaxColumn(startLine - 1), endLine, afterModel.getLineMaxColumn(endLine));
-          } else {
-            range = new monaco.Range(1, 1, endLine, afterModel.getLineMaxColumn(endLine));
-          }
-          afterModel.applyEdits([{ range, text: '' }]);
-        } else if (change.modifiedEndLineNumber === 0) {
-          const textToInsert = getOriginalLines(change.originalStartLineNumber, change.originalEndLineNumber);
-          const insertAt = change.modifiedStartLineNumber;
-          if (insertAt >= afterModel.getLineCount()) {
-            const lastLine = afterModel.getLineCount();
-            const lastCol = afterModel.getLineMaxColumn(lastLine);
-            afterModel.applyEdits([{ range: new monaco.Range(lastLine, lastCol, lastLine, lastCol), text: '\n' + textToInsert }]);
-          } else {
-            afterModel.applyEdits([{ range: new monaco.Range(insertAt + 1, 1, insertAt + 1, 1), text: textToInsert + '\n' }]);
-          }
-        } else {
-          const textToInsert = getOriginalLines(change.originalStartLineNumber, change.originalEndLineNumber);
-          const range = new monaco.Range(
-            change.modifiedStartLineNumber, 1,
-            change.modifiedEndLineNumber, afterModel.getLineMaxColumn(change.modifiedEndLineNumber)
-          );
-          afterModel.applyEdits([{ range, text: textToInsert }]);
+        let textToInsert = '';
+        if (change.originalEndLineNumber !== 0) {
+          textToInsert = getOriginalLines(change.originalStartLineNumber, change.originalEndLineNumber);
         }
 
-        pushUndo(origBefore, modBefore, beforeModel.getValue(), afterModel.getValue(), 'Applied change to right');
+        let range;
+        if (change.modifiedEndLineNumber === 0) {
+          const insertAt = change.modifiedStartLineNumber;
+          const totalLines = afterModel.getLineCount();
+          if (insertAt >= totalLines) {
+            const lastLine = Math.max(1, totalLines);
+            const lastCol = afterModel.getLineMaxColumn(lastLine);
+            range = new monaco.Range(lastLine, lastCol, lastLine, lastCol);
+            textToInsert = (lastLine === 1 && afterModel.getValue() === '' ? '' : '\n') + textToInsert;
+          } else {
+            range = new monaco.Range(insertAt + 1, 1, insertAt + 1, 1);
+            textToInsert = textToInsert + '\n';
+          }
+        } else {
+          const startLine = change.modifiedStartLineNumber;
+          const endLine = change.modifiedEndLineNumber;
+          if (change.originalEndLineNumber === 0) {
+            if (endLine < afterModel.getLineCount()) {
+              range = new monaco.Range(startLine, 1, endLine + 1, 1);
+            } else if (startLine > 1) {
+              range = new monaco.Range(startLine - 1, afterModel.getLineMaxColumn(startLine - 1), endLine, afterModel.getLineMaxColumn(endLine));
+            } else {
+              range = new monaco.Range(1, 1, endLine, afterModel.getLineMaxColumn(endLine));
+            }
+          } else {
+            range = new monaco.Range(startLine, 1, endLine, afterModel.getLineMaxColumn(endLine));
+          }
+        }
+
+        afterModel.pushEditOperations([], [{ range, text: textToInsert }], () => null);
       }
 
       function applyChangeToOriginal(change) {
-        const origBefore = beforeModel.getValue();
-        const modBefore = afterModel.getValue();
-
-        if (change.modifiedEndLineNumber === 0) {
-          const startLine = change.originalStartLineNumber;
-          const endLine = change.originalEndLineNumber;
-          const totalLines = beforeModel.getLineCount();
-          let range;
-          if (endLine < totalLines) {
-            range = new monaco.Range(startLine, 1, endLine + 1, 1);
-          } else if (startLine > 1) {
-            range = new monaco.Range(startLine - 1, beforeModel.getLineMaxColumn(startLine - 1), endLine, beforeModel.getLineMaxColumn(endLine));
-          } else {
-            range = new monaco.Range(1, 1, endLine, beforeModel.getLineMaxColumn(endLine));
-          }
-          beforeModel.applyEdits([{ range, text: '' }]);
-        } else if (change.originalEndLineNumber === 0) {
-          const textToInsert = getModifiedLines(change.modifiedStartLineNumber, change.modifiedEndLineNumber);
-          const insertAt = change.originalStartLineNumber;
-          if (insertAt >= beforeModel.getLineCount()) {
-            const lastLine = beforeModel.getLineCount();
-            const lastCol = beforeModel.getLineMaxColumn(lastLine);
-            beforeModel.applyEdits([{ range: new monaco.Range(lastLine, lastCol, lastLine, lastCol), text: '\n' + textToInsert }]);
-          } else {
-            beforeModel.applyEdits([{ range: new monaco.Range(insertAt + 1, 1, insertAt + 1, 1), text: textToInsert + '\n' }]);
-          }
-        } else {
-          const textToInsert = getModifiedLines(change.modifiedStartLineNumber, change.modifiedEndLineNumber);
-          const range = new monaco.Range(
-            change.originalStartLineNumber, 1,
-            change.originalEndLineNumber, beforeModel.getLineMaxColumn(change.originalEndLineNumber)
-          );
-          beforeModel.applyEdits([{ range, text: textToInsert }]);
+        let textToInsert = '';
+        if (change.modifiedEndLineNumber !== 0) {
+          textToInsert = getModifiedLines(change.modifiedStartLineNumber, change.modifiedEndLineNumber);
         }
 
-        pushUndo(origBefore, modBefore, beforeModel.getValue(), afterModel.getValue(), 'Applied change to left');
+        let range;
+        if (change.originalEndLineNumber === 0) {
+          const insertAt = change.originalStartLineNumber;
+          const totalLines = beforeModel.getLineCount();
+          if (insertAt >= totalLines) {
+            const lastLine = Math.max(1, totalLines);
+            const lastCol = beforeModel.getLineMaxColumn(lastLine);
+            range = new monaco.Range(lastLine, lastCol, lastLine, lastCol);
+            textToInsert = (lastLine === 1 && beforeModel.getValue() === '' ? '' : '\n') + textToInsert;
+          } else {
+            range = new monaco.Range(insertAt + 1, 1, insertAt + 1, 1);
+            textToInsert = textToInsert + '\n';
+          }
+        } else {
+          const startLine = change.originalStartLineNumber;
+          const endLine = beforeModel.getLineCount();
+          if (change.modifiedEndLineNumber === 0) {
+            if (endLine < beforeModel.getLineCount()) {
+              range = new monaco.Range(startLine, 1, endLine + 1, 1);
+            } else if (startLine > 1) {
+              range = new monaco.Range(startLine - 1, beforeModel.getLineMaxColumn(startLine - 1), endLine, beforeModel.getLineMaxColumn(endLine));
+            } else {
+              range = new monaco.Range(1, 1, endLine, beforeModel.getLineMaxColumn(endLine));
+            }
+          } else {
+            range = new monaco.Range(startLine, 1, change.originalEndLineNumber, beforeModel.getLineMaxColumn(change.originalEndLineNumber));
+          }
+        }
+
+        beforeModel.pushEditOperations([], [{ range, text: textToInsert }], () => null);
       }
 
       function getOriginalLines(startLine, endLine) {
@@ -658,55 +608,11 @@
         return lines.join('\n');
       }
 
-      // ===== Undo system =====
-      function pushUndo(origBefore, modBefore, origAfter, modAfter, description) {
-        undoStack.push({ origBefore, modBefore, origAfter, modAfter, description });
-        if (undoStack.length > 50) undoStack.shift();
-        showUndoBar(description);
-      }
+      diffEditor.onDidUpdateDiff(rebuildChangeActions);
+      diffOrig.onDidScrollChange(onScroll);
+      diffMod.onDidScrollChange(onScroll);
+      window.addEventListener('resize', rebuildChangeActions);
 
-      function showUndoBar(msg) {
-        const bar = document.getElementById('undoBar');
-        const msgEl = document.getElementById('undoMsg');
-        msgEl.textContent = msg;
-        bar.classList.add('show');
-        clearTimeout(undoTimer);
-        undoTimer = setTimeout(() => bar.classList.remove('show'), 5000);
-      }
-
-      function performUndo() {
-        if (undoStack.length === 0) return;
-        const entry = undoStack.pop();
-        beforeModel.setValue(entry.origBefore);
-        afterModel.setValue(entry.modBefore);
-        document.getElementById('undoBar').classList.remove('show');
-        clearTimeout(undoTimer);
-      }
-
-      document.getElementById('undoBtn').addEventListener('click', performUndo);
-      document.getElementById('undoDismiss').addEventListener('click', () => {
-        document.getElementById('undoBar').classList.remove('show');
-        clearTimeout(undoTimer);
-      });
-
-      document.addEventListener('keydown', (e) => {
-        if ((e.ctrlKey || e.metaKey) && e.key === 'z' && undoStack.length > 0) {
-          const bar = document.getElementById('undoBar');
-          if (bar.classList.contains('show')) {
-            e.preventDefault();
-            e.stopPropagation();
-            performUndo();
-          }
-        }
-      });
-
-      // ===== Listen to diff changes and scroll =====
-      diffEditor.onDidUpdateDiff(updateChangeActions);
-      diffOrig.onDidScrollChange(updateChangeActions);
-      diffMod.onDidScrollChange(updateChangeActions);
-      window.addEventListener('resize', updateChangeActions);
-
-      // ===== Placeholders =====
       setTimeout(() => {
         const origNode = document.querySelector('.editor.original');
         const modNode = document.querySelector('.editor.modified');
@@ -739,7 +645,7 @@
           toggleViewBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="12" x2="21" y2="12"/></svg> Inline View';
         }
         updatePlaceholders();
-        updateChangeActions();
+        rebuildChangeActions();
       });
 
       const updatePlaceholders = () => {
@@ -770,7 +676,6 @@
       beforeModel.onDidChangeContent(updatePlaceholders);
       afterModel.onDidChangeContent(updatePlaceholders);
 
-      // ===== Jump navigation =====
       const jump = (dir) => {
         if (!diffEditor) return;
         const changes = diffEditor.getLineChanges();
@@ -790,7 +695,6 @@
       document.getElementById('nextDiffBtn').addEventListener('click', () => jump('next'));
       document.getElementById('prevDiffBtn').addEventListener('click', () => jump('prev'));
 
-      // ===== Drag and drop =====
       function setupEditorDrop(editorInstance, model) {
         const container = editorInstance.getContainerDomNode();
         container.addEventListener('dragover', (e) => {
@@ -827,7 +731,6 @@
       beforeModel.setValue(''); afterModel.setValue('');
       window.history.replaceState(null, null, window.location.pathname);
       beforeFocused = false; afterFocused = false;
-      undoStack = [];
     });
 
     document.getElementById('shareBtn').addEventListener('click', () => {
