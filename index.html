@@ -11,6 +11,7 @@
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.5.0/lz-string.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
   <script>
     window.module = { exports: {} };
     window.exports = window.module.exports;
@@ -18,11 +19,10 @@
   <script src="https://cdn.jsdelivr.net/npm/htmldiff-js@1.0.5/dist/htmldiff.min.js"></script>
   <script>
     window.HtmlDiff = window.module.exports.default || window.module.exports;
-    // 他のライブラリに影響が出ないように使用後は削除
     delete window.module;
     delete window.exports;
   </script>
-  
+
   <script>
     window.MonacoEnvironment = {
       getWorkerUrl: function(workerId, label) {
@@ -81,7 +81,7 @@
 
     .main-container { display: flex; flex: 1; position: relative; min-height: 0; }
 
-    /* ===== Rich Diff Viewer Styles ===== */
+    /* ===== Markdown View Viewer Styles ===== */
     .rich-diff-viewer {
       display: none;
       width: 100%; height: 100%;
@@ -114,7 +114,7 @@
       border-left: 4px solid var(--border-color); margin: 0; padding-left: 16px; color: var(--text-muted);
     }
     
-    /* Confluence-like Highlight Colors */
+    /* Highlight Colors */
     .rich-diff-viewer ins {
       background-color: rgba(46, 160, 67, 0.25);
       color: #3fb950;
@@ -179,7 +179,6 @@
       content: ""; position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; background-color: var(--border-color); transform: translateX(-50%);
     }
 
-    /* ===== Change action buttons overlay ===== */
     #changeActions { position: absolute; top: 0; left: 0; right: 0; bottom: 0; pointer-events: none; z-index: 50; overflow: hidden; }
     .change-action-group {
       position: absolute; display: flex; flex-direction: row; gap: 2px; pointer-events: auto;
@@ -240,7 +239,7 @@
         Inline View
       </button>
       <button class="btn clear-btn" id="clearBtn" title="Clear All">
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"></path></svg>
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 11-1.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"></path></svg>
         Clear
       </button>
       <button class="btn share-btn" id="shareBtn" title="Copy URL with current state">
@@ -253,9 +252,7 @@
 
   <div class="main-container" id="mainContainer">
     <div id="diffEditor" style="width: 100%; height: 100%;"></div>
-    
     <div id="richDiffViewer" class="rich-diff-viewer"></div>
-    
     <div id="changeActions"></div>
 
     <div class="jump-controls">
@@ -310,23 +307,24 @@
       for (const [k, v] of Object.entries(THEMES[t].css)) {
         document.documentElement.style.setProperty(k, v); 
       }
-      document.body.setAttribute('data-theme', t); // CSS用に属性を追加
+      document.body.setAttribute('data-theme', t); 
       localStorage.setItem('diffToolTheme', t); 
       if (window.monaco) monaco.editor.setTheme(THEMES[t].monaco); 
     }
     
     document.getElementById('themeSelect').addEventListener('change', (e) => applyTheme(e.target.value));
-    const savedTheme = localStorage.getItem('diffToolTheme') || 'vs-dark';
-    document.getElementById('themeSelect').value = THEMES[savedTheme] ? savedTheme : 'vs-dark';
+
+    // デフォルトテーマを GitHub Dark に固定（保存済みがあればそれを優先）
+    const savedTheme = localStorage.getItem('diffToolTheme') || 'github-dark';
+    document.getElementById('themeSelect').value = THEMES[savedTheme] ? savedTheme : 'github-dark';
 
     let diffEditor, diffOrig, diffMod;
     let beforeModel, afterModel;
     let beforeFocused = false;
     let afterFocused = false;
     let isInlineView = false;
-    let isRichDiffView = false; // モード管理フラグ
+    let isRichDiffView = false; 
 
-    // トースト通知（汎用化）
     const showToast = (msg) => { 
       const t = document.getElementById('toast'); 
       t.innerText = msg || 'Diff URL copied to clipboard!';
@@ -528,14 +526,13 @@
         const lang = e.target.value; monaco.editor.setModelLanguage(beforeModel, lang); monaco.editor.setModelLanguage(afterModel, lang);
       });
 
-      // ========== 👁️ Rich Diff 機能（フェイルセーフ搭載） ==========
+      // ========== 👁️ Markdown View 機能 ==========
       const richDiffBtn = document.getElementById('richDiffBtn');
       const diffEditorContainer = document.getElementById('diffEditor');
       const richDiffViewer = document.getElementById('richDiffViewer');
       const changeActionsContainer = document.getElementById('changeActions');
       const jumpControls = document.querySelector('.jump-controls');
 
-      // Monaco表示に戻す処理（エラー時にも使う）
       const restoreMonacoView = () => {
         diffEditorContainer.style.display = 'block';
         richDiffViewer.style.display = 'none';
@@ -552,18 +549,14 @@
             const bText = beforeModel.getValue();
             const aText = afterModel.getValue();
             
-            // 1. MarkdownをパースしてHTML化
             const bHtml = marked.parse(bText);
             const aHtml = marked.parse(aText);
             
-            // 2. HtmlDiffライブラリで差分を生成
             if (typeof HtmlDiff === 'undefined') throw new Error("HtmlDiff library is missing");
             const diffedHtml = HtmlDiff.execute(bHtml, aHtml);
             
-            // 3. 画面に反映
             richDiffViewer.innerHTML = diffedHtml;
             
-            // UIの切り替え
             diffEditorContainer.style.display = 'none';
             changeActionsContainer.style.display = 'none';
             if (jumpControls) jumpControls.style.display = 'none';
@@ -572,13 +565,11 @@
             richDiffBtn.classList.add('active');
             isRichDiffView = true;
           } catch (error) {
-            // エラー時はフェイルセーフ発動（元の状態に戻す）
-            console.error("Rich Diff Render Error:", error);
+            console.error("Markdown View Render Error:", error);
             restoreMonacoView();
-            showToast('⚠️ Rich Diffの生成に失敗しました（テキスト差分に戻ります）');
+            showToast('⚠️ Markdown Viewの生成に失敗しました');
           }
         } else {
-          // すでにRich Diffモードなら通常に戻す
           restoreMonacoView();
         }
       });
@@ -654,8 +645,13 @@
     });
 
     document.getElementById('shareBtn').addEventListener('click', () => {
-      const lang = document.getElementById('langSelect').value; const theme = document.getElementById('themeSelect').value;
-      const data = JSON.stringify({ b: beforeModel.getValue(), a: afterModel.getValue(), l: lang, t: theme });
+      const lang = document.getElementById('langSelect').value;
+      const data = JSON.stringify({ 
+        b: beforeModel.getValue(), 
+        a: afterModel.getValue(), 
+        l: lang, 
+        m: isRichDiffView 
+      });
       const compressed = LZString.compressToEncodedURIComponent(data);
       const url = window.location.href.split('#')[0] + '#' + compressed;
       if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(url).then(() => showToast('Diff URL copied to clipboard!'));
@@ -677,7 +673,13 @@
             document.getElementById('langSelect').value = d.l;
             monaco.editor.setModelLanguage(beforeModel, d.l); monaco.editor.setModelLanguage(afterModel, d.l);
           }
-          if (d.t && THEMES[d.t]) { document.getElementById('themeSelect').value = d.t; applyTheme(d.t); }
+          
+          if (d.m) {
+            setTimeout(() => {
+              const btn = document.getElementById('richDiffBtn');
+              if (btn && !isRichDiffView) btn.click();
+            }, 150);
+          }
         } catch (e) {}
       }
     }
