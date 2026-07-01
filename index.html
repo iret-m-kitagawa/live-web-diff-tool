@@ -10,6 +10,18 @@
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Noto+Sans+Mono:wght@400;700&display=swap" rel="stylesheet">
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.5.0/lz-string.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script>
+    window.module = { exports: {} };
+    window.exports = window.module.exports;
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/htmldiff-js@1.0.5/dist/htmldiff.min.js"></script>
+  <script>
+    window.HtmlDiff = window.module.exports.default || window.module.exports;
+    // 他のライブラリに影響が出ないように使用後は削除
+    delete window.module;
+    delete window.exports;
+  </script>
   
   <script>
     window.MonacoEnvironment = {
@@ -54,6 +66,7 @@
       background-color: transparent; color: var(--text-muted); border: 1px solid var(--border-color);
     }
     .btn:hover { background-color: var(--border-color); color: var(--text-main); }
+    .btn.active { background-color: #0a84ff; color: #ffffff; border-color: #0a84ff; }
     .clear-btn:hover { background-color: rgba(248, 81, 73, 0.1); color: #ff7b72; border-color: rgba(248, 81, 73, 0.4); }
     .share-btn { background-color: #238636; color: #ffffff; border: 1px solid rgba(240, 246, 252, 0.1); }
     .share-btn:hover { background-color: #2ea043; color: #ffffff; }
@@ -67,6 +80,58 @@
     .toast.show { opacity: 1; transform: translateY(0); }
 
     .main-container { display: flex; flex: 1; position: relative; min-height: 0; }
+
+    /* ===== Rich Diff Viewer Styles ===== */
+    .rich-diff-viewer {
+      display: none;
+      width: 100%; height: 100%;
+      padding: 32px 48px;
+      overflow-y: auto;
+      background-color: var(--bg-main);
+      color: var(--text-main);
+      line-height: 1.6;
+      font-size: 15px;
+    }
+    .rich-diff-viewer h1, .rich-diff-viewer h2, .rich-diff-viewer h3, .rich-diff-viewer h4 {
+      border-bottom: 1px solid var(--border-color);
+      padding-bottom: 0.3em; margin-top: 1.5em;
+    }
+    .rich-diff-viewer table {
+      border-collapse: collapse; width: 100%; margin-bottom: 16px;
+    }
+    .rich-diff-viewer th, .rich-diff-viewer td {
+      border: 1px solid var(--border-color); padding: 8px 12px;
+    }
+    .rich-diff-viewer th { background-color: var(--bg-panel); }
+    .rich-diff-viewer pre {
+      background-color: var(--bg-panel); padding: 16px; border-radius: 6px; overflow-x: auto;
+    }
+    .rich-diff-viewer code {
+      font-family: 'JetBrains Mono', Consolas, monospace;
+      background-color: var(--bg-panel); padding: 2px 4px; border-radius: 4px;
+    }
+    .rich-diff-viewer blockquote {
+      border-left: 4px solid var(--border-color); margin: 0; padding-left: 16px; color: var(--text-muted);
+    }
+    
+    /* Confluence-like Highlight Colors */
+    .rich-diff-viewer ins {
+      background-color: rgba(46, 160, 67, 0.25);
+      color: #3fb950;
+      text-decoration: none;
+    }
+    .rich-diff-viewer del {
+      background-color: rgba(248, 81, 73, 0.25);
+      color: #ff7b72;
+      text-decoration: line-through;
+    }
+    /* Light Theme Overrides */
+    [data-theme*="light"] .rich-diff-viewer ins {
+      background-color: #e6ffec; color: #238636;
+    }
+    [data-theme*="light"] .rich-diff-viewer del {
+      background-color: #ffebe9; color: #da3633;
+    }
 
     .jump-controls {
       position: absolute; bottom: 24px; right: 48px;
@@ -93,85 +158,41 @@
     }
     .placeholder-box svg { color: var(--text-muted); opacity: 0.4; margin-bottom: 4px; }
     .placeholder-title {
-      color: var(--text-muted); opacity: 0.5;
-      font-family: 'JetBrains Mono', Consolas, monospace;
-      font-weight: bold; letter-spacing: 2px;
+      color: var(--text-muted); opacity: 0.5; font-family: 'JetBrains Mono', Consolas, monospace; font-weight: bold; letter-spacing: 2px;
     }
-    .placeholder-subtitle {
-      color: var(--text-muted); opacity: 0.35;
-      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-      font-size: 13px;
-    }
+    .placeholder-subtitle { color: var(--text-muted); opacity: 0.35; font-size: 13px; }
 
     :root, body, .monaco-editor, .monaco-diff-editor {
       --vscode-scrollbar-shadow: transparent !important;
       --vscode-widget-shadow: transparent !important;
       --vscode-sash-hoverBorder: transparent !important;
     }
-    body .monaco-editor .scroll-decoration,
-    body .monaco-scrollable-element > .shadow {
+    body .monaco-editor .scroll-decoration, body .monaco-scrollable-element > .shadow {
       box-shadow: none !important; background: transparent !important; opacity: 0 !important; display: none !important;
     }
     body svg.moved-blocks-lines { display: none !important; opacity: 0 !important; visibility: hidden !important; pointer-events: none !important; }
 
     body .monaco-sash.vertical {
-      background-color: var(--bg-main) !important;
-      width: 14px !important; margin-left: -7px !important;
-      box-shadow: none !important; z-index: 40 !important;
+      background-color: var(--bg-main) !important; width: 14px !important; margin-left: -7px !important; box-shadow: none !important; z-index: 40 !important;
     }
     body .monaco-sash.vertical::after {
-      content: ""; position: absolute; top: 0; bottom: 0; left: 50%;
-      width: 1px; background-color: var(--border-color); transform: translateX(-50%);
-    }
-
-    .monaco-editor.drag-over::after {
-      content: ""; position: absolute; inset: 0;
-      background-color: rgba(10, 132, 255, 0.1);
-      box-shadow: inset 0 0 0 2px #0a84ff; z-index: 100; pointer-events: none;
+      content: ""; position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; background-color: var(--border-color); transform: translateX(-50%);
     }
 
     /* ===== Change action buttons overlay ===== */
-    #changeActions {
-      position: absolute; top: 0; left: 0; right: 0; bottom: 0;
-      pointer-events: none; z-index: 50; overflow: hidden;
-    }
+    #changeActions { position: absolute; top: 0; left: 0; right: 0; bottom: 0; pointer-events: none; z-index: 50; overflow: hidden; }
     .change-action-group {
-      position: absolute;
-      display: flex; flex-direction: row; gap: 2px;
-      pointer-events: auto;
-      transform: translateX(-50%);
-      opacity: 0;
-      transition: opacity 0.15s ease;
-      will-change: transform, top, left;
+      position: absolute; display: flex; flex-direction: row; gap: 2px; pointer-events: auto;
+      transform: translateX(-50%); opacity: 0; transition: opacity 0.15s ease; will-change: transform, top, left;
     }
-    .change-action-group.visible {
-      opacity: 1;
-    }
+    .change-action-group.visible { opacity: 1; }
     .change-action-btn {
-      width: 24px; height: 20px;
-      border: 1px solid var(--border-color);
-      border-radius: 4px;
-      background: var(--bg-panel);
-      color: var(--text-muted);
-      font-size: 14px; line-height: 18px;
-      cursor: pointer;
-      display: flex; align-items: center; justify-content: center;
-      padding: 0;
-      transition: all 0.12s ease;
+      width: 24px; height: 20px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-panel);
+      color: var(--text-muted); font-size: 14px; line-height: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0; transition: all 0.12s ease;
     }
-    .change-action-btn:hover {
-      transform: scale(1.15);
-    }
-    .change-action-btn.accept-right:hover {
-      background: rgba(80, 200, 120, 0.2);
-      border-color: rgba(80, 200, 120, 0.5);
-      color: #50c878;
-    }
-    .change-action-btn.accept-left:hover {
-      background: rgba(100, 149, 237, 0.2);
-      border-color: rgba(100, 149, 237, 0.5);
-      color: #6495ed;
-    }
+    .change-action-btn:hover { transform: scale(1.15); }
+    .change-action-btn.accept-right:hover { background: rgba(80, 200, 120, 0.2); border-color: rgba(80, 200, 120, 0.5); color: #50c878; }
+    .change-action-btn.accept-left:hover { background: rgba(100, 149, 237, 0.2); border-color: rgba(100, 149, 237, 0.5); color: #6495ed; }
   </style>
 </head>
 <body>
@@ -206,6 +227,10 @@
       </select>
     </div>
     <div class="toolbar-right">
+      <button class="btn" id="richDiffBtn" title="Toggle Rich Markdown Diff">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+        Markdown View
+      </button>
       <button class="btn" id="swapBtn" title="Swap BEFORE and AFTER">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4L4 8l4 4M4 8h16M16 20l4-4-4-4M20 16H4"/></svg>
         Swap
@@ -228,6 +253,9 @@
 
   <div class="main-container" id="mainContainer">
     <div id="diffEditor" style="width: 100%; height: 100%;"></div>
+    
+    <div id="richDiffViewer" class="rich-diff-viewer"></div>
+    
     <div id="changeActions"></div>
 
     <div class="jump-controls">
@@ -282,6 +310,7 @@
       for (const [k, v] of Object.entries(THEMES[t].css)) {
         document.documentElement.style.setProperty(k, v); 
       }
+      document.body.setAttribute('data-theme', t); // CSS用に属性を追加
       localStorage.setItem('diffToolTheme', t); 
       if (window.monaco) monaco.editor.setTheme(THEMES[t].monaco); 
     }
@@ -295,29 +324,32 @@
     let beforeFocused = false;
     let afterFocused = false;
     let isInlineView = false;
+    let isRichDiffView = false; // モード管理フラグ
+
+    // トースト通知（汎用化）
+    const showToast = (msg) => { 
+      const t = document.getElementById('toast'); 
+      t.innerText = msg || 'Diff URL copied to clipboard!';
+      t.classList.add('show'); 
+      setTimeout(() => t.classList.remove('show'), 2500); 
+    };
 
     require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs' } });
     require(['vs/editor/editor.main'], function () {
       
       const commonColors = {
-        'scrollbar.shadow': '#00000000',
-        'editor.lineHighlightBorder': '#00000000',
-        'sash.hoverBorder': '#00000000',
-        'diffEditor.diagonalFill': '#00000000'
+        'scrollbar.shadow': '#00000000', 'editor.lineHighlightBorder': '#00000000',
+        'sash.hoverBorder': '#00000000', 'diffEditor.diagonalFill': '#00000000'
       };
 
       monaco.editor.defineTheme('custom-vs-dark', { base: 'vs-dark', inherit: true, rules: [], colors: { ...commonColors, 'editor.background': '#1e1e1e' }});
       monaco.editor.defineTheme('custom-vs-light', { base: 'vs', inherit: true, rules: [], colors: { ...commonColors, 'editor.background': '#fffffe' }});
       monaco.editor.defineTheme('custom-github-dark', { base: 'vs-dark', inherit: true, rules: [], colors: { ...commonColors, 'editor.background': '#0d1117' }});
       monaco.editor.defineTheme('custom-noctis-hc', { 
-        base: 'vs-dark', inherit: true, 
-        rules: [ { background: '000000' } ], 
+        base: 'vs-dark', inherit: true, rules: [ { background: '000000' } ], 
         colors: { 
-          ...commonColors, 
-          'editor.background': '#000000',
-          'editor.foreground': '#ffffff',
-          'diffEditor.insertedTextBackground': '#183a21',
-          'diffEditor.removedTextBackground': '#4b181a',
+          ...commonColors, 'editor.background': '#000000', 'editor.foreground': '#ffffff',
+          'diffEditor.insertedTextBackground': '#183a21', 'diffEditor.removedTextBackground': '#4b181a',
           'editorLineNumber.foreground': '#4f4f4f'
         }
       });
@@ -325,44 +357,24 @@
       applyTheme(document.getElementById('themeSelect').value);
 
       const savedFontSize = localStorage.getItem('diffToolFontSize') || '14';
-      if (document.getElementById('fontSizeSelect')) {
-          document.getElementById('fontSizeSelect').value = savedFontSize;
-      }
+      if (document.getElementById('fontSizeSelect')) document.getElementById('fontSizeSelect').value = savedFontSize;
 
       const commonOptions = {
-        language: 'plaintext',
-        wordWrap: 'on',
-        automaticLayout: true,
-        fontSize: parseInt(savedFontSize, 10),
+        language: 'plaintext', wordWrap: 'on', automaticLayout: true, fontSize: parseInt(savedFontSize, 10),
         fontFamily: "'Source Han Mono', '源ノ等幅', 'Source Han Code JP', '源ノ角ゴシック Code JP', 'JetBrains Mono', 'Noto Sans Mono', Consolas, Menlo, monospace",
-        fontLigatures: true,
-        scrollBeyondLastLine: false,
-        padding: { top: 16, bottom: 16 },
-        lineNumbersMinChars: 2,
-        lineDecorationsWidth: 12,
-        folding: false,                   
-        glyphMargin: false,               
+        fontLigatures: true, scrollBeyondLastLine: false, padding: { top: 16, bottom: 16 },
+        lineNumbersMinChars: 2, lineDecorationsWidth: 12, folding: false, glyphMargin: false,               
         scrollbar: { verticalScrollbarSize: 14, horizontal: 'hidden', useShadows: false }, 
-        hideCursorInOverviewRuler: true,
-        renderLineHighlight: 'none',
-        minimap: { enabled: true, renderCharacters: false, scale: 0.75 }, 
-        renderOverviewRuler: false
+        hideCursorInOverviewRuler: true, renderLineHighlight: 'none',
+        minimap: { enabled: true, renderCharacters: false, scale: 0.75 }, renderOverviewRuler: false
       };
 
       beforeModel = monaco.editor.createModel('', 'plaintext');
       afterModel = monaco.editor.createModel('', 'plaintext');
 
       diffEditor = monaco.editor.createDiffEditor(document.getElementById('diffEditor'), {
-        ...commonOptions,
-        originalEditable: true,
-        readOnly: false,
-        renderSideBySide: true,
-        ignoreTrimWhitespace: false,
-        splitViewDefaultRatio: 0.5,       
-        enableSplitViewResizing: true,
-        renderMarginRevertIcon: false,
-        renderIndicators: false,
-        diffCodeLens: false
+        ...commonOptions, originalEditable: true, readOnly: false, renderSideBySide: true, ignoreTrimWhitespace: false,
+        splitViewDefaultRatio: 0.5, enableSplitViewResizing: true, renderMarginRevertIcon: false, renderIndicators: false, diffCodeLens: false
       });
 
       diffEditor.setModel({ original: beforeModel, modified: afterModel });
@@ -373,11 +385,8 @@
       diffMod.updateOptions({ wordWrap: 'on', renderOverviewRuler: false });
 
       document.getElementById('fontSizeSelect').addEventListener('change', (e) => {
-        const size = parseInt(e.target.value, 10);
-        localStorage.setItem('diffToolFontSize', e.target.value);
-        diffEditor.updateOptions({ fontSize: size });
-        diffOrig.updateOptions({ fontSize: size });
-        diffMod.updateOptions({ fontSize: size });
+        const size = parseInt(e.target.value, 10); localStorage.setItem('diffToolFontSize', e.target.value);
+        diffEditor.updateOptions({ fontSize: size }); diffOrig.updateOptions({ fontSize: size }); diffMod.updateOptions({ fontSize: size });
         rebuildChangeActions();
       });
 
@@ -388,8 +397,7 @@
       }
 
       [diffOrig, diffMod].forEach(editor => {
-        updateLineNumberWidth(editor);
-        editor.getModel().onDidChangeContent(() => updateLineNumberWidth(editor));
+        updateLineNumberWidth(editor); editor.getModel().onDidChangeContent(() => updateLineNumberWidth(editor));
       });
 
       let changeElements = [];
@@ -397,240 +405,187 @@
       function rebuildChangeActions() {
         const container = document.getElementById('changeActions');
         if (!container) return;
-        container.innerHTML = '';
-        changeElements = [];
-
+        container.innerHTML = ''; changeElements = [];
         if (isInlineView) return;
 
         const changes = diffEditor.getLineChanges();
         if (!changes || changes.length === 0) return;
 
         changes.forEach((change) => {
-          const group = document.createElement('div');
-          group.className = 'change-action-group';
+          const group = document.createElement('div'); group.className = 'change-action-group';
 
-          const btnAcceptRight = document.createElement('button');
-          btnAcceptRight.className = 'change-action-btn accept-right';
-          btnAcceptRight.innerHTML = '&#x276D;';
-          btnAcceptRight.title = 'Apply original → modified';
-          btnAcceptRight.addEventListener('click', (e) => {
-            e.stopPropagation();
-            applyChangeToModified(change);
-          });
+          const btnAcceptRight = document.createElement('button'); btnAcceptRight.className = 'change-action-btn accept-right';
+          btnAcceptRight.innerHTML = '&#x276D;'; btnAcceptRight.title = 'Apply original → modified';
+          btnAcceptRight.addEventListener('click', (e) => { e.stopPropagation(); applyChangeToModified(change); });
           group.appendChild(btnAcceptRight);
 
-          const btnAcceptLeft = document.createElement('button');
-          btnAcceptLeft.className = 'change-action-btn accept-left';
-          btnAcceptLeft.innerHTML = '&#x276C;';
-          btnAcceptLeft.title = 'Apply modified → original';
-          btnAcceptLeft.addEventListener('click', (e) => {
-            e.stopPropagation();
-            applyChangeToOriginal(change);
-          });
+          const btnAcceptLeft = document.createElement('button'); btnAcceptLeft.className = 'change-action-btn accept-left';
+          btnAcceptLeft.innerHTML = '&#x276C;'; btnAcceptLeft.title = 'Apply modified → original';
+          btnAcceptLeft.addEventListener('click', (e) => { e.stopPropagation(); applyChangeToOriginal(change); });
           group.appendChild(btnAcceptLeft);
 
-          container.appendChild(group);
-          changeElements.push({ change, el: group });
+          container.appendChild(group); changeElements.push({ change, el: group });
         });
-
         updateChangeActionsPosition();
       }
 
       function updateChangeActionsPosition() {
         if (changeElements.length === 0 || isInlineView) return;
-
         const mainContainer = document.getElementById('mainContainer');
         const mainRect = mainContainer.getBoundingClientRect();
-
-        const origDom = diffOrig.getDomNode();
-        const modDom = diffMod.getDomNode();
+        const origDom = diffOrig.getDomNode(); const modDom = diffMod.getDomNode();
         if (!origDom || !modDom) return;
 
-        const origRect = origDom.getBoundingClientRect();
-        const modRect = modDom.getBoundingClientRect();
+        const origRect = origDom.getBoundingClientRect(); const modRect = modDom.getBoundingClientRect();
         const sashCenterX = ((origRect.right + modRect.left) / 2) - mainRect.left;
-
-        const modScrollTop = diffMod.getScrollTop();
-        const origScrollTop = diffOrig.getScrollTop();
+        const modScrollTop = diffMod.getScrollTop(); const origScrollTop = diffOrig.getScrollTop();
         const lineH = diffMod.getOption(monaco.editor.EditorOption.lineHeight);
         const editorTopInContainer = modRect.top - mainRect.top;
 
         changeElements.forEach(item => {
-          const change = item.change;
-          let midY;
-
+          const change = item.change; let midY;
           if (change.modifiedEndLineNumber === 0) {
-            const startY = diffOrig.getTopForLineNumber(change.originalStartLineNumber) - origScrollTop;
-            const endY = diffOrig.getTopForLineNumber(change.originalEndLineNumber) + lineH - origScrollTop;
-            midY = (startY + endY) / 2 + editorTopInContainer;
+            midY = (diffOrig.getTopForLineNumber(change.originalStartLineNumber) - origScrollTop + diffOrig.getTopForLineNumber(change.originalEndLineNumber) + lineH - origScrollTop) / 2 + editorTopInContainer;
           } else if (change.originalEndLineNumber === 0) {
-            const startY = diffMod.getTopForLineNumber(change.modifiedStartLineNumber) - modScrollTop;
-            const endY = diffMod.getTopForLineNumber(change.modifiedEndLineNumber) + lineH - modScrollTop;
-            midY = (startY + endY) / 2 + editorTopInContainer;
+            midY = (diffMod.getTopForLineNumber(change.modifiedStartLineNumber) - modScrollTop + diffMod.getTopForLineNumber(change.modifiedEndLineNumber) + lineH - modScrollTop) / 2 + editorTopInContainer;
           } else {
-            const origStartY = diffOrig.getTopForLineNumber(change.originalStartLineNumber) - origScrollTop;
-            const origEndY = diffOrig.getTopForLineNumber(change.originalEndLineNumber) + lineH - origScrollTop;
-            const modStartY = diffMod.getTopForLineNumber(change.modifiedStartLineNumber) - modScrollTop;
-            const modEndY = diffMod.getTopForLineNumber(change.modifiedEndLineNumber) + lineH - modScrollTop;
-            midY = ((origStartY + origEndY + modStartY + modEndY) / 4) + editorTopInContainer;
+            midY = ((diffOrig.getTopForLineNumber(change.originalStartLineNumber) - origScrollTop + diffOrig.getTopForLineNumber(change.originalEndLineNumber) + lineH - origScrollTop + diffMod.getTopForLineNumber(change.modifiedStartLineNumber) - modScrollTop + diffMod.getTopForLineNumber(change.modifiedEndLineNumber) + lineH - modScrollTop) / 4) + editorTopInContainer;
           }
-
           if (midY < editorTopInContainer - 30 || midY > mainRect.height + 30) {
             item.el.style.display = 'none';
           } else {
-            item.el.style.display = 'flex';
-            item.el.style.left = sashCenterX + 'px';
-            item.el.style.top = (midY - 10) + 'px';
+            item.el.style.display = 'flex'; item.el.style.left = sashCenterX + 'px'; item.el.style.top = (midY - 10) + 'px';
           }
         });
       }
 
-      let rafId;
-      function onScroll() {
-        cancelAnimationFrame(rafId);
-        rafId = requestAnimationFrame(updateChangeActionsPosition);
-      }
-
+      let rafId; function onScroll() { cancelAnimationFrame(rafId); rafId = requestAnimationFrame(updateChangeActionsPosition); }
       document.getElementById('mainContainer').addEventListener('mousemove', (e) => {
         if (isInlineView || changeElements.length === 0) return;
-        const origDom = diffOrig.getDomNode();
-        const modDom = diffMod.getDomNode();
+        const origDom = diffOrig.getDomNode(); const modDom = diffMod.getDomNode();
         if (!origDom || !modDom) return;
-
-        const origRect = origDom.getBoundingClientRect();
-        const modRect = modDom.getBoundingClientRect();
-        const mouseX = e.clientX;
-
-        const sashLeft = origRect.right - 40;
-        const sashRight = modRect.left + 40;
-        const isNearSash = mouseX >= sashLeft && mouseX <= sashRight;
-
-        changeElements.forEach(item => {
-          item.el.classList.toggle('visible', isNearSash);
-        });
+        const origRect = origDom.getBoundingClientRect(); const modRect = modDom.getBoundingClientRect();
+        const mouseX = e.clientX; const isNearSash = mouseX >= origRect.right - 40 && mouseX <= modRect.left + 40;
+        changeElements.forEach(item => item.el.classList.toggle('visible', isNearSash));
       });
-
-      document.getElementById('mainContainer').addEventListener('mouseleave', () => {
-        changeElements.forEach(item => {
-          item.el.classList.remove('visible');
-        });
-      });
+      document.getElementById('mainContainer').addEventListener('mouseleave', () => changeElements.forEach(item => item.el.classList.remove('visible')));
 
       function applyChangeToModified(change) {
-        let textToInsert = '';
-        if (change.originalEndLineNumber !== 0) {
-          textToInsert = getOriginalLines(change.originalStartLineNumber, change.originalEndLineNumber);
-        }
-
+        let textToInsert = ''; if (change.originalEndLineNumber !== 0) textToInsert = getOriginalLines(change.originalStartLineNumber, change.originalEndLineNumber);
         let range;
         if (change.modifiedEndLineNumber === 0) {
-          const insertAt = change.modifiedStartLineNumber;
-          const totalLines = afterModel.getLineCount();
+          const insertAt = change.modifiedStartLineNumber; const totalLines = afterModel.getLineCount();
           if (insertAt >= totalLines) {
-            const lastLine = Math.max(1, totalLines);
-            const lastCol = afterModel.getLineMaxColumn(lastLine);
-            range = new monaco.Range(lastLine, lastCol, lastLine, lastCol);
-            textToInsert = (lastLine === 1 && afterModel.getValue() === '' ? '' : '\n') + textToInsert;
-          } else {
-            range = new monaco.Range(insertAt + 1, 1, insertAt + 1, 1);
-            textToInsert = textToInsert + '\n';
-          }
+            const lastLine = Math.max(1, totalLines); const lastCol = afterModel.getLineMaxColumn(lastLine);
+            range = new monaco.Range(lastLine, lastCol, lastLine, lastCol); textToInsert = (lastLine === 1 && afterModel.getValue() === '' ? '' : '\n') + textToInsert;
+          } else { range = new monaco.Range(insertAt + 1, 1, insertAt + 1, 1); textToInsert = textToInsert + '\n'; }
         } else {
-          const startLine = change.modifiedStartLineNumber;
-          const endLine = change.modifiedEndLineNumber;
+          const startLine = change.modifiedStartLineNumber; const endLine = change.modifiedEndLineNumber;
           if (change.originalEndLineNumber === 0) {
-            if (endLine < afterModel.getLineCount()) {
-              range = new monaco.Range(startLine, 1, endLine + 1, 1);
-            } else if (startLine > 1) {
-              range = new monaco.Range(startLine - 1, afterModel.getLineMaxColumn(startLine - 1), endLine, afterModel.getLineMaxColumn(endLine));
-            } else {
-              range = new monaco.Range(1, 1, endLine, afterModel.getLineMaxColumn(endLine));
-            }
-          } else {
-            range = new monaco.Range(startLine, 1, endLine, afterModel.getLineMaxColumn(endLine));
-          }
+            if (endLine < afterModel.getLineCount()) range = new monaco.Range(startLine, 1, endLine + 1, 1);
+            else if (startLine > 1) range = new monaco.Range(startLine - 1, afterModel.getLineMaxColumn(startLine - 1), endLine, afterModel.getLineMaxColumn(endLine));
+            else range = new monaco.Range(1, 1, endLine, afterModel.getLineMaxColumn(endLine));
+          } else range = new monaco.Range(startLine, 1, endLine, afterModel.getLineMaxColumn(endLine));
         }
-
         afterModel.pushEditOperations([], [{ range, text: textToInsert }], () => null);
       }
 
       function applyChangeToOriginal(change) {
-        let textToInsert = '';
-        if (change.modifiedEndLineNumber !== 0) {
-          textToInsert = getModifiedLines(change.modifiedStartLineNumber, change.modifiedEndLineNumber);
-        }
-
+        let textToInsert = ''; if (change.modifiedEndLineNumber !== 0) textToInsert = getModifiedLines(change.modifiedStartLineNumber, change.modifiedEndLineNumber);
         let range;
         if (change.originalEndLineNumber === 0) {
-          const insertAt = change.originalStartLineNumber;
-          const totalLines = beforeModel.getLineCount();
+          const insertAt = change.originalStartLineNumber; const totalLines = beforeModel.getLineCount();
           if (insertAt >= totalLines) {
-            const lastLine = Math.max(1, totalLines);
-            const lastCol = beforeModel.getLineMaxColumn(lastLine);
-            range = new monaco.Range(lastLine, lastCol, lastLine, lastCol);
-            textToInsert = (lastLine === 1 && beforeModel.getValue() === '' ? '' : '\n') + textToInsert;
-          } else {
-            range = new monaco.Range(insertAt + 1, 1, insertAt + 1, 1);
-            textToInsert = textToInsert + '\n';
-          }
+            const lastLine = Math.max(1, totalLines); const lastCol = beforeModel.getLineMaxColumn(lastLine);
+            range = new monaco.Range(lastLine, lastCol, lastLine, lastCol); textToInsert = (lastLine === 1 && beforeModel.getValue() === '' ? '' : '\n') + textToInsert;
+          } else { range = new monaco.Range(insertAt + 1, 1, insertAt + 1, 1); textToInsert = textToInsert + '\n'; }
         } else {
-          const startLine = change.originalStartLineNumber;
-          const endLine = beforeModel.getLineCount();
+          const startLine = change.originalStartLineNumber; const endLine = beforeModel.getLineCount();
           if (change.modifiedEndLineNumber === 0) {
-            if (endLine < beforeModel.getLineCount()) {
-              range = new monaco.Range(startLine, 1, endLine + 1, 1);
-            } else if (startLine > 1) {
-              range = new monaco.Range(startLine - 1, beforeModel.getLineMaxColumn(startLine - 1), endLine, beforeModel.getLineMaxColumn(endLine));
-            } else {
-              range = new monaco.Range(1, 1, endLine, beforeModel.getLineMaxColumn(endLine));
-            }
-          } else {
-            range = new monaco.Range(startLine, 1, change.originalEndLineNumber, beforeModel.getLineMaxColumn(change.originalEndLineNumber));
-          }
+            if (endLine < beforeModel.getLineCount()) range = new monaco.Range(startLine, 1, endLine + 1, 1);
+            else if (startLine > 1) range = new monaco.Range(startLine - 1, beforeModel.getLineMaxColumn(startLine - 1), endLine, beforeModel.getLineMaxColumn(endLine));
+            else range = new monaco.Range(1, 1, endLine, beforeModel.getLineMaxColumn(endLine));
+          } else range = new monaco.Range(startLine, 1, change.originalEndLineNumber, beforeModel.getLineMaxColumn(change.originalEndLineNumber));
         }
-
         beforeModel.pushEditOperations([], [{ range, text: textToInsert }], () => null);
       }
 
-      function getOriginalLines(startLine, endLine) {
-        const lines = [];
-        for (let i = startLine; i <= endLine; i++) {
-          lines.push(beforeModel.getLineContent(i));
-        }
-        return lines.join('\n');
-      }
-
-      function getModifiedLines(startLine, endLine) {
-        const lines = [];
-        for (let i = startLine; i <= endLine; i++) {
-          lines.push(afterModel.getLineContent(i));
-        }
-        return lines.join('\n');
-      }
+      function getOriginalLines(start, end) { const lines = []; for (let i = start; i <= end; i++) lines.push(beforeModel.getLineContent(i)); return lines.join('\n'); }
+      function getModifiedLines(start, end) { const lines = []; for (let i = start; i <= end; i++) lines.push(afterModel.getLineContent(i)); return lines.join('\n'); }
 
       diffEditor.onDidUpdateDiff(rebuildChangeActions);
-      diffOrig.onDidScrollChange(onScroll);
-      diffMod.onDidScrollChange(onScroll);
+      diffOrig.onDidScrollChange(onScroll); diffMod.onDidScrollChange(onScroll);
       window.addEventListener('resize', rebuildChangeActions);
 
       setTimeout(() => {
-        const origNode = document.querySelector('.editor.original');
-        const modNode = document.querySelector('.editor.modified');
+        const origNode = document.querySelector('.editor.original'); const modNode = document.querySelector('.editor.modified');
         if (origNode) origNode.appendChild(document.getElementById('beforePlaceholder'));
         if (modNode) modNode.appendChild(document.getElementById('afterPlaceholder'));
         updatePlaceholders();
       }, 100);
 
       document.getElementById('langSelect').addEventListener('change', (e) => {
-        const lang = e.target.value;
-        monaco.editor.setModelLanguage(beforeModel, lang);
-        monaco.editor.setModelLanguage(afterModel, lang);
+        const lang = e.target.value; monaco.editor.setModelLanguage(beforeModel, lang); monaco.editor.setModelLanguage(afterModel, lang);
       });
 
+      // ========== 👁️ Rich Diff 機能（フェイルセーフ搭載） ==========
+      const richDiffBtn = document.getElementById('richDiffBtn');
+      const diffEditorContainer = document.getElementById('diffEditor');
+      const richDiffViewer = document.getElementById('richDiffViewer');
+      const changeActionsContainer = document.getElementById('changeActions');
+      const jumpControls = document.querySelector('.jump-controls');
+
+      // Monaco表示に戻す処理（エラー時にも使う）
+      const restoreMonacoView = () => {
+        diffEditorContainer.style.display = 'block';
+        richDiffViewer.style.display = 'none';
+        changeActionsContainer.style.display = 'block';
+        if (jumpControls) jumpControls.style.display = isInlineView ? 'none' : 'flex';
+        richDiffBtn.classList.remove('active');
+        isRichDiffView = false;
+        rebuildChangeActions();
+      };
+
+      richDiffBtn.addEventListener('click', () => {
+        if (!isRichDiffView) {
+          try {
+            const bText = beforeModel.getValue();
+            const aText = afterModel.getValue();
+            
+            // 1. MarkdownをパースしてHTML化
+            const bHtml = marked.parse(bText);
+            const aHtml = marked.parse(aText);
+            
+            // 2. HtmlDiffライブラリで差分を生成
+            if (typeof HtmlDiff === 'undefined') throw new Error("HtmlDiff library is missing");
+            const diffedHtml = HtmlDiff.execute(bHtml, aHtml);
+            
+            // 3. 画面に反映
+            richDiffViewer.innerHTML = diffedHtml;
+            
+            // UIの切り替え
+            diffEditorContainer.style.display = 'none';
+            changeActionsContainer.style.display = 'none';
+            if (jumpControls) jumpControls.style.display = 'none';
+            richDiffViewer.style.display = 'block';
+            
+            richDiffBtn.classList.add('active');
+            isRichDiffView = true;
+          } catch (error) {
+            // エラー時はフェイルセーフ発動（元の状態に戻す）
+            console.error("Rich Diff Render Error:", error);
+            restoreMonacoView();
+            showToast('⚠️ Rich Diffの生成に失敗しました（テキスト差分に戻ります）');
+          }
+        } else {
+          // すでにRich Diffモードなら通常に戻す
+          restoreMonacoView();
+        }
+      });
+      // ==============================================================
+
       document.getElementById('swapBtn').addEventListener('click', () => {
-        const temp = beforeModel.getValue();
-        beforeModel.setValue(afterModel.getValue());
-        afterModel.setValue(temp);
+        const temp = beforeModel.getValue(); beforeModel.setValue(afterModel.getValue()); afterModel.setValue(temp);
         updatePlaceholders();
       });
 
@@ -638,34 +593,26 @@
       toggleViewBtn.addEventListener('click', () => {
         isInlineView = !isInlineView;
         diffEditor.updateOptions({ renderSideBySide: !isInlineView });
-        
         if (isInlineView) {
           toggleViewBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="12" y1="3" x2="12" y2="21"/></svg> Split View';
         } else {
           toggleViewBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="12" x2="21" y2="12"/></svg> Inline View';
         }
-        updatePlaceholders();
-        rebuildChangeActions();
+        if (!isRichDiffView && jumpControls) {
+          jumpControls.style.display = isInlineView ? 'none' : 'flex';
+        }
+        updatePlaceholders(); rebuildChangeActions();
       });
 
       const updatePlaceholders = () => {
-        const beforeHasText = beforeModel.getValue().length > 0;
-        const afterHasText = afterModel.getValue().length > 0;
-        
-        const bPh = document.getElementById('beforePlaceholder');
-        const aPh = document.getElementById('afterPlaceholder');
-        
+        const beforeHasText = beforeModel.getValue().length > 0; const afterHasText = afterModel.getValue().length > 0;
+        const bPh = document.getElementById('beforePlaceholder'); const aPh = document.getElementById('afterPlaceholder');
         if (bPh) bPh.style.opacity = (beforeHasText || beforeFocused) ? '0' : '1';
         if (aPh) {
-          if (isInlineView) {
-            aPh.style.opacity = (beforeHasText || afterHasText || beforeFocused || afterFocused) ? '0' : '1';
-          } else {
-            aPh.style.opacity = (afterHasText || afterFocused) ? '0' : '1';
-          }
+          if (isInlineView) aPh.style.opacity = (beforeHasText || afterHasText || beforeFocused || afterFocused) ? '0' : '1';
+          else aPh.style.opacity = (afterHasText || afterFocused) ? '0' : '1';
         }
-        
-        diffOrig.updateOptions({ lineNumbers: (beforeHasText || beforeFocused) ? 'on' : 'off' });
-        diffMod.updateOptions({ lineNumbers: (afterHasText || afterFocused) ? 'on' : 'off' });
+        diffOrig.updateOptions({ lineNumbers: (beforeHasText || beforeFocused) ? 'on' : 'off' }); diffMod.updateOptions({ lineNumbers: (afterHasText || afterFocused) ? 'on' : 'off' });
       };
 
       diffOrig.onDidFocusEditorWidget(() => { beforeFocused = true; updatePlaceholders(); });
@@ -673,58 +620,31 @@
       diffMod.onDidFocusEditorWidget(() => { afterFocused = true; updatePlaceholders(); });
       diffMod.onDidBlurEditorWidget(() => { afterFocused = false; updatePlaceholders(); });
 
-      beforeModel.onDidChangeContent(updatePlaceholders);
-      afterModel.onDidChangeContent(updatePlaceholders);
+      beforeModel.onDidChangeContent(updatePlaceholders); afterModel.onDidChangeContent(updatePlaceholders);
 
       const jump = (dir) => {
-        if (!diffEditor) return;
-        const changes = diffEditor.getLineChanges();
-        if (!changes || changes.length === 0) return;
-        const modifiedEditor = diffEditor.getModifiedEditor();
-        const currentLine = modifiedEditor.getPosition().lineNumber;
+        if (!diffEditor) return; const changes = diffEditor.getLineChanges(); if (!changes || changes.length === 0) return;
+        const modifiedEditor = diffEditor.getModifiedEditor(); const currentLine = modifiedEditor.getPosition().lineNumber;
         let target;
         if(dir === 'next') target = changes.find(c => c.modifiedStartLineNumber > currentLine) || changes[0];
-        else {
-          const prevs = changes.filter(c => c.modifiedStartLineNumber < currentLine);
-          target = prevs.length > 0 ? prevs[prevs.length - 1] : changes[changes.length - 1];
-        }
-        modifiedEditor.revealLineInCenter(target.modifiedStartLineNumber);
-        modifiedEditor.setPosition({ lineNumber: target.modifiedStartLineNumber, column: 1 });
-        modifiedEditor.focus();
+        else { const prevs = changes.filter(c => c.modifiedStartLineNumber < currentLine); target = prevs.length > 0 ? prevs[prevs.length - 1] : changes[changes.length - 1]; }
+        modifiedEditor.revealLineInCenter(target.modifiedStartLineNumber); modifiedEditor.setPosition({ lineNumber: target.modifiedStartLineNumber, column: 1 }); modifiedEditor.focus();
       };
-      document.getElementById('nextDiffBtn').addEventListener('click', () => jump('next'));
-      document.getElementById('prevDiffBtn').addEventListener('click', () => jump('prev'));
+      document.getElementById('nextDiffBtn').addEventListener('click', () => jump('next')); document.getElementById('prevDiffBtn').addEventListener('click', () => jump('prev'));
 
       function setupEditorDrop(editorInstance, model) {
         const container = editorInstance.getContainerDomNode();
-        container.addEventListener('dragover', (e) => {
-          e.preventDefault();
-          container.classList.add('drag-over');
-        });
-        container.addEventListener('dragleave', () => {
-          container.classList.remove('drag-over');
-        });
+        container.addEventListener('dragover', (e) => { e.preventDefault(); container.classList.add('drag-over'); });
+        container.addEventListener('dragleave', () => container.classList.remove('drag-over'));
         container.addEventListener('drop', (e) => {
-          e.preventDefault();
-          container.classList.remove('drag-over');
+          e.preventDefault(); container.classList.remove('drag-over');
           if (e.dataTransfer.files.length > 0) {
-            const r = new FileReader();
-            r.onload = (ev) => {
-              model.setValue(ev.target.result);
-              updatePlaceholders();
-            };
-            r.readAsText(e.dataTransfer.files[0]);
+            const r = new FileReader(); r.onload = (ev) => { model.setValue(ev.target.result); updatePlaceholders(); }; r.readAsText(e.dataTransfer.files[0]);
           }
         });
       }
-      
-      setTimeout(() => {
-        setupEditorDrop(diffOrig, beforeModel);
-        setupEditorDrop(diffMod, afterModel);
-      }, 100);
-
-      loadFromUrl();
-      setTimeout(updatePlaceholders, 150);
+      setTimeout(() => { setupEditorDrop(diffOrig, beforeModel); setupEditorDrop(diffMod, afterModel); }, 100);
+      loadFromUrl(); setTimeout(updatePlaceholders, 150);
     });
 
     document.getElementById('clearBtn').addEventListener('click', () => {
@@ -734,18 +654,15 @@
     });
 
     document.getElementById('shareBtn').addEventListener('click', () => {
-      const lang = document.getElementById('langSelect').value;
-      const theme = document.getElementById('themeSelect').value;
+      const lang = document.getElementById('langSelect').value; const theme = document.getElementById('themeSelect').value;
       const data = JSON.stringify({ b: beforeModel.getValue(), a: afterModel.getValue(), l: lang, t: theme });
       const compressed = LZString.compressToEncodedURIComponent(data);
       const url = window.location.href.split('#')[0] + '#' + compressed;
-      
-      const showToast = () => { const t = document.getElementById('toast'); t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2000); };
-      if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(url).then(showToast);
+      if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(url).then(() => showToast('Diff URL copied to clipboard!'));
       else {
         const ta = document.createElement("textarea"); ta.value = url; ta.style.position = "fixed"; ta.style.left = "-9999px";
         document.body.appendChild(ta); ta.focus(); ta.select();
-        try { document.execCommand('copy'); showToast(); } catch (err) {}
+        try { document.execCommand('copy'); showToast('Diff URL copied to clipboard!'); } catch (err) {}
         document.body.removeChild(ta);
       }
     });
@@ -758,13 +675,9 @@
           beforeModel.setValue(d.b || ''); afterModel.setValue(d.a || ''); 
           if (d.l) {
             document.getElementById('langSelect').value = d.l;
-            monaco.editor.setModelLanguage(beforeModel, d.l);
-            monaco.editor.setModelLanguage(afterModel, d.l);
+            monaco.editor.setModelLanguage(beforeModel, d.l); monaco.editor.setModelLanguage(afterModel, d.l);
           }
-          if (d.t && THEMES[d.t]) {
-            document.getElementById('themeSelect').value = d.t;
-            applyTheme(d.t);
-          }
+          if (d.t && THEMES[d.t]) { document.getElementById('themeSelect').value = d.t; applyTheme(d.t); }
         } catch (e) {}
       }
     }
