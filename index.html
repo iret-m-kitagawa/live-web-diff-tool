@@ -364,7 +364,9 @@
         lineNumbersMinChars: 2, lineDecorationsWidth: 12, folding: false, glyphMargin: false,               
         scrollbar: { verticalScrollbarSize: 14, horizontal: 'hidden', useShadows: false }, 
         hideCursorInOverviewRuler: true, renderLineHighlight: 'none',
-        minimap: { enabled: true, renderCharacters: false, scale: 0.75 }, renderOverviewRuler: false
+        minimap: { enabled: true, renderCharacters: false, scale: 0.75 }, renderOverviewRuler: false,
+        occurrencesHighlight: false,
+        selectionHighlight: false
       };
 
       beforeModel = monaco.editor.createModel('', 'plaintext');
