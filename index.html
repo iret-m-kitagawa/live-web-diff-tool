@@ -364,7 +364,7 @@
         lineNumbersMinChars: 2, lineDecorationsWidth: 12, folding: false, glyphMargin: false,               
         scrollbar: { verticalScrollbarSize: 14, horizontal: 'hidden', useShadows: false }, 
         hideCursorInOverviewRuler: true, renderLineHighlight: 'none',
-        minimap: { enabled: true, renderCharacters: false, scale: 0.75 }, renderOverviewRuler: false,
+        minimap: { enabled: true, renderCharacters: false, scale: 0.75 }, renderOverviewRuler: true,
         occurrencesHighlight: false,
         selectionHighlight: false
       };
@@ -381,8 +381,8 @@
       diffOrig = diffEditor.getOriginalEditor();
       diffMod = diffEditor.getModifiedEditor();
       
-      diffOrig.updateOptions({ wordWrap: 'on', renderOverviewRuler: false });
-      diffMod.updateOptions({ wordWrap: 'on', renderOverviewRuler: false });
+      diffOrig.updateOptions({ wordWrap: 'on', renderOverviewRuler: true });
+      diffMod.updateOptions({ wordWrap: 'on', renderOverviewRuler: true });
 
       document.getElementById('fontSizeSelect').addEventListener('change', (e) => {
         const size = parseInt(e.target.value, 10); localStorage.setItem('diffToolFontSize', e.target.value);
