@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Noto+Sans+Mono:wght@400;700&display=swap" rel="stylesheet">
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.5.0/lz-string.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lzma@2.3.2/src/lzma_worker-min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 
   <script>
@@ -362,9 +362,9 @@
         fontFamily: "'Source Han Mono', '源ノ等幅', 'Source Han Code JP', '源ノ角ゴシック Code JP', 'JetBrains Mono', 'Noto Sans Mono', Consolas, Menlo, monospace",
         fontLigatures: true, scrollBeyondLastLine: false, padding: { top: 16, bottom: 16 },
         lineNumbersMinChars: 2, lineDecorationsWidth: 12, folding: false, glyphMargin: false,               
-        scrollbar: { verticalScrollbarSize: 14, horizontal: 'hidden', useShadows: false }, 
+        scrollbar: { verticalScrollbarSize: 8, horizontal: 'hidden', useShadows: false }, 
         hideCursorInOverviewRuler: true, renderLineHighlight: 'none',
-        minimap: { enabled: true, renderCharacters: false, scale: 0.75 }, renderOverviewRuler: true,
+        minimap: { enabled: false }, renderOverviewRuler: true,
         occurrencesHighlight: false,
         selectionHighlight: false
       };
@@ -646,7 +646,13 @@
       beforeFocused = false; afterFocused = false;
     });
 
+    // LZMAによる非同期圧縮処理
     document.getElementById('shareBtn').addEventListener('click', () => {
+      const btn = document.getElementById('shareBtn');
+      const originalHtml = btn.innerHTML;
+      btn.innerHTML = '⏳ Compressing...';
+      btn.style.pointerEvents = 'none';
+
       const lang = document.getElementById('langSelect').value;
       const data = JSON.stringify({ 
         b: beforeModel.getValue(), 
@@ -654,35 +660,70 @@
         l: lang, 
         m: isRichDiffView 
       });
-      const compressed = LZString.compressToEncodedURIComponent(data);
-      const url = window.location.href.split('#')[0] + '#' + compressed;
-      if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(url).then(() => showToast('Diff URL copied to clipboard!'));
-      else {
-        const ta = document.createElement("textarea"); ta.value = url; ta.style.position = "fixed"; ta.style.left = "-9999px";
-        document.body.appendChild(ta); ta.focus(); ta.select();
-        try { document.execCommand('copy'); showToast('Diff URL copied to clipboard!'); } catch (err) {}
-        document.body.removeChild(ta);
-      }
+
+      LZMA.compress(data, 9, function(result, error) {
+        btn.innerHTML = originalHtml;
+        btn.style.pointerEvents = 'auto';
+
+        if (error) {
+          showToast('⚠️ 圧縮に失敗しました');
+          return;
+        }
+
+        let binary = '';
+        for (let i = 0; i < result.length; i++) {
+          binary += String.fromCharCode(result[i] & 0xff);
+        }
+        const base64Url = btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        
+        const url = window.location.href.split('#')[0] + '#' + base64Url;
+
+        if (navigator.clipboard && window.isSecureContext) {
+          navigator.clipboard.writeText(url).then(() => showToast('Diff URL copied to clipboard!'));
+        } else {
+          const ta = document.createElement("textarea"); ta.value = url; ta.style.position = "fixed"; ta.style.left = "-9999px";
+          document.body.appendChild(ta); ta.focus(); ta.select();
+          try { document.execCommand('copy'); showToast('Diff URL copied to clipboard!'); } catch (err) {}
+          document.body.removeChild(ta);
+        }
+      });
     });
 
+    // LZMAによる非同期解凍処理
     function loadFromUrl() {
       const h = window.location.hash.slice(1);
       if (h && beforeModel) {
         try {
-          const d = JSON.parse(LZString.decompressFromEncodedURIComponent(h));
-          beforeModel.setValue(d.b || ''); afterModel.setValue(d.a || ''); 
-          if (d.l) {
-            document.getElementById('langSelect').value = d.l;
-            monaco.editor.setModelLanguage(beforeModel, d.l); monaco.editor.setModelLanguage(afterModel, d.l);
-          }
+          let base64 = h.replace(/-/g, '+').replace(/_/g, '/');
+          while (base64.length % 4) { base64 += '='; }
+          const binary = atob(base64);
           
-          if (d.m) {
-            setTimeout(() => {
-              const btn = document.getElementById('richDiffBtn');
-              if (btn && !isRichDiffView) btn.click();
-            }, 150);
+          const bytes = new Array(binary.length);
+          for (let i = 0; i < binary.length; i++) {
+            bytes[i] = binary.charCodeAt(i);
           }
-        } catch (e) {}
+
+          LZMA.decompress(bytes, function(result, error) {
+            if (error || !result) return;
+            try {
+              const d = JSON.parse(result);
+              beforeModel.setValue(d.b || ''); afterModel.setValue(d.a || ''); 
+              if (d.l) {
+                document.getElementById('langSelect').value = d.l;
+                monaco.editor.setModelLanguage(beforeModel, d.l); monaco.editor.setModelLanguage(afterModel, d.l);
+              }
+              
+              if (d.m) {
+                setTimeout(() => {
+                  const btn = document.getElementById('richDiffBtn');
+                  if (btn && !isRichDiffView) btn.click();
+                }, 150);
+              }
+            } catch (e) {}
+          });
+        } catch (e) {
+          console.error("URL Load Error:", e);
+        }
       }
     }
   </script>
