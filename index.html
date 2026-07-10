@@ -367,7 +367,9 @@
         minimap: { enabled: false }, renderOverviewRuler: true,
         occurrencesHighlight: false,
         selectionHighlight: false,
-        unicodeHighlight: { ambiguousCharacters: false, invisibleCharacters: false }
+        unicodeHighlight: { ambiguousCharacters: false, invisibleCharacters: false },
+        smoothScrolling: true,
+        cursorSmoothCaretAnimation: 'on',
       };
 
       beforeModel = monaco.editor.createModel('', 'plaintext');
