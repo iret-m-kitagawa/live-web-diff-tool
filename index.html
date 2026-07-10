@@ -44,6 +44,8 @@
       background-color: var(--bg-main); color: var(--text-main);
       overflow: hidden; display: flex; flex-direction: column;
     }
+    
+    /* ===== Toolbar ===== */
     .toolbar {
       height: 32px; background-color: var(--bg-panel); border-bottom: 1px solid var(--border-color);
       display: flex; justify-content: space-between; align-items: center; padding: 0 12px; font-size: 12px;
@@ -66,6 +68,7 @@
     .share-btn { background-color: #238636; color: #ffffff; border: 1px solid rgba(240, 246, 252, 0.1); }
     .share-btn:hover { background-color: #2ea043; color: #ffffff; }
 
+    /* ===== Toast ===== */
     .toast {
       position: fixed; top: 40px; right: 16px; background-color: var(--text-main); color: var(--bg-main);
       padding: 6px 12px; border-radius: 4px; font-weight: bold; font-size: 12px;
@@ -76,29 +79,94 @@
 
     .main-container { display: flex; flex: 1; position: relative; min-height: 0; }
 
-    /* ===== Markdown View Viewer Styles ===== */
+    /* ===== Markdown View Viewer Styles (GitHub Styling Replica) ===== */
     .rich-diff-viewer {
-      display: none; width: 100%; height: 100%; padding: 32px 48px; overflow-y: auto;
-      background-color: var(--bg-main); color: var(--text-main); line-height: 1.6; font-size: 15px;
+      display: none; width: 100%; height: 100%; 
+      padding: 32px max(32px, calc((100% - 900px) / 2)); 
+      overflow-y: auto;
+      background-color: var(--bg-main); color: var(--text-main); 
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+      font-size: 14px; /* GitHubのベースサイズに準拠 */
+      line-height: 1.5;
+      word-wrap: break-word;
     }
-    .rich-diff-viewer h1, .rich-diff-viewer h2, .rich-diff-viewer h3, .rich-diff-viewer h4 {
-      border-bottom: 1px solid var(--border-color); padding-bottom: 0.3em; margin-top: 1.5em;
+    .rich-diff-viewer > *:first-child { margin-top: 0 !important; }
+    .rich-diff-viewer > *:last-child { margin-bottom: 0 !important; }
+
+    /* Typography */
+    .rich-diff-viewer h1, .rich-diff-viewer h2, .rich-diff-viewer h3, 
+    .rich-diff-viewer h4, .rich-diff-viewer h5, .rich-diff-viewer h6 {
+      margin-top: 24px; margin-bottom: 16px; font-weight: 600; line-height: 1.25;
     }
-    .rich-diff-viewer table { border-collapse: collapse; width: 100%; margin-bottom: 16px; }
-    .rich-diff-viewer th, .rich-diff-viewer td { border: 1px solid var(--border-color); padding: 8px 12px; }
-    .rich-diff-viewer th { background-color: var(--bg-panel); }
-    .rich-diff-viewer pre { background-color: var(--bg-panel); padding: 16px; border-radius: 6px; overflow-x: auto; }
-    .rich-diff-viewer code {
-      font-family: 'JetBrains Mono', Consolas, monospace; background-color: var(--bg-panel); padding: 2px 4px; border-radius: 4px;
+    .rich-diff-viewer h1 { font-size: 2em; border-bottom: 1px solid var(--border-color); padding-bottom: .3em; }
+    .rich-diff-viewer h2 { font-size: 1.5em; border-bottom: 1px solid var(--border-color); padding-bottom: .3em; }
+    .rich-diff-viewer h3 { font-size: 1.25em; }
+    .rich-diff-viewer h4 { font-size: 1em; }
+
+    .rich-diff-viewer p, .rich-diff-viewer blockquote, .rich-diff-viewer ul, 
+    .rich-diff-viewer ol, .rich-diff-viewer dl, .rich-diff-viewer table, 
+    .rich-diff-viewer pre, .rich-diff-viewer details {
+      margin-top: 0; margin-bottom: 16px;
     }
+
+    /* Links */
+    .rich-diff-viewer a { color: #58a6ff; text-decoration: none; }
+    .rich-diff-viewer a:hover { text-decoration: underline; }
+    [data-theme*="light"] .rich-diff-viewer a { color: #0969da; }
+
+    /* Blockquote */
     .rich-diff-viewer blockquote {
-      border-left: 4px solid var(--border-color); margin: 0; padding-left: 16px; color: var(--text-muted);
+      padding: 0 1em; color: var(--text-muted); 
+      border-left: .25em solid var(--border-color); 
+      margin: 0 0 16px 0;
     }
+
+    /* Horizontal Rule */
+    .rich-diff-viewer hr {
+      height: .25em; padding: 0; margin: 24px 0; background-color: var(--border-color); border: 0;
+    }
+
+    /* Lists */
+    .rich-diff-viewer ul, .rich-diff-viewer ol { padding-left: 2em; }
+
+    /* Table (GitHub Replica) */
+    .rich-diff-viewer table { 
+      border-spacing: 0; border-collapse: collapse; 
+      margin: 0 auto 16px auto; 
+      display: block; width: max-content; max-width: 100%; overflow-x: auto;
+    }
+    .rich-diff-viewer tr { background-color: var(--bg-main); border-top: 1px solid var(--border-color); }
+    /* 偶数行の背景色（本家GitHubの透過色を再現） */
+    .rich-diff-viewer tr:nth-child(2n) { background-color: rgba(141, 149, 159, 0.04); }
+    [data-theme*="light"] .rich-diff-viewer tr:nth-child(2n) { background-color: #f6f8fa; }
+    .rich-diff-viewer th, .rich-diff-viewer td { padding: 6px 13px; border: 1px solid var(--border-color); }
+    .rich-diff-viewer th { font-weight: 600; }
+
+    /* Inline Code */
+    .rich-diff-viewer code {
+      padding: .2em .4em; margin: 0; font-size: 85%; white-space: break-spaces;
+      background-color: rgba(110, 118, 125, 0.15); border-radius: 6px;
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    }
+    [data-theme*="light"] .rich-diff-viewer code { background-color: rgba(175, 184, 193, 0.2); }
+
+    /* Code Blocks */
+    .rich-diff-viewer pre {
+      padding: 16px; overflow: auto; font-size: 85%; line-height: 1.45;
+      background-color: var(--bg-panel); border-radius: 6px;
+    }
+    .rich-diff-viewer pre code {
+      display: inline; max-width: auto; padding: 0; margin: 0; overflow: visible;
+      line-height: inherit; word-wrap: normal; background-color: transparent; border: 0; white-space: pre;
+    }
+
+    /* Diff Highlight Colors */
     .rich-diff-viewer ins { background-color: rgba(46, 160, 67, 0.25); color: #3fb950; text-decoration: none; }
     .rich-diff-viewer del { background-color: rgba(248, 81, 73, 0.25); color: #ff7b72; text-decoration: line-through; }
     [data-theme*="light"] .rich-diff-viewer ins { background-color: #e6ffec; color: #238636; }
     [data-theme*="light"] .rich-diff-viewer del { background-color: #ffebe9; color: #da3633; }
 
+    /* ===== Jump Controls ===== */
     .jump-controls {
       position: absolute; bottom: 24px; right: 48px; display: flex; flex-direction: column; gap: 8px; z-index: 100;
     }
@@ -109,6 +177,7 @@
     .jump-btn:hover { background-color: var(--border-color); color: var(--text-main); transform: scale(1.05); }
     .jump-btn:active { transform: scale(0.95); }
 
+    /* ===== Placeholders ===== */
     .editor-placeholder {
       position: absolute; inset: 0; display: flex; justify-content: center; align-items: center;
       pointer-events: none; z-index: 60; user-select: none; transition: opacity 0.15s ease-out;
@@ -121,6 +190,7 @@
     .placeholder-title { color: var(--text-muted); opacity: 0.5; font-family: 'JetBrains Mono', Consolas, monospace; font-weight: bold; letter-spacing: 2px; }
     .placeholder-subtitle { color: var(--text-muted); opacity: 0.35; font-size: 13px; }
 
+    /* ===== Monaco Editor Overrides ===== */
     :root, body, .monaco-editor, .monaco-diff-editor {
       --vscode-scrollbar-shadow: transparent !important; --vscode-widget-shadow: transparent !important; --vscode-sash-hoverBorder: transparent !important;
     }
@@ -136,6 +206,7 @@
       content: ""; position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; background-color: var(--border-color); transform: translateX(-50%);
     }
 
+    /* ===== Custom Change Actions (Merge Buttons) ===== */
     #changeActions { position: absolute; top: 0; left: 0; right: 0; bottom: 0; pointer-events: none; z-index: 50; overflow: hidden; }
     .change-action-group {
       position: absolute; display: flex; flex-direction: row; gap: 2px; pointer-events: auto;
