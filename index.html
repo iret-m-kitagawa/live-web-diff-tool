@@ -86,7 +86,7 @@
       overflow-y: auto;
       background-color: var(--bg-main); color: var(--text-main); 
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
-      font-size: 14px; /* GitHubのベースサイズに準拠 */
+      font-size: 14px; 
       line-height: 1.5;
       word-wrap: break-word;
     }
@@ -129,14 +129,13 @@
     /* Lists */
     .rich-diff-viewer ul, .rich-diff-viewer ol { padding-left: 2em; }
 
-    /* Table (GitHub Replica) */
+    /* Table (GitHub Replica - 左寄せ) */
     .rich-diff-viewer table { 
       border-spacing: 0; border-collapse: collapse; 
-      margin: 0 auto 16px auto; 
+      margin-bottom: 16px; 
       display: block; width: max-content; max-width: 100%; overflow-x: auto;
     }
     .rich-diff-viewer tr { background-color: var(--bg-main); border-top: 1px solid var(--border-color); }
-    /* 偶数行の背景色（本家GitHubの透過色を再現） */
     .rich-diff-viewer tr:nth-child(2n) { background-color: rgba(141, 149, 159, 0.04); }
     [data-theme*="light"] .rich-diff-viewer tr:nth-child(2n) { background-color: #f6f8fa; }
     .rich-diff-viewer th, .rich-diff-viewer td { padding: 6px 13px; border: 1px solid var(--border-color); }
