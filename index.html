@@ -366,7 +366,8 @@
         hideCursorInOverviewRuler: true, renderLineHighlight: 'none',
         minimap: { enabled: false }, renderOverviewRuler: true,
         occurrencesHighlight: false,
-        selectionHighlight: false
+        selectionHighlight: false,
+        unicodeHighlight: { ambiguousCharacters: false, invisibleCharacters: false }
       };
 
       beforeModel = monaco.editor.createModel('', 'plaintext');
