@@ -141,13 +141,13 @@
     }
 
     /* Diff Highlight Colors (htmldiff-jsの専用クラスのみに適用) */
-    .rich-diff-viewer ins.diffins { background-color: rgba(46, 160, 67, 0.25); color: #3fb950; text-decoration: none; }
-    .rich-diff-viewer del.diffdel { background-color: rgba(248, 81, 73, 0.25); color: #ff7b72; text-decoration: line-through; }
-    [data-theme*="light"] .rich-diff-viewer ins.diffins { background-color: #e6ffec; color: #238636; }
-    [data-theme*="light"] .rich-diff-viewer del.diffdel { background-color: #ffebe9; color: #da3633; }
+    .rich-diff-viewer ins.diffins, .rich-diff-viewer ins.diffmod { background-color: rgba(46, 160, 67, 0.25); color: #3fb950; text-decoration: none; }
+    .rich-diff-viewer del.diffdel, .rich-diff-viewer del.diffmod { background-color: rgba(248, 81, 73, 0.25); color: #ff7b72; text-decoration: line-through; }
+    [data-theme*="light"] .rich-diff-viewer ins.diffins, [data-theme*="light"] .rich-diff-viewer ins.diffmod { background-color: #e6ffec; color: #238636; }
+    [data-theme*="light"] .rich-diff-viewer del.diffdel, [data-theme*="light"] .rich-diff-viewer del.diffmod { background-color: #ffebe9; color: #da3633; }
 
     /* Markdown由来の通常の取り消し線 (差分ではないただの文字装飾) */
-    .rich-diff-viewer del:not(.diffdel) { color: var(--text-muted); text-decoration: line-through; background-color: transparent; }
+    .rich-diff-viewer del:not(.diffdel):not(.diffmod) { color: var(--text-muted); text-decoration: line-through; background-color: transparent; }
 
     /* ===== Jump Controls ===== */
     .jump-controls {
