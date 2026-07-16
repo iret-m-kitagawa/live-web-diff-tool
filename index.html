@@ -216,6 +216,7 @@
         <option value="noctis-hc">Noctis High Contrast</option>
       </select>
       <select id="langSelect" class="theme-select" style="margin-left: 8px;">
+        <option value="markdown">Markdown</option>
         <option value="plaintext">Plaintext</option>
         <option value="javascript">JavaScript / TS</option>
         <option value="python">Python</option>
@@ -224,7 +225,6 @@
         <option value="json">JSON</option>
         <option value="java">Java</option>
         <option value="sql">SQL</option>
-        <option value="markdown">Markdown</option>
       </select>
       <select id="fontSizeSelect" class="theme-select" style="margin-left: 8px;">
         <option value="11">11px</option>
@@ -368,7 +368,7 @@
       if (document.getElementById('fontSizeSelect')) document.getElementById('fontSizeSelect').value = savedFontSize;
 
       const commonOptions = {
-        language: 'plaintext', wordWrap: 'on', automaticLayout: true, fontSize: parseInt(savedFontSize, 10),
+        language: 'markdown', wordWrap: 'on', automaticLayout: true, fontSize: parseInt(savedFontSize, 10),
         fontFamily: "'Source Han Mono', '源ノ等幅', 'Source Han Code JP', '源ノ角ゴシック Code JP', 'JetBrains Mono', 'Noto Sans Mono', Consolas, Menlo, monospace",
         fontLigatures: true, scrollBeyondLastLine: false, padding: { top: 16, bottom: 16 },
         lineNumbersMinChars: 2, lineDecorationsWidth: 12, folding: false, glyphMargin: false,               
@@ -382,8 +382,8 @@
         cursorSmoothCaretAnimation: 'on',
       };
 
-      beforeModel = monaco.editor.createModel('', 'plaintext');
-      afterModel = monaco.editor.createModel('', 'plaintext');
+      beforeModel = monaco.editor.createModel('', 'markdown');
+      afterModel = monaco.editor.createModel('', 'markdown');
 
       diffEditor = monaco.editor.createDiffEditor(document.getElementById('diffEditor'), {
         ...commonOptions, originalEditable: true, readOnly: false, renderSideBySide: true, ignoreTrimWhitespace: false,
