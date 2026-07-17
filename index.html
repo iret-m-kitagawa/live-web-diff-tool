@@ -36,7 +36,10 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.js"></script>
 
   <style>
-    :root { --split-x: 0.5; }
+    :root { 
+      --split-x: 0.5; 
+      --md-width: 900px;
+    }
     * { box-sizing: border-box; }
     body, html {
       margin: 0; padding: 0; height: 100vh; width: 100vw;
@@ -82,11 +85,11 @@
     /* ===== Markdown View Viewer Styles ===== */
     .rich-diff-viewer {
       display: none; width: 100%; height: 100%; 
-      padding: 32px max(32px, calc((100% - 900px) / 2)); 
+      padding: 32px max(32px, calc((100% - var(--md-width)) / 2)); 
       overflow-y: auto;
       background-color: var(--bg-main); color: var(--text-main); 
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
-      font-size: 14px; line-height: 1.5; word-wrap: break-word;
+      font-size: var(--md-font-size, 14px); line-height: 1.5; word-wrap: break-word;
     }
     .rich-diff-viewer > *:first-child { margin-top: 0 !important; }
     .rich-diff-viewer > *:last-child { margin-bottom: 0 !important; }
@@ -125,14 +128,14 @@
     .rich-diff-viewer th { font-weight: 600; }
 
     .rich-diff-viewer code {
-      padding: .2em .4em; margin: 0; font-size: 85%; white-space: break-spaces;
+      padding: .2em .4em; margin: 0; font-size: 90%; white-space: break-spaces;
       background-color: rgba(110, 118, 125, 0.15); border-radius: 6px;
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     }
     [data-theme*="light"] .rich-diff-viewer code { background-color: rgba(175, 184, 193, 0.2); }
 
     .rich-diff-viewer pre {
-      padding: 16px; overflow: auto; font-size: 85%; line-height: 1.45;
+      padding: 16px; overflow: auto; font-size: 90%; line-height: 1.45;
       background-color: var(--bg-panel); border-radius: 6px;
     }
     .rich-diff-viewer pre code {
@@ -140,14 +143,32 @@
       line-height: inherit; background-color: transparent; border: 0; white-space: pre;
     }
 
-    /* Diff Highlight Colors (htmldiff-jsの専用クラスのみに適用) */
+    /* Diff Highlight Colors */
     .rich-diff-viewer ins.diffins, .rich-diff-viewer ins.diffmod { background-color: rgba(46, 160, 67, 0.25); color: #3fb950; text-decoration: none; }
     .rich-diff-viewer del.diffdel, .rich-diff-viewer del.diffmod { background-color: rgba(248, 81, 73, 0.25); color: #ff7b72; text-decoration: line-through; }
     [data-theme*="light"] .rich-diff-viewer ins.diffins, [data-theme*="light"] .rich-diff-viewer ins.diffmod { background-color: #e6ffec; color: #238636; }
     [data-theme*="light"] .rich-diff-viewer del.diffdel, [data-theme*="light"] .rich-diff-viewer del.diffmod { background-color: #ffebe9; color: #da3633; }
 
-    /* Markdown由来の通常の取り消し線 (差分ではないただの文字装飾) */
+    /* Markdown由来の通常の取り消し線 */
     .rich-diff-viewer del:not(.diffdel):not(.diffmod) { color: var(--text-muted); text-decoration: line-through; background-color: transparent; }
+
+    /* ===== Markdown View Resizer (左右対称フローティング・ハンドル) ===== */
+    .md-resizer {
+      position: absolute; top: 0; bottom: 0; width: 12px; cursor: col-resize; z-index: 150;
+      display: none; align-items: center; justify-content: center;
+    }
+    .md-resizer.left  { left: calc(50% - var(--md-width) / 2 - 6px); }
+    .md-resizer.right { left: calc(50% + var(--md-width) / 2 - 6px); }
+
+    .md-resizer::after {
+      content: ""; height: 32px; width: 4px; border-radius: 2px;
+      background-color: var(--border-color);
+      transition: background-color 0.15s, transform 0.15s;
+    }
+    .md-resizer:hover::after, .md-resizer.dragging::after {
+      background-color: #0a84ff; transform: scaleX(1.5);
+    }
+    body.is-resizing { user-select: none; cursor: col-resize; }
 
     /* ===== Jump Controls ===== */
     .jump-controls {
@@ -186,6 +207,11 @@
     }
     body .monaco-sash.vertical::after {
       content: ""; position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; background-color: var(--border-color); transform: translateX(-50%);
+    }
+
+    /* Monaco内部のレイアウト崩れを防ぐため、border-boxの影響を遮断する */
+    .monaco-editor *, .monaco-diff-editor * {
+      box-sizing: content-box !important;
     }
 
     /* ===== Custom Change Actions (Merge Buttons) ===== */
@@ -263,6 +289,10 @@
   <div class="main-container" id="mainContainer">
     <div id="diffEditor" style="width: 100%; height: 100%;"></div>
     <div id="richDiffViewer" class="rich-diff-viewer"></div>
+    
+    <div id="mdResizerLeft" class="md-resizer left" data-dir="left"></div>
+    <div id="mdResizerRight" class="md-resizer right" data-dir="right"></div>
+    
     <div id="changeActions"></div>
 
     <div class="jump-controls">
@@ -342,6 +372,41 @@
       setTimeout(() => t.classList.remove('show'), 2500); 
     };
 
+    // ===== Markdown View Width Resizer Logic =====
+    const mdResizers = document.querySelectorAll('.md-resizer');
+    let isMdResizing = false;
+    let activeResizerDir = null;
+
+    mdResizers.forEach(resizer => {
+      resizer.addEventListener('mousedown', (e) => {
+        isMdResizing = true;
+        activeResizerDir = resizer.getAttribute('data-dir');
+        resizer.classList.add('dragging');
+        document.body.classList.add('is-resizing');
+      });
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (!isMdResizing) return;
+      const center = window.innerWidth / 2;
+      
+      const dist = activeResizerDir === 'left' ? (center - e.clientX) : (e.clientX - center);
+      let newWidth = dist * 2;
+      
+      if (newWidth < 400) newWidth = 400; 
+      if (newWidth > window.innerWidth - 64) newWidth = window.innerWidth - 64; 
+      
+      document.documentElement.style.setProperty('--md-width', `${newWidth}px`);
+    });
+
+    document.addEventListener('mouseup', () => {
+      if (isMdResizing) {
+        isMdResizing = false;
+        mdResizers.forEach(r => r.classList.remove('dragging'));
+        document.body.classList.remove('is-resizing');
+      }
+    });
+
     require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs' } });
     require(['vs/editor/editor.main'], function () {
       
@@ -366,6 +431,10 @@
 
       const savedFontSize = localStorage.getItem('diffToolFontSize') || '12';
       if (document.getElementById('fontSizeSelect')) document.getElementById('fontSizeSelect').value = savedFontSize;
+
+      // 補正処理: 標準プロポーショナルフォント向けに「Monacoサイズ ＋ 2px」を適用
+      const initialMdFontSize = parseInt(savedFontSize, 10) + 2;
+      document.documentElement.style.setProperty('--md-font-size', `${initialMdFontSize}px`);
 
       const commonOptions = {
         language: 'markdown', wordWrap: 'on', automaticLayout: true, fontSize: parseInt(savedFontSize, 10),
@@ -397,9 +466,18 @@
       diffOrig.updateOptions({ wordWrap: 'on', renderOverviewRuler: true });
       diffMod.updateOptions({ wordWrap: 'on', renderOverviewRuler: true });
 
+      // Webフォントの読み込み完了を待ってから、文字幅を強制再計算させる
+      document.fonts.ready.then(() => {
+        monaco.editor.remeasureFonts();
+        if (diffEditor) diffEditor.layout();
+      });
+
       document.getElementById('fontSizeSelect').addEventListener('change', (e) => {
         const size = parseInt(e.target.value, 10); localStorage.setItem('diffToolFontSize', e.target.value);
         diffEditor.updateOptions({ fontSize: size }); diffOrig.updateOptions({ fontSize: size }); diffMod.updateOptions({ fontSize: size });
+        
+        // 補正処理: 標準プロポーショナルフォント向けに「Monacoサイズ ＋ 2px」で連動更新
+        document.documentElement.style.setProperty('--md-font-size', `${size + 2}px`);
         rebuildChangeActions();
       });
 
@@ -551,6 +629,7 @@
       const restoreMonacoView = () => {
         diffEditorContainer.style.display = 'block';
         richDiffViewer.style.display = 'none';
+        mdResizers.forEach(r => r.style.display = 'none');
         changeActionsContainer.style.display = 'block';
         if (jumpControls) jumpControls.style.display = isInlineView ? 'none' : 'flex';
         richDiffBtn.classList.remove('active');
@@ -576,6 +655,7 @@
             changeActionsContainer.style.display = 'none';
             if (jumpControls) jumpControls.style.display = 'none';
             richDiffViewer.style.display = 'block';
+            mdResizers.forEach(r => r.style.display = 'flex');
             
             richDiffBtn.classList.add('active');
             isRichDiffView = true;
