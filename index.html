@@ -36,10 +36,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.js"></script>
 
   <style>
-    :root { 
-      --split-x: 0.5; 
-      --md-width: 900px;
-    }
+    :root { --split-x: 0.5; }
     * { box-sizing: border-box; }
     body, html {
       margin: 0; padding: 0; height: 100vh; width: 100vw;
@@ -85,7 +82,7 @@
     /* ===== Markdown View Viewer Styles ===== */
     .rich-diff-viewer {
       display: none; width: 100%; height: 100%; 
-      padding: 32px max(32px, calc((100% - var(--md-width)) / 2)); 
+      padding: 32px max(32px, calc((100% - 900px) / 2)); 
       overflow-y: auto;
       background-color: var(--bg-main); color: var(--text-main); 
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
@@ -95,82 +92,113 @@
     .rich-diff-viewer > *:last-child { margin-bottom: 0 !important; }
 
     .rich-diff-viewer h1, .rich-diff-viewer h2, .rich-diff-viewer h3, 
-    .rich-diff-viewer h4, .rich-diff-viewer h5, .rich-diff-viewer h6 { margin-top: 24px; margin-bottom: 16px; font-weight: 600; line-height: 1.25; }
+    .rich-diff-viewer h4, .rich-diff-viewer h5, .rich-diff-viewer h6 {
+      margin-top: 24px; margin-bottom: 16px; font-weight: 600; line-height: 1.25;
+    }
     .rich-diff-viewer h1 { font-size: 2em; border-bottom: 1px solid var(--border-color); padding-bottom: .3em; }
     .rich-diff-viewer h2 { font-size: 1.5em; border-bottom: 1px solid var(--border-color); padding-bottom: .3em; }
-    .rich-diff-viewer p, .rich-diff-viewer blockquote, .rich-diff-viewer ul, .rich-diff-viewer ol, .rich-diff-viewer dl, .rich-diff-viewer table, .rich-diff-viewer pre, .rich-diff-viewer details { margin-top: 0; margin-bottom: 16px; }
+
+    .rich-diff-viewer p, .rich-diff-viewer blockquote, .rich-diff-viewer ul, 
+    .rich-diff-viewer ol, .rich-diff-viewer dl, .rich-diff-viewer table, 
+    .rich-diff-viewer pre, .rich-diff-viewer details {
+      margin-top: 0; margin-bottom: 16px;
+    }
 
     .rich-diff-viewer a { color: #58a6ff; text-decoration: none; }
     .rich-diff-viewer a:hover { text-decoration: underline; }
     [data-theme*="light"] .rich-diff-viewer a { color: #0969da; }
 
-    .rich-diff-viewer blockquote { padding: 0 1em; color: var(--text-muted); border-left: .25em solid var(--border-color); margin: 0 0 16px 0; }
+    .rich-diff-viewer blockquote {
+      padding: 0 1em; color: var(--text-muted); border-left: .25em solid var(--border-color); margin: 0 0 16px 0;
+    }
     .rich-diff-viewer hr { height: .25em; padding: 0; margin: 24px 0; background-color: var(--border-color); border: 0; }
     .rich-diff-viewer ul, .rich-diff-viewer ol { padding-left: 2em; }
-    .rich-diff-viewer table { border-spacing: 0; border-collapse: collapse; margin-bottom: 16px; display: block; width: max-content; max-width: 100%; overflow-x: auto; }
+
+    .rich-diff-viewer table { 
+      border-spacing: 0; border-collapse: collapse; margin-bottom: 16px; 
+      display: block; width: max-content; max-width: 100%; overflow-x: auto;
+    }
     .rich-diff-viewer tr { background-color: var(--bg-main); border-top: 1px solid var(--border-color); }
     .rich-diff-viewer tr:nth-child(2n) { background-color: rgba(141, 149, 159, 0.04); }
     [data-theme*="light"] .rich-diff-viewer tr:nth-child(2n) { background-color: #f6f8fa; }
     .rich-diff-viewer th, .rich-diff-viewer td { padding: 6px 13px; border: 1px solid var(--border-color); }
     .rich-diff-viewer th { font-weight: 600; }
 
-    .rich-diff-viewer code { padding: .2em .4em; margin: 0; font-size: 85%; white-space: break-spaces; background-color: rgba(110, 118, 125, 0.15); border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .rich-diff-viewer code {
+      padding: .2em .4em; margin: 0; font-size: 85%; white-space: break-spaces;
+      background-color: rgba(110, 118, 125, 0.15); border-radius: 6px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
     [data-theme*="light"] .rich-diff-viewer code { background-color: rgba(175, 184, 193, 0.2); }
-    .rich-diff-viewer pre { padding: 16px; overflow: auto; font-size: 85%; line-height: 1.45; background-color: var(--bg-panel); border-radius: 6px; }
-    .rich-diff-viewer pre code { display: inline; max-width: auto; padding: 0; margin: 0; overflow: visible; line-height: inherit; background-color: transparent; border: 0; white-space: pre; }
 
-    /* Diff Highlight Colors */
+    .rich-diff-viewer pre {
+      padding: 16px; overflow: auto; font-size: 85%; line-height: 1.45;
+      background-color: var(--bg-panel); border-radius: 6px;
+    }
+    .rich-diff-viewer pre code {
+      display: inline; max-width: auto; padding: 0; margin: 0; overflow: visible;
+      line-height: inherit; background-color: transparent; border: 0; white-space: pre;
+    }
+
+    /* Diff Highlight Colors (htmldiff-jsの専用クラスのみに適用) */
     .rich-diff-viewer ins.diffins, .rich-diff-viewer ins.diffmod { background-color: rgba(46, 160, 67, 0.25); color: #3fb950; text-decoration: none; }
     .rich-diff-viewer del.diffdel, .rich-diff-viewer del.diffmod { background-color: rgba(248, 81, 73, 0.25); color: #ff7b72; text-decoration: line-through; }
     [data-theme*="light"] .rich-diff-viewer ins.diffins, [data-theme*="light"] .rich-diff-viewer ins.diffmod { background-color: #e6ffec; color: #238636; }
     [data-theme*="light"] .rich-diff-viewer del.diffdel, [data-theme*="light"] .rich-diff-viewer del.diffmod { background-color: #ffebe9; color: #da3633; }
 
-    /* Markdown由来の通常の取り消し線 */
+    /* Markdown由来の通常の取り消し線 (差分ではないただの文字装飾) */
     .rich-diff-viewer del:not(.diffdel):not(.diffmod) { color: var(--text-muted); text-decoration: line-through; background-color: transparent; }
 
-    /* ===== Markdown View Resizer (左右対称フローティング・ハンドル) ===== */
-    .md-resizer {
-      position: absolute; top: 0; bottom: 0; width: 12px; cursor: col-resize; z-index: 150;
-      display: none; align-items: center; justify-content: center;
-    }
-    .md-resizer.left  { left: calc(50% - var(--md-width) / 2 - 6px); }
-    .md-resizer.right { left: calc(50% + var(--md-width) / 2 - 6px); }
-
-    .md-resizer::after {
-      content: ""; height: 32px; width: 4px; border-radius: 2px;
-      background-color: var(--border-color);
-      transition: background-color 0.15s, transform 0.15s;
-    }
-    .md-resizer:hover::after, .md-resizer.dragging::after {
-      background-color: #0a84ff; transform: scaleX(1.5);
-    }
-    body.is-resizing { user-select: none; cursor: col-resize; }
-
     /* ===== Jump Controls ===== */
-    .jump-controls { position: absolute; bottom: 24px; right: 48px; display: flex; flex-direction: column; gap: 8px; z-index: 100; }
-    .jump-btn { background-color: var(--bg-panel); color: var(--text-muted); border: 1px solid var(--border-color); border-radius: 50%; width: 36px; height: 36px; display: flex; justify-content: center; align-items: center; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,0.2); transition: all 0.2s; }
+    .jump-controls {
+      position: absolute; bottom: 24px; right: 48px; display: flex; flex-direction: column; gap: 8px; z-index: 100;
+    }
+    .jump-btn {
+      background-color: var(--bg-panel); color: var(--text-muted); border: 1px solid var(--border-color); border-radius: 50%;
+      width: 36px; height: 36px; display: flex; justify-content: center; align-items: center; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,0.2); transition: all 0.2s;
+    }
     .jump-btn:hover { background-color: var(--border-color); color: var(--text-main); transform: scale(1.05); }
     .jump-btn:active { transform: scale(0.95); }
 
     /* ===== Placeholders ===== */
-    .editor-placeholder { position: absolute; inset: 0; display: flex; justify-content: center; align-items: center; pointer-events: none; z-index: 60; user-select: none; transition: opacity 0.15s ease-out; }
-    .placeholder-box { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 16px 24px; border-radius: 12px; background-color: var(--bg-main); }
+    .editor-placeholder {
+      position: absolute; inset: 0; display: flex; justify-content: center; align-items: center;
+      pointer-events: none; z-index: 60; user-select: none; transition: opacity 0.15s ease-out;
+    }
+    .placeholder-box {
+      display: flex; flex-direction: column; align-items: center; gap: 8px;
+      padding: 16px 24px; border-radius: 12px; background-color: var(--bg-main);
+    }
     .placeholder-box svg { color: var(--text-muted); opacity: 0.4; margin-bottom: 4px; }
     .placeholder-title { color: var(--text-muted); opacity: 0.5; font-family: 'JetBrains Mono', Consolas, monospace; font-weight: bold; letter-spacing: 2px; }
     .placeholder-subtitle { color: var(--text-muted); opacity: 0.35; font-size: 13px; }
 
     /* ===== Monaco Editor Overrides ===== */
-    :root, body, .monaco-editor, .monaco-diff-editor { --vscode-scrollbar-shadow: transparent !important; --vscode-widget-shadow: transparent !important; --vscode-sash-hoverBorder: transparent !important; }
-    body .monaco-editor .scroll-decoration, body .monaco-scrollable-element > .shadow { box-shadow: none !important; background: transparent !important; opacity: 0 !important; display: none !important; }
+    :root, body, .monaco-editor, .monaco-diff-editor {
+      --vscode-scrollbar-shadow: transparent !important; --vscode-widget-shadow: transparent !important; --vscode-sash-hoverBorder: transparent !important;
+    }
+    body .monaco-editor .scroll-decoration, body .monaco-scrollable-element > .shadow {
+      box-shadow: none !important; background: transparent !important; opacity: 0 !important; display: none !important;
+    }
     body svg.moved-blocks-lines { display: none !important; opacity: 0 !important; visibility: hidden !important; pointer-events: none !important; }
-    body .monaco-sash.vertical { background-color: var(--bg-main) !important; width: 14px !important; margin-left: -7px !important; box-shadow: none !important; z-index: 40 !important; }
-    body .monaco-sash.vertical::after { content: ""; position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; background-color: var(--border-color); transform: translateX(-50%); }
+    body .monaco-sash.vertical {
+      background-color: var(--bg-main) !important; width: 14px !important; margin-left: -7px !important; box-shadow: none !important; z-index: 40 !important;
+    }
+    body .monaco-sash.vertical::after {
+      content: ""; position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; background-color: var(--border-color); transform: translateX(-50%);
+    }
 
     /* ===== Custom Change Actions (Merge Buttons) ===== */
     #changeActions { position: absolute; top: 0; left: 0; right: 0; bottom: 0; pointer-events: none; z-index: 50; overflow: hidden; }
-    .change-action-group { position: absolute; display: flex; flex-direction: row; gap: 2px; pointer-events: auto; transform: translateX(-50%); opacity: 0; transition: opacity 0.15s ease; will-change: transform, top, left; }
+    .change-action-group {
+      position: absolute; display: flex; flex-direction: row; gap: 2px; pointer-events: auto;
+      transform: translateX(-50%); opacity: 0; transition: opacity 0.15s ease; will-change: transform, top, left;
+    }
     .change-action-group.visible { opacity: 1; }
-    .change-action-btn { width: 24px; height: 20px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-panel); color: var(--text-muted); font-size: 14px; line-height: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0; transition: all 0.12s ease; }
+    .change-action-btn {
+      width: 24px; height: 20px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-panel);
+      color: var(--text-muted); font-size: 14px; line-height: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0; transition: all 0.12s ease;
+    }
     .change-action-btn:hover { transform: scale(1.15); }
     .change-action-btn.accept-right:hover { background: rgba(80, 200, 120, 0.2); border-color: rgba(80, 200, 120, 0.5); color: #50c878; }
     .change-action-btn.accept-left:hover { background: rgba(100, 149, 237, 0.2); border-color: rgba(100, 149, 237, 0.5); color: #6495ed; }
@@ -235,10 +263,6 @@
   <div class="main-container" id="mainContainer">
     <div id="diffEditor" style="width: 100%; height: 100%;"></div>
     <div id="richDiffViewer" class="rich-diff-viewer"></div>
-    
-    <div id="mdResizerLeft" class="md-resizer left" data-dir="left"></div>
-    <div id="mdResizerRight" class="md-resizer right" data-dir="right"></div>
-    
     <div id="changeActions"></div>
 
     <div class="jump-controls">
@@ -300,6 +324,7 @@
     
     document.getElementById('themeSelect').addEventListener('change', (e) => applyTheme(e.target.value));
 
+    // デフォルトテーマを GitHub Dark に固定（保存済みがあればそれを優先）
     const savedTheme = localStorage.getItem('diffToolTheme') || 'github-dark';
     document.getElementById('themeSelect').value = THEMES[savedTheme] ? savedTheme : 'github-dark';
 
@@ -316,42 +341,6 @@
       t.classList.add('show'); 
       setTimeout(() => t.classList.remove('show'), 2500); 
     };
-
-    // ===== Markdown View Width Resizer Logic =====
-    const mdResizers = document.querySelectorAll('.md-resizer');
-    let isMdResizing = false;
-    let activeResizerDir = null;
-
-    mdResizers.forEach(resizer => {
-      resizer.addEventListener('mousedown', (e) => {
-        isMdResizing = true;
-        activeResizerDir = resizer.getAttribute('data-dir');
-        resizer.classList.add('dragging');
-        document.body.classList.add('is-resizing');
-      });
-    });
-
-    document.addEventListener('mousemove', (e) => {
-      if (!isMdResizing) return;
-      const center = window.innerWidth / 2;
-      
-      // 左リサイザーなら中心からの距離は (center - X)、右リサイザーなら (X - center)
-      const dist = activeResizerDir === 'left' ? (center - e.clientX) : (e.clientX - center);
-      let newWidth = dist * 2;
-      
-      if (newWidth < 400) newWidth = 400; 
-      if (newWidth > window.innerWidth - 64) newWidth = window.innerWidth - 64; 
-      
-      document.documentElement.style.setProperty('--md-width', `${newWidth}px`);
-    });
-
-    document.addEventListener('mouseup', () => {
-      if (isMdResizing) {
-        isMdResizing = false;
-        mdResizers.forEach(r => r.classList.remove('dragging'));
-        document.body.classList.remove('is-resizing');
-      }
-    });
 
     require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs' } });
     require(['vs/editor/editor.main'], function () {
@@ -562,7 +551,6 @@
       const restoreMonacoView = () => {
         diffEditorContainer.style.display = 'block';
         richDiffViewer.style.display = 'none';
-        mdResizers.forEach(r => r.style.display = 'none');
         changeActionsContainer.style.display = 'block';
         if (jumpControls) jumpControls.style.display = isInlineView ? 'none' : 'flex';
         richDiffBtn.classList.remove('active');
@@ -588,7 +576,6 @@
             changeActionsContainer.style.display = 'none';
             if (jumpControls) jumpControls.style.display = 'none';
             richDiffViewer.style.display = 'block';
-            mdResizers.forEach(r => r.style.display = 'flex');
             
             richDiffBtn.classList.add('active');
             isRichDiffView = true;
