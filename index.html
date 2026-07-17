@@ -89,7 +89,7 @@
       overflow-y: auto;
       background-color: var(--bg-main); color: var(--text-main); 
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
-      font-size: var(--md-font-size, 14px); line-height: 1.5; word-wrap: break-word;
+      font-size: 14px; line-height: 1.5; word-wrap: break-word;
     }
     .rich-diff-viewer > *:first-child { margin-top: 0 !important; }
     .rich-diff-viewer > *:last-child { margin-bottom: 0 !important; }
@@ -97,7 +97,7 @@
     .rich-diff-viewer h1, .rich-diff-viewer h2, .rich-diff-viewer h3, 
     .rich-diff-viewer h4, .rich-diff-viewer h5, .rich-diff-viewer h6 { margin-top: 24px; margin-bottom: 16px; font-weight: 600; line-height: 1.25; }
     .rich-diff-viewer h1 { font-size: 2em; border-bottom: 1px solid var(--border-color); padding-bottom: .3em; }
-    .rich-diff-viewer h2 { font-size: 1.5em; border-bottom: 1px solid var(--border-c padding-bottom: .3em; }
+    .rich-diff-viewer h2 { font-size: 1.5em; border-bottom: 1px solid var(--border-color); padding-bottom: .3em; }
     .rich-diff-viewer p, .rich-diff-viewer blockquote, .rich-diff-viewer ul, .rich-diff-viewer ol, .rich-diff-viewer dl, .rich-diff-viewer table, .rich-diff-viewer pre, .rich-diff-viewer details { margin-top: 0; margin-bottom: 16px; }
 
     .rich-diff-viewer a { color: #58a6ff; text-decoration: none; }
@@ -114,9 +114,9 @@
     .rich-diff-viewer th, .rich-diff-viewer td { padding: 6px 13px; border: 1px solid var(--border-color); }
     .rich-diff-viewer th { font-weight: 600; }
 
-    .rich-diff-viewer code { padding: .2em .4em; margin: 0; font-size: 90%; white-space: break-spaces; background-color: rgba(110, 118, 125, 0.15); border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .rich-diff-viewer code { padding: .2em .4em; margin: 0; font-size: 85%; white-space: break-spaces; background-color: rgba(110, 118, 125, 0.15); border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     [data-theme*="light"] .rich-diff-viewer code { background-color: rgba(175, 184, 193, 0.2); }
-    .rich-diff-viewer pre { padding: 16px; overflow: auto; font-size: 90%; line-height: 1.45; background-color: var(--bg-panel); border-radius: 6px; }
+    .rich-diff-viewer pre { padding: 16px; overflow: auto; font-size: 85%; line-height: 1.45; background-color: var(--bg-panel); border-radius: 6px; }
     .rich-diff-viewer pre code { display: inline; max-width: auto; padding: 0; margin: 0; overflow: visible; line-height: inherit; background-color: transparent; border: 0; white-space: pre; }
 
     /* Diff Highlight Colors */
@@ -335,6 +335,7 @@
       if (!isMdResizing) return;
       const center = window.innerWidth / 2;
       
+      // 左リサイザーなら中心からの距離は (center - X)、右リサイザーなら (X - center)
       const dist = activeResizerDir === 'left' ? (center - e.clientX) : (e.clientX - center);
       let newWidth = dist * 2;
       
@@ -376,10 +377,6 @@
 
       const savedFontSize = localStorage.getItem('diffToolFontSize') || '12';
       if (document.getElementById('fontSizeSelect')) document.getElementById('fontSizeSelect').value = savedFontSize;
-      
-      // 補正処理: 標準プロポーショナルフォントは等幅に比べ小さく感じるため「Monacoサイズ ＋ 2px」を適用
-      const initialMdFontSize = parseInt(savedFontSize, 10) + 2;
-      document.documentElement.style.setProperty('--md-font-size', `${initialMdFontSize}px`);
 
       const commonOptions = {
         language: 'markdown', wordWrap: 'on', automaticLayout: true, fontSize: parseInt(savedFontSize, 10),
@@ -414,9 +411,6 @@
       document.getElementById('fontSizeSelect').addEventListener('change', (e) => {
         const size = parseInt(e.target.value, 10); localStorage.setItem('diffToolFontSize', e.target.value);
         diffEditor.updateOptions({ fontSize: size }); diffOrig.updateOptions({ fontSize: size }); diffMod.updateOptions({ fontSize: size });
-        
-        // 補正処理: 標準プロポーショナルフォント向けに「Monacoサイズ ＋ 2px」で連動更新
-        document.documentElement.style.setProperty('--md-font-size', `${size + 2}px`);
         rebuildChangeActions();
       });
 
