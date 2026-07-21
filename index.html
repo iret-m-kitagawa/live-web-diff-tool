@@ -632,13 +632,27 @@
       const jumpControls = document.querySelector('.jump-controls');
 
       const restoreMonacoView = () => {
-        diffEditorContainer.style.display = 'block';
+        // Monacoの表示を元に戻す (display: none からの復帰ではないためバグが発生しない)
+        diffEditorContainer.style.position = '';
+        diffEditorContainer.style.left = '';
+        diffEditorContainer.style.visibility = '';
+        
         richDiffViewer.style.display = 'none';
-        mdResizers.forEach(r => r.style.display = 'none');
+        
+        if (typeof mdResizers !== 'undefined') {
+          mdResizers.forEach(r => r.style.display = 'none');
+        }
+        
         changeActionsContainer.style.display = 'block';
         if (jumpControls) jumpControls.style.display = isInlineView ? 'none' : 'flex';
         richDiffBtn.classList.remove('active');
         isRichDiffView = false;
+        
+        // 念のためレイアウト再計算
+        if (typeof diffEditor !== 'undefined' && diffEditor) {
+          diffEditor.layout();
+        }
+
         rebuildChangeActions();
       };
 
@@ -656,7 +670,11 @@
             
             richDiffViewer.innerHTML = diffedHtml;
             
-            diffEditorContainer.style.display = 'none';
+            // Monacoエディタを display: none で隠さず、絶対配置で画面外へ退避させる
+            diffEditorContainer.style.position = 'absolute';
+            diffEditorContainer.style.left = '-9999px';
+            diffEditorContainer.style.visibility = 'hidden';
+            
             changeActionsContainer.style.display = 'none';
             if (jumpControls) jumpControls.style.display = 'none';
             richDiffViewer.style.display = 'block';
