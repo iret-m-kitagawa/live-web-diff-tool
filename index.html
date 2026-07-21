@@ -8,6 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Noto+Sans+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/github-markdown-css/5.5.0/github-markdown.min.css">
 
   <script src="https://cdn.jsdelivr.net/npm/lzma@2.3.2/src/lzma_worker-min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
@@ -89,64 +90,26 @@
       display: none; width: 100%; height: 100%; 
       padding: 32px max(32px, calc((100% - var(--md-width)) / 2)); 
       overflow-y: auto;
-      background-color: var(--bg-main); color: var(--text-main); 
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+      
+      /* github-markdown-css variables mapping for custom themes */
+      --color-canvas-default: var(--bg-main);
+      --color-fg-default: var(--text-main);
+      --color-canvas-subtle: var(--bg-panel);
+      --color-border-default: var(--border-color);
+      --color-border-muted: var(--border-color);
+      --color-accent-fg: #58a6ff;
+      --color-neutral-muted: rgba(110, 118, 125, 0.15);
+      
+      background-color: var(--color-canvas-default); color: var(--color-fg-default);
       font-size: var(--md-font-size, 14px); 
-      line-height: 1.65;
-      letter-spacing: 0.025em;
       word-wrap: break-word;
+    }
+    [data-theme*="light"] .rich-diff-viewer { 
+      --color-accent-fg: #0969da; 
+      --color-neutral-muted: rgba(175, 184, 193, 0.2);
     }
     .rich-diff-viewer > *:first-child { margin-top: 0 !important; }
     .rich-diff-viewer > *:last-child { margin-bottom: 0 !important; }
-
-    .rich-diff-viewer h1, .rich-diff-viewer h2, .rich-diff-viewer h3, 
-    .rich-diff-viewer h4, .rich-diff-viewer h5, .rich-diff-viewer h6 {
-      margin-top: 24px; margin-bottom: 16px; font-weight: 600; line-height: 1.25;
-    }
-    .rich-diff-viewer h1 { font-size: 2em; border-bottom: 1px solid var(--border-color); padding-bottom: .3em; }
-    .rich-diff-viewer h2 { font-size: 1.5em; border-bottom: 1px solid var(--border-color); padding-bottom: .3em; }
-
-    .rich-diff-viewer p, .rich-diff-viewer blockquote, .rich-diff-viewer ul, 
-    .rich-diff-viewer ol, .rich-diff-viewer dl, .rich-diff-viewer table, 
-    .rich-diff-viewer pre, .rich-diff-viewer details {
-      margin-top: 0; margin-bottom: 16px;
-    }
-
-    .rich-diff-viewer a { color: #58a6ff; text-decoration: none; }
-    .rich-diff-viewer a:hover { text-decoration: underline; }
-    [data-theme*="light"] .rich-diff-viewer a { color: #0969da; }
-
-    .rich-diff-viewer blockquote {
-      padding: 0 1em; color: var(--text-muted); border-left: .25em solid var(--border-color); margin: 0 0 16px 0;
-    }
-    .rich-diff-viewer hr { height: .25em; padding: 0; margin: 24px 0; background-color: var(--border-color); border: 0; }
-    .rich-diff-viewer ul, .rich-diff-viewer ol { padding-left: 2em; }
-
-    .rich-diff-viewer table { 
-      border-spacing: 0; border-collapse: collapse; margin-bottom: 16px; 
-      display: block; width: max-content; max-width: 100%; overflow-x: auto;
-    }
-    .rich-diff-viewer tr { background-color: var(--bg-main); border-top: 1px solid var(--border-color); }
-    .rich-diff-viewer tr:nth-child(2n) { background-color: rgba(141, 149, 159, 0.04); }
-    [data-theme*="light"] .rich-diff-viewer tr:nth-child(2n) { background-color: #f6f8fa; }
-    .rich-diff-viewer th, .rich-diff-viewer td { padding: 6px 13px; border: 1px solid var(--border-color); }
-    .rich-diff-viewer th { font-weight: 600; }
-
-    .rich-diff-viewer code {
-      padding: .2em .4em; margin: 0; font-size: 90%; white-space: break-spaces;
-      background-color: rgba(110, 118, 125, 0.15); border-radius: 6px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    }
-    [data-theme*="light"] .rich-diff-viewer code { background-color: rgba(175, 184, 193, 0.2); }
-
-    .rich-diff-viewer pre {
-      padding: 16px; overflow: auto; font-size: 90%; line-height: 1.45;
-      background-color: var(--bg-panel); border-radius: 6px;
-    }
-    .rich-diff-viewer pre code {
-      display: inline; max-width: auto; padding: 0; margin: 0; overflow: visible;
-      line-height: inherit; background-color: transparent; border: 0; white-space: pre;
-    }
 
     /* Diff Highlight Colors */
     .rich-diff-viewer ins.diffins, .rich-diff-viewer ins.diffmod { background-color: rgba(46, 160, 67, 0.25); color: #3fb950; text-decoration: none; }
@@ -293,7 +256,7 @@
 
   <div class="main-container" id="mainContainer">
     <div id="diffEditor" style="width: 100%; height: 100%;"></div>
-    <div id="richDiffViewer" class="rich-diff-viewer"></div>
+    <div id="richDiffViewer" class="rich-diff-viewer markdown-body"></div>
     
     <div id="mdResizerLeft" class="md-resizer left" data-dir="left"></div>
     <div id="mdResizerRight" class="md-resizer right" data-dir="right"></div>
