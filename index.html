@@ -341,13 +341,13 @@
       setTimeout(() => t.classList.remove('show'), 2500);
     };
 
-    // ===== Auto Save (localStorage) =====
+    // ===== Auto Save (sessionStorage: per-tab, so parallel tabs don't clobber each other) =====
     const AUTO_SAVE_KEY = 'diffToolAutoSave';
     let autoSaveTimer = null;
 
     function saveAutoSave() {
       try {
-        localStorage.setItem(AUTO_SAVE_KEY, JSON.stringify({
+        sessionStorage.setItem(AUTO_SAVE_KEY, JSON.stringify({
           b: beforeModel.getValue(),
           a: afterModel.getValue(),
           l: document.getElementById('langSelect').value,
@@ -363,12 +363,12 @@
 
     function clearAutoSave() {
       clearTimeout(autoSaveTimer);
-      try { localStorage.removeItem(AUTO_SAVE_KEY); } catch (e) {}
+      try { sessionStorage.removeItem(AUTO_SAVE_KEY); } catch (e) {}
     }
 
     function restoreAutoSave() {
       let raw;
-      try { raw = localStorage.getItem(AUTO_SAVE_KEY); } catch (e) { return; }
+      try { raw = sessionStorage.getItem(AUTO_SAVE_KEY); } catch (e) { return; }
       if (!raw) return;
       try {
         const d = JSON.parse(raw);
