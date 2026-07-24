@@ -334,12 +334,59 @@
     let isInlineView = false;
     let isRichDiffView = false; 
 
-    const showToast = (msg) => { 
-      const t = document.getElementById('toast'); 
+    const showToast = (msg) => {
+      const t = document.getElementById('toast');
       t.innerText = msg || 'Diff URL copied to clipboard!';
-      t.classList.add('show'); 
-      setTimeout(() => t.classList.remove('show'), 2500); 
+      t.classList.add('show');
+      setTimeout(() => t.classList.remove('show'), 2500);
     };
+
+    // ===== Auto Save (localStorage) =====
+    const AUTO_SAVE_KEY = 'diffToolAutoSave';
+    let autoSaveTimer = null;
+
+    function saveAutoSave() {
+      try {
+        localStorage.setItem(AUTO_SAVE_KEY, JSON.stringify({
+          b: beforeModel.getValue(),
+          a: afterModel.getValue(),
+          l: document.getElementById('langSelect').value,
+          m: isRichDiffView
+        }));
+      } catch (e) {}
+    }
+
+    function scheduleAutoSave() {
+      clearTimeout(autoSaveTimer);
+      autoSaveTimer = setTimeout(saveAutoSave, 500);
+    }
+
+    function clearAutoSave() {
+      clearTimeout(autoSaveTimer);
+      try { localStorage.removeItem(AUTO_SAVE_KEY); } catch (e) {}
+    }
+
+    function restoreAutoSave() {
+      let raw;
+      try { raw = localStorage.getItem(AUTO_SAVE_KEY); } catch (e) { return; }
+      if (!raw) return;
+      try {
+        const d = JSON.parse(raw);
+        beforeModel.setValue(d.b || '');
+        afterModel.setValue(d.a || '');
+        if (d.l) {
+          document.getElementById('langSelect').value = d.l;
+          monaco.editor.setModelLanguage(beforeModel, d.l);
+          monaco.editor.setModelLanguage(afterModel, d.l);
+        }
+        if (d.m) {
+          setTimeout(() => {
+            const btn = document.getElementById('richDiffBtn');
+            if (btn && !isRichDiffView) btn.click();
+          }, 150);
+        }
+      } catch (e) {}
+    }
 
     // ===== Markdown View Width Resizer Logic =====
     const mdResizers = document.querySelectorAll('.md-resizer');
@@ -586,6 +633,7 @@
 
       document.getElementById('langSelect').addEventListener('change', (e) => {
         const lang = e.target.value; monaco.editor.setModelLanguage(beforeModel, lang); monaco.editor.setModelLanguage(afterModel, lang);
+        saveAutoSave();
       });
 
       // ========== 👁️ Markdown View 機能 ==========
@@ -618,6 +666,7 @@
         }
 
         rebuildChangeActions();
+        saveAutoSave();
       };
 
       richDiffBtn.addEventListener('click', () => {
@@ -647,6 +696,7 @@
             
             richDiffBtn.classList.add('active');
             isRichDiffView = true;
+            saveAutoSave();
           } catch (error) {
             console.error("Markdown View Render Error:", error);
             restoreMonacoView();
@@ -695,6 +745,7 @@
       diffMod.onDidBlurEditorWidget(() => { afterFocused = false; updatePlaceholders(); });
 
       beforeModel.onDidChangeContent(updatePlaceholders); afterModel.onDidChangeContent(updatePlaceholders);
+      beforeModel.onDidChangeContent(scheduleAutoSave); afterModel.onDidChangeContent(scheduleAutoSave);
 
       const jump = (dir) => {
         if (!diffEditor) return; const changes = diffEditor.getLineChanges(); if (!changes || changes.length === 0) return;
@@ -718,13 +769,16 @@
         });
       }
       setTimeout(() => { setupEditorDrop(diffOrig, beforeModel); setupEditorDrop(diffMod, afterModel); }, 100);
-      loadFromUrl(); setTimeout(updatePlaceholders, 150);
+      loadFromUrl();
+      if (!window.location.hash) restoreAutoSave();
+      setTimeout(updatePlaceholders, 150);
     });
 
     document.getElementById('clearBtn').addEventListener('click', () => {
       beforeModel.setValue(''); afterModel.setValue('');
       window.history.replaceState(null, null, window.location.pathname);
       beforeFocused = false; afterFocused = false;
+      clearAutoSave();
     });
 
     // LZMAによる非同期圧縮処理
