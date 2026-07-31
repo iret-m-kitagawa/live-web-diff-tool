@@ -123,7 +123,6 @@
 
     /* ===== HTML View (rich-html-diff engine) ===== */
     .html-diff-frame { display: none; width: 100%; height: 100%; border: none; background-color: #ffffff; }
-    .btn:disabled { opacity: 0.35; cursor: not-allowed; pointer-events: none; }
 
     /* ===== Markdown View Resizer (左右対称フローティング・ハンドル) ===== */
     .md-resizer {
@@ -235,12 +234,12 @@
       </select>
     </div>
     <div class="toolbar-right">
-      <button class="btn active" id="htmlScriptBtn" aria-pressed="true" title="貼り付けた HTML 内の script を実行する" style="display: none;">
-        スクリプト
-      </button>
       <button class="btn" id="richDiffBtn" title="Toggle Rich Markdown Diff">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
         <span id="richDiffBtnLabel">Markdown View</span>
+      </button>
+      <button class="btn" id="htmlViewBtn" title="Toggle Rich HTML Diff">
+        HTML View
       </button>
       <button class="btn" id="swapBtn" title="Swap BEFORE and AFTER">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4L4 8l4 4M4 8h16M16 20l4-4-4-4M20 16H4"/></svg>
@@ -304,12 +303,21 @@
 
   <script>
     /* =======================================================================
-       Ported verbatim from rich-html-diff.html (source of truth, lines 118-418
-       core engine + 420-443 DIFF_CSS). Do NOT hand-edit; re-port from the source
-       file if changes are needed. CONTROLLER (lines 445-468) is intentionally
+       Ported from rich-html-diff.html (source of truth, lines 118-418 core
+       engine + 420-443 DIFF_CSS). The diff ALGORITHM itself (tokenize/diffSeq/
+       unitsOf/sig/similar/textNodes/wrapRange/insertDeleted/inlineDiff/
+       diffUnitPair/buildDiff/placeDeleted/orphanBin) is still ported verbatim —
+       do NOT hand-edit those function bodies; re-port from the source file if
+       changes are needed there. CONTROLLER (lines 445-468) is intentionally
        NOT ported — out of scope for this phase.
-       唯一の意図的な差異: TOKEN_RE のフラグを 'g' → 'gu'（該当箇所のコメント参照）。
-       それ以外はコード 301 行 / DIFF_CSS 文字列ともにバイト一致を検証済み。
+       DIFF_CSS はこのツール向けに以下の意図的な差異あり（他は移植元と一致）:
+       1. TOKEN_RE のフラグを 'g' → 'gu'（該当箇所のコメント参照）。
+       2. del[data-diff="del"] の text-decoration を line-through → none に変更
+          （取り消し線を出さず、色/背景のみで削除箇所を示す）。
+       3. [data-diff-block="del"] * { text-decoration:line-through; } ルールを削除。
+       4. [data-diff-block="ins"/"del"] の box-shadow（変更ブロック左端の色バー）を削除。
+       5. a[data-diff-nolink]{ cursor:default; } を追加
+          （renderHtmlDiffDocument() 側でのフラグメントリンク無害化と対）。
        ======================================================================= */
     /* =======================================================================
        Rich HTML Diff — core
@@ -392,25 +400,67 @@
     }
 
     /* ---------- 3. 構造単位の抽出 ---------- */
-    // 行(tr)とブロックを「単位」とし、他の単位を含まないものだけを葉として使う
-    const UNIT_SEL = 'tr,p,li,h1,h2,h3,h4,h5,h6,pre,blockquote,dd,dt,figcaption,caption';
+    // 単位 = 「インライン内容を直接持つブロック要素」。
+    //
+    // 移植元は tr,p,li,h1-h6,pre,blockquote,dd,dt,figcaption,caption という
+    // タグのホワイトリストに一致する“葉”だけを単位にしていた。そのため
+    // div / span / a / footer が直接持つテキスト（サイドバー目次のリンク、
+    // ヘッダの日付、カード内の価格など）の変更が一切検出されず、さらに
+    // 削除ブロックがコンテナ境界を越えて無関係なカード・callout・表の中へ
+    // ばらばらに挿入される問題があった。
+    //
+    // ここではブロック要素を単位とし、各単位は「自分自身のインラインテキスト」
+    // （入れ子のブロックはそれ自体が別単位なので除外）だけを対象にする。
+    // これで単位が入れ子で重複せず、上記のテキストも拾える。
+    const BLOCK_TAGS = new Set([
+      'ADDRESS','ARTICLE','ASIDE','BLOCKQUOTE','BODY','CAPTION','DD','DETAILS','DIALOG',
+      'DIV','DL','DT','FIELDSET','FIGCAPTION','FIGURE','FOOTER','FORM','H1','H2','H3',
+      'H4','H5','H6','HEADER','HGROUP','LEGEND','LI','MAIN','NAV','OL','P','PRE',
+      'SECTION','SUMMARY','TABLE','TBODY','TD','TFOOT','TH','THEAD','TR','UL'
+    ]);
+    function isBlockEl(el){ return !!el && el.nodeType === 1 && BLOCK_TAGS.has(el.tagName); }
 
     function unitsOf(root){
-      const all = Array.from(root.querySelectorAll(UNIT_SEL));
-      return all.filter(el => !el.querySelector(UNIT_SEL));
+      const out = [];
+      const cand = [root].concat(Array.from(root.querySelectorAll('*')));
+      for (const el of cand){
+        if (!isBlockEl(el)) continue;
+        if (!ownText(el).trim()) continue;
+        out.push(el);
+      }
+      return out;
     }
     function norm(s){ return (s || '').replace(/\s+/g, ' ').trim(); }
-    function sig(el){ return el.tagName + '\u0000' + norm(el.textContent); }
+    // その要素が直接持つインラインテキスト（入れ子ブロックの中身は含まない）
+    function ownText(el){ return textNodes(el).map(n => n.data).join(''); }
+    function sig(el){ return el.tagName + '\u0000' + norm(ownText(el)); }
+
+    // 置換ペアとみなす条件を判定する際の「文脈」。親・祖父のタグまで一致を要求
+    // することで、別のコンテナに属する似た要素同士（削除されたセクション内の
+    // <li> と、新版で追加された callout 内の <li> など）が誤ってペアになるのを
+    // 防ぐ。誤ペアが起きると「コンテナ配下がすべて削除された」判定が崩れ、
+    // 削除ブロックが 1 塊にまとまらず無関係な場所へ散らばる原因になる。
+    function contextKey(el){
+      const p = el.parentElement, gp = p && p.parentElement;
+      return (gp ? gp.tagName : '') + '>' + (p ? p.tagName : '');
+    }
 
     // 同種ブロックか（置換ペアとみなせるか）
     function similar(a, b){
       if (a.tagName !== b.tagName) return false;
-      const ta = tokenize(norm(a.textContent)), tb = tokenize(norm(b.textContent));
+      if (contextKey(a) !== contextKey(b)) return false;
+      const ta = tokenize(norm(ownText(a))), tb = tokenize(norm(ownText(b)));
       if (!ta.length && !tb.length) return true;
+      if (!ta.length || !tb.length) return false;
       const setA = new Set(ta);
       let hit = 0;
       for (const t of tb) if (setA.has(t)) hit++;
-      return hit / Math.max(ta.length, tb.length) >= 0.34;
+      // max 基準だけだと「片側から大きな塊が消えた」ケース（例: 日付 span と
+      // status span を持つ div から status が丸ごと消え、日付だけ変わった）で
+      // 重複率が閾値を下回り、インライン差分にならず別々の del/ins になる。
+      // min 基準の条件を併用して、短くなった側がほぼ含まれる場合もペアとする。
+      return hit / Math.max(ta.length, tb.length) >= 0.34
+          || hit / Math.min(ta.length, tb.length) >= 0.6;
     }
 
     /* ---------- 4. テキストノード操作 ---------- */
@@ -423,6 +473,7 @@
             const t = c.tagName;
             if (t === 'SCRIPT' || t === 'STYLE') continue;
             if (c.dataset && c.dataset.diff === 'del') continue; // 自分が挿入した del は数えない
+            if (isBlockEl(c)) continue; // 入れ子のブロックはそれ自体が別単位なので含めない
             walk(c);
           }
         }
@@ -457,16 +508,37 @@
       if (!text) return;
       const doc = root.ownerDocument;
       const mk = () => { const d = doc.createElement('del'); d.dataset.diff = 'del'; d.textContent = text; return d; };
+      // 削除テキストは「単位そのものの流れ」に属するので、挿入位置が
+      // インライン要素（<a>/<span>/<code>/<strong> 等）の境界に一致する場合は
+      // その要素の“中”ではなく外側へ出す。ここを素直に n.parentNode へ入れると、
+      // 例えば末尾の項目を削除したときに直前の <a> の内部に <del> が入り、
+      // その <a> の見た目・レイアウト（display:block なら同じ行）を
+      // 引き継いでしまう（削除された内容はその <a> の一部ではないのに）。
+      const hoistAfter = (node) => {
+        let x = node;
+        while (x.parentNode && x.parentNode !== root && x.parentNode.lastChild === x) x = x.parentNode;
+        return x;
+      };
+      const hoistBefore = (node) => {
+        let x = node;
+        while (x.parentNode && x.parentNode !== root && x.parentNode.firstChild === x) x = x.parentNode;
+        return x;
+      };
       const nodes = textNodes(root);
       let acc = 0;
       for (const n of nodes){
         const s = acc, e = acc + n.data.length; acc = e;
         if (at <= e){
           const local = at - s;
-          if (local >= n.data.length){ n.parentNode.insertBefore(mk(), n.nextSibling); return; }
+          if (local >= n.data.length){
+            const t = hoistAfter(n);
+            t.parentNode.insertBefore(mk(), t.nextSibling);
+            return;
+          }
           let node = n;
           if (local > 0) node = n.splitText(local);
-          node.parentNode.insertBefore(mk(), node);
+          const t = hoistBefore(node);
+          t.parentNode.insertBefore(mk(), t);
           return;
         }
       }
@@ -475,8 +547,8 @@
 
     /* ---------- 5. 1 コンテナ内のインライン差分 ---------- */
     function inlineDiff(oldEl, newEl, tally){
-      const oldText = oldEl ? oldEl.textContent : '';
-      const newText = newEl.textContent;
+      const oldText = oldEl ? ownText(oldEl) : '';
+      const newText = ownText(newEl);
       if (oldText === newText) return false;
 
       const ops = diffSeq(tokenize(oldText), tokenize(newText));
@@ -515,7 +587,7 @@
         const nc = Array.from(newU.querySelectorAll(CELL_SEL));
         const n = Math.min(oc.length, nc.length);
         for (let i = 0; i < n; i++) changed = inlineDiff(oc[i], nc[i], tally) || changed;
-        for (let i = n; i < nc.length; i++){ markBlock(nc[i], 'ins', tally, nc[i].textContent.length); changed = true; }
+        for (let i = n; i < nc.length; i++){ markBlock(nc[i], 'ins', tally, ownText(nc[i]).length); changed = true; }
         if (oc.length > nc.length) changed = true; // 減ったセルは表構造を壊すため印のみ
         if (changed) newU.setAttribute('data-diff-row', 'changed');
         return changed;
@@ -568,41 +640,122 @@
       }
 
       const removed = [];
+      const pairMap = new Map(); // 旧単位 -> 新単位（削除ブロックの挿入位置の基準に使う）
       for (const p of plan){
-        if (p.type === 'pair'){ if (diffUnitPair(p.o, p.n, tally)) tally.blocks++; }
-        else if (p.type === 'ins'){ markBlock(p.n, 'ins', tally, p.n.textContent.length); tally.blocks++; }
+        if (p.type === 'pair'){ pairMap.set(p.o, p.n); if (diffUnitPair(p.o, p.n, tally)) tally.blocks++; }
+        else if (p.type === 'ins'){ markBlock(p.n, 'ins', tally, ownText(p.n).length); tally.blocks++; }
         else removed.push(p);
       }
+
+      // ---- 削除ブロックの配置 ----
+      // 移植元は削除された「単位」を1つずつ、線形な単位列で隣接した要素を基準に
+      // 挿入していた。そのため削除されたセクションの見出しやリスト項目が、
+      // 無関係なカード / callout / 表 / チェックリストの中へばらばらに散らばり、
+      // 「消していない箇所が削除扱いで表示される」状態になっていた。
+      //
+      // ここでは
+      //   1. 各削除単位について「配下の単位がすべて削除された最大の祖先」を求め、
+      //      同じコンテナに属するものを 1 つの塊にまとめる（= コンテナ丸ごと削除）
+      //   2. 対応の取れている前後の単位を基準に、旧DOMで数えた階層差ぶんだけ
+      //      新DOM側を持ち上げ、同じ親の兄弟として挿入する
+      //   3. 挿入先が構造上その要素を子に持てない場合（ul の中に h2 等）は
+      //      持てる高さまで さらに持ち上げる
+      // ことで、削除された <section> が元の位置に 1 ブロックとして出るようにする。
+      const oldIndexOf = new Map();
+      oldUnits.forEach((u, i) => oldIndexOf.set(u, i));
+      const removedIdx = removed
+        .map(p => oldIndexOf.get(p.o))
+        .filter(i => i !== undefined)
+        .sort((x, y) => x - y);
+      const removedSet = new Set(removedIdx);
+
+      // el の配下（el 自身も含む）にある旧単位の連続範囲
+      const unitRangeIn = (el) => {
+        let first = -1, last = -1;
+        for (let i = 0; i < oldUnits.length; i++){
+          const u = oldUnits[i];
+          if (u === el || el.contains(u)){ if (first < 0) first = i; last = i; }
+          else if (first >= 0) break; // 単位は文書順なので連続している
+        }
+        return [first, last];
+      };
+      const allUnitsDeleted = (el) => {
+        const [a, b] = unitRangeIn(el);
+        if (a < 0) return false;
+        for (let i = a; i <= b; i++) if (!removedSet.has(i)) return false;
+        return true;
+      };
+      // 「中身がすべて削除された」最大の祖先まで広げる
+      const maximalDeletedContainer = (unit) => {
+        let x = unit, guard = 0;
+        while (x.parentElement && x.parentElement.tagName !== 'BODY'
+               && allUnitsDeleted(x.parentElement) && guard++ < 40) {
+          x = x.parentElement;
+        }
+        return x;
+      };
+
+      const canContain = (p, c) => {
+        if (p === 'UL' || p === 'OL') return c === 'LI';
+        if (p === 'TABLE') return /^(THEAD|TBODY|TFOOT|CAPTION|COLGROUP|TR)$/.test(c);
+        if (p === 'THEAD' || p === 'TBODY' || p === 'TFOOT') return c === 'TR';
+        if (p === 'TR') return c === 'TD' || c === 'TH';
+        if (p === 'DL') return c === 'DT' || c === 'DD';
+        return true;
+      };
+      const fitTarget = (target, cloneTag) => {
+        let t = target, guard = 0;
+        while (t.parentElement && t.parentElement.tagName !== 'BODY'
+               && !canContain(t.parentElement.tagName, cloneTag) && guard++ < 40) {
+          t = t.parentElement;
+        }
+        return t;
+      };
+      // 旧DOMで from から anc の兄弟の高さまで何階層上がるか
+      const levelsToSiblingOf = (from, anc) => {
+        const stop = anc.parentElement;
+        let x = from, lv = 0;
+        while (x && x.parentElement && x.parentElement !== stop
+               && x.parentElement.tagName !== 'BODY' && lv < 40) { x = x.parentElement; lv++; }
+        return (x && x.parentElement === stop) ? lv : 0;
+      };
+      const liftLevels = (el, n) => {
+        let x = el;
+        while (n-- > 0 && x.parentElement && x.parentElement.tagName !== 'BODY') x = x.parentElement;
+        return x;
+      };
+      const placeDeletedBlock = (clone, anc, a, b) => {
+        // 後ろ側の対応単位を優先（削除位置の直後に入るので元の順序に近い）
+        for (let i = b + 1; i < oldUnits.length; i++){
+          const nu = pairMap.get(oldUnits[i]);
+          if (!nu || !nu.parentElement) continue;
+          const t = fitTarget(liftLevels(nu, levelsToSiblingOf(oldUnits[i], anc)), clone.tagName);
+          if (t.parentElement){ t.parentElement.insertBefore(clone, t); return true; }
+        }
+        for (let i = a - 1; i >= 0; i--){
+          const nu = pairMap.get(oldUnits[i]);
+          if (!nu || !nu.parentElement) continue;
+          const t = fitTarget(liftLevels(nu, levelsToSiblingOf(oldUnits[i], anc)), clone.tagName);
+          if (t.parentElement){ t.parentElement.insertBefore(clone, t.nextSibling); return true; }
+        }
+        return false;
+      };
+
+      const containers = [];
+      for (const i of removedIdx){
+        const c = maximalDeletedContainer(oldUnits[i]);
+        if (containers.some(prev => prev === c || prev.contains(c))) continue;
+        containers.push(c);
+      }
       // 削除ブロックは最後に挿入（インライン差分で DOM が動くのを避ける）
-      for (const p of removed){
-        const clone = newDoc.importNode(p.o, true);
+      for (const anc of containers){
+        const [a, b] = unitRangeIn(anc);
+        const clone = newDoc.importNode(anc, true);
         clone.setAttribute('data-diff-block', 'del');
-        tally.del += p.o.textContent.length; tally.blocks++;
-        if (!placeDeleted(clone, newUnits, p.idx)) orphanBin(newDoc).appendChild(clone);
+        tally.del += anc.textContent.length; tally.blocks++;
+        if (!placeDeletedBlock(clone, anc, a, b)) orphanBin(newDoc).appendChild(clone);
       }
       return tally;
-    }
-
-    // 削除ブロックを新版 DOM の妥当な位置に置く（表構造を壊さない）
-    const TABLE_PART = /^(TABLE|THEAD|TBODY|TFOOT|TR|TD|TH)$/;
-    function placeDeleted(clone, units, idx){
-      if (clone.tagName === 'TR'){
-        for (let i = idx; i < units.length; i++)
-          if (units[i].tagName === 'TR' && units[i].parentNode){ units[i].parentNode.insertBefore(clone, units[i]); return true; }
-        for (let i = idx - 1; i >= 0; i--)
-          if (units[i].tagName === 'TR' && units[i].parentNode){ units[i].parentNode.insertBefore(clone, units[i].nextSibling); return true; }
-        return false;
-      }
-      const escape = el => { // 表の中にいる参照要素は表そのものまで持ち上げる
-        let n = el;
-        while (n && n.parentNode && TABLE_PART.test(n.parentNode.tagName)) n = n.parentNode;
-        return n;
-      };
-      const after = units[idx] && escape(units[idx]);
-      if (after && after.parentNode){ after.parentNode.insertBefore(clone, after); return true; }
-      const before = units[idx - 1] && escape(units[idx - 1]);
-      if (before && before.parentNode){ before.parentNode.insertBefore(clone, before.nextSibling); return true; }
-      return false;
     }
 
     function orphanBin(doc){
@@ -626,12 +779,12 @@ ins[data-diff="ins"]{
   border-radius:2px; box-shadow:0 0 0 1px rgba(46,160,67,.35);
 }
 del[data-diff="del"]{
-  background:rgba(248,81,73,.22); color:inherit; text-decoration:line-through;
+  background:rgba(248,81,73,.22); color:inherit; text-decoration:none;
   border-radius:2px; box-shadow:0 0 0 1px rgba(248,81,73,.30); opacity:.9;
 }
-[data-diff-block="ins"]{ background:rgba(46,160,67,.14) !important; box-shadow:inset 3px 0 0 #2ea043; }
-[data-diff-block="del"]{ background:rgba(248,81,73,.12) !important; box-shadow:inset 3px 0 0 #f85149; opacity:.75; }
-[data-diff-block="del"] *{ text-decoration:line-through; }
+[data-diff-block="ins"]{ background:rgba(46,160,67,.14) !important; }
+[data-diff-block="del"]{ background:rgba(248,81,73,.12) !important; opacity:.75; }
+a[data-diff-nolink]{ cursor: default; }
 #__diff_removed__{ margin-top:2rem; padding:1rem; }
 .diff-only [data-diff-row], .diff-only [data-diff-block]{ outline:1px dashed rgba(195,154,95,.4); outline-offset:2px; }
 .diff-only tr:not([data-diff-row]):not([data-diff-block]),
@@ -685,7 +838,8 @@ del[data-diff="del"]{
     let beforeFocused = false;
     let afterFocused = false;
     let isInlineView = false;
-    let isRichDiffView = false; 
+    let isRichDiffView = false;
+    let richViewMode = null; // 'markdown' | 'html' | null — どちらの Rich View が開いているか（未オープン時は null）
 
     const showToast = (msg) => {
       const t = document.getElementById('toast');
@@ -704,7 +858,8 @@ del[data-diff="del"]{
           b: beforeModel.getValue(),
           a: afterModel.getValue(),
           l: document.getElementById('langSelect').value,
-          m: isRichDiffView
+          m: isRichDiffView,
+          vm: richViewMode
         }));
       } catch (e) {}
     }
@@ -717,34 +872,6 @@ del[data-diff="del"]{
     function clearAutoSave() {
       clearTimeout(autoSaveTimer);
       try { sessionStorage.removeItem(AUTO_SAVE_KEY); } catch (e) {}
-    }
-
-    // 現在の langSelect の値に応じて、Rich View 切替ボタン (richDiffBtn) とスクリプト実行
-    // トグル (htmlScriptBtn) の有効/表示状態を更新する。restoreAutoSave / loadFromUrl /
-    // 初期化時の 3 箇所と langSelect の change ハンドラから呼ばれるため top-level 関数にする。
-    function updateRichDiffButtonAvailability() {
-      const richBtn = document.getElementById('richDiffBtn');
-      const richBtnLabel = document.getElementById('richDiffBtnLabel');
-      const scriptBtn = document.getElementById('htmlScriptBtn');
-      const langSelectEl = document.getElementById('langSelect');
-      if (!richBtn || !langSelectEl) return;
-
-      const lang = langSelectEl.value;
-      const supported = (lang === 'markdown' || lang === 'html');
-
-      // 対応外の言語に切り替わった場合、無効化する「前」に開いている Rich View を閉じる。
-      // disabled 状態のボタンへ .click() してもリスナーは発火しない (ブラウザ仕様) ため、
-      // 「閉じてから無効化」の順序を必ず守る。
-      if (!supported && isRichDiffView && !richBtn.disabled) {
-        richBtn.click();
-      }
-
-      richBtn.disabled = !supported;
-      if (richBtnLabel) richBtnLabel.textContent = (lang === 'html') ? 'HTML View' : 'Markdown View';
-      richBtn.title = supported
-        ? ((lang === 'html') ? 'Toggle Rich HTML Diff' : 'Toggle Rich Markdown Diff')
-        : 'Rich View は Markdown / HTML でのみ利用できます';
-      if (scriptBtn) scriptBtn.style.display = (lang === 'html') ? 'flex' : 'none';
     }
 
     function restoreAutoSave() {
@@ -760,11 +887,13 @@ del[data-diff="del"]{
           monaco.editor.setModelLanguage(beforeModel, d.l);
           monaco.editor.setModelLanguage(afterModel, d.l);
         }
-        updateRichDiffButtonAvailability();
         if (d.m) {
+          // vm が無い古いペイロードは、復元後の言語が html なら 'html'、それ以外は 'markdown' とみなす。
+          const mode = d.vm || (d.l === 'html' ? 'html' : 'markdown');
           setTimeout(() => {
-            const btn = document.getElementById('richDiffBtn');
-            if (btn && !isRichDiffView && !btn.disabled) btn.click();
+            if (isRichDiffView) return;
+            const btn = document.getElementById(mode === 'html' ? 'htmlViewBtn' : 'richDiffBtn');
+            if (btn) btn.click();
           }, 150);
         }
       } catch (e) {}
@@ -1015,24 +1144,17 @@ del[data-diff="del"]{
 
       document.getElementById('langSelect').addEventListener('change', (e) => {
         const lang = e.target.value; monaco.editor.setModelLanguage(beforeModel, lang); monaco.editor.setModelLanguage(afterModel, lang);
-        updateRichDiffButtonAvailability();
         saveAutoSave();
       });
 
       // ========== 👁️ Markdown View / HTML View 機能 ==========
       const richDiffBtn = document.getElementById('richDiffBtn');
-      const htmlScriptBtn = document.getElementById('htmlScriptBtn');
+      const htmlViewBtn = document.getElementById('htmlViewBtn');
       const diffEditorContainer = document.getElementById('diffEditor');
       const richDiffViewer = document.getElementById('richDiffViewer');
       const htmlDiffFrame = document.getElementById('htmlDiffFrame');
       const changeActionsContainer = document.getElementById('changeActions');
       const jumpControls = document.querySelector('.jump-controls');
-
-      // HTML View 用: 貼り付けた HTML 内の <script> を実行するかどうか。source tool の
-      // bJs (aria-pressed="true" がデフォルト) に合わせ、デフォルトは実行する (true)。
-      let runHtmlScripts = true;
-
-      updateRichDiffButtonAvailability();
 
       const restoreMonacoView = () => {
         // Monacoの表示を元に戻す (display: none からの復帰ではないためバグが発生しない)
@@ -1051,7 +1173,9 @@ del[data-diff="del"]{
         changeActionsContainer.style.display = 'block';
         if (jumpControls) jumpControls.style.display = isInlineView ? 'none' : 'flex';
         richDiffBtn.classList.remove('active');
+        htmlViewBtn.classList.remove('active');
         isRichDiffView = false;
+        richViewMode = null;
 
         // 念のためレイアウト再計算
         if (typeof diffEditor !== 'undefined' && diffEditor) {
@@ -1071,7 +1195,16 @@ del[data-diff="del"]{
         const newDoc = parser.parseFromString(aText, 'text/html');
         buildDiff(oldDoc, newDoc);
 
-        if (!runHtmlScripts) newDoc.querySelectorAll('script').forEach(s => s.remove());
+        // about:srcdoc ドキュメントは親ページ（このツール自身）の base URL を継承するため、
+        // href="#section" のようなフラグメントのみのリンクをクリックすると
+        // <このツールの URL>#section に解決されてしまい、iframe がツール自身を丸ごと
+        // 読み込んで差分表示が壊れる（実機で確認済み）。srcdoc はそのまま使い続けたいので、
+        // フラグメントのみのリンクは href を外して data-diff-nolink に退避し無害化する。
+        // 絶対 URL の外部リンクなどはそのまま残し、従来どおり新しいタブで開けるようにする。
+        newDoc.querySelectorAll('a[href]').forEach(a => {
+          const h = a.getAttribute('href');
+          if (h && h.trim().charAt(0) === '#') { a.setAttribute('data-diff-nolink', h); a.removeAttribute('href'); }
+        });
 
         const styleEl = newDoc.createElement('style');
         styleEl.textContent = DIFF_CSS;
@@ -1080,84 +1213,93 @@ del[data-diff="del"]{
         return '<!DOCTYPE html>\n' + newDoc.documentElement.outerHTML;
       }
 
-      if (htmlScriptBtn) {
-        htmlScriptBtn.addEventListener('click', () => {
-          runHtmlScripts = !runHtmlScripts;
-          htmlScriptBtn.setAttribute('aria-pressed', String(runHtmlScripts));
-          htmlScriptBtn.classList.toggle('active', runHtmlScripts);
-          // HTML View が開いていれば、新しい設定で再描画する
-          if (isRichDiffView && document.getElementById('langSelect').value === 'html') {
-            try {
-              htmlDiffFrame.srcdoc = renderHtmlDiffDocument(beforeModel.getValue(), afterModel.getValue());
-            } catch (error) {
-              console.error("HTML View Render Error:", error);
-              restoreMonacoView();
-              showToast('⚠️ HTML Viewの生成に失敗しました');
-            }
-          }
-        });
+      // ---- Markdown View を開く (marked.parse → HtmlDiff.execute → DOMPurify.sanitize は不変) ----
+      function openMarkdownView() {
+        try {
+          const bText = beforeModel.getValue();
+          const aText = afterModel.getValue();
+
+          const bHtml = marked.parse(bText);
+          const aHtml = marked.parse(aText);
+
+          if (typeof HtmlDiff === 'undefined') throw new Error("HtmlDiff library is missing");
+          const diffedHtml = HtmlDiff.execute(bHtml, aHtml);
+
+          if (typeof DOMPurify === 'undefined') throw new Error("DOMPurify library is missing");
+          richDiffViewer.innerHTML = DOMPurify.sanitize(diffedHtml);
+
+          // Monacoエディタを display: none で隠さず、絶対配置で画面外へ退避させる
+          diffEditorContainer.style.position = 'absolute';
+          diffEditorContainer.style.left = '-9999px';
+          diffEditorContainer.style.visibility = 'hidden';
+
+          changeActionsContainer.style.display = 'none';
+          if (jumpControls) jumpControls.style.display = 'none';
+          htmlDiffFrame.style.display = 'none';
+          htmlDiffFrame.removeAttribute('srcdoc');
+          richDiffViewer.style.display = 'block';
+          mdResizers.forEach(r => r.style.display = 'flex');
+
+          richDiffBtn.classList.add('active');
+          htmlViewBtn.classList.remove('active');
+          isRichDiffView = true;
+          richViewMode = 'markdown';
+          saveAutoSave();
+        } catch (error) {
+          console.error("Markdown View Render Error:", error);
+          restoreMonacoView();
+          showToast('⚠️ Markdown Viewの生成に失敗しました');
+        }
+      }
+
+      // ---- HTML View を開く (ported rich-html-diff engine) ----
+      function openHtmlView() {
+        const bText = beforeModel.getValue();
+        const aText = afterModel.getValue();
+
+        // サニティチェック: AFTER テキストが要素を一切含まない（HTML として解釈できる
+        // ものが何もない）場合だけは View を開かず Monaco 表示のままにする。断片的・
+        // 崩れた HTML はブラウザが自動補正するのでそのまま許容する。
+        const sanityDoc = new DOMParser().parseFromString(aText, 'text/html');
+        if (!sanityDoc.body || sanityDoc.body.children.length === 0) {
+          showToast('⚠️ HTML として解釈できる要素がありません');
+          return;
+        }
+
+        try {
+          htmlDiffFrame.srcdoc = renderHtmlDiffDocument(bText, aText);
+
+          // Monacoエディタを display: none で隠さず、絶対配置で画面外へ退避させる
+          diffEditorContainer.style.position = 'absolute';
+          diffEditorContainer.style.left = '-9999px';
+          diffEditorContainer.style.visibility = 'hidden';
+
+          changeActionsContainer.style.display = 'none';
+          if (jumpControls) jumpControls.style.display = 'none';
+          richDiffViewer.style.display = 'none';
+          mdResizers.forEach(r => r.style.display = 'none');
+          htmlDiffFrame.style.display = 'block';
+
+          htmlViewBtn.classList.add('active');
+          richDiffBtn.classList.remove('active');
+          isRichDiffView = true;
+          richViewMode = 'html';
+          saveAutoSave();
+        } catch (error) {
+          console.error("HTML View Render Error:", error);
+          restoreMonacoView();
+          showToast('⚠️ HTML Viewの生成に失敗しました');
+        }
       }
 
       richDiffBtn.addEventListener('click', () => {
-        if (!isRichDiffView) {
-          const lang = document.getElementById('langSelect').value;
-          try {
-            if (lang === 'html') {
-              // ---- HTML View (ported rich-html-diff engine) ----
-              const bText = beforeModel.getValue();
-              const aText = afterModel.getValue();
+        if (isRichDiffView && richViewMode === 'markdown') { restoreMonacoView(); return; }
+        openMarkdownView();
+      });
 
-              htmlDiffFrame.srcdoc = renderHtmlDiffDocument(bText, aText);
-
-              // Monacoエディタを display: none で隠さず、絶対配置で画面外へ退避させる
-              diffEditorContainer.style.position = 'absolute';
-              diffEditorContainer.style.left = '-9999px';
-              diffEditorContainer.style.visibility = 'hidden';
-
-              changeActionsContainer.style.display = 'none';
-              if (jumpControls) jumpControls.style.display = 'none';
-              richDiffViewer.style.display = 'none';
-              mdResizers.forEach(r => r.style.display = 'none');
-              htmlDiffFrame.style.display = 'block';
-
-              richDiffBtn.classList.add('active');
-              isRichDiffView = true;
-              saveAutoSave();
-            } else {
-              const bText = beforeModel.getValue();
-              const aText = afterModel.getValue();
-
-              const bHtml = marked.parse(bText);
-              const aHtml = marked.parse(aText);
-
-              if (typeof HtmlDiff === 'undefined') throw new Error("HtmlDiff library is missing");
-              const diffedHtml = HtmlDiff.execute(bHtml, aHtml);
-
-              if (typeof DOMPurify === 'undefined') throw new Error("DOMPurify library is missing");
-              richDiffViewer.innerHTML = DOMPurify.sanitize(diffedHtml);
-
-              // Monacoエディタを display: none で隠さず、絶対配置で画面外へ退避させる
-              diffEditorContainer.style.position = 'absolute';
-              diffEditorContainer.style.left = '-9999px';
-              diffEditorContainer.style.visibility = 'hidden';
-
-              changeActionsContainer.style.display = 'none';
-              if (jumpControls) jumpControls.style.display = 'none';
-              richDiffViewer.style.display = 'block';
-              mdResizers.forEach(r => r.style.display = 'flex');
-
-              richDiffBtn.classList.add('active');
-              isRichDiffView = true;
-              saveAutoSave();
-            }
-          } catch (error) {
-            console.error(lang === 'html' ? "HTML View Render Error:" : "Markdown View Render Error:", error);
-            restoreMonacoView();
-            showToast(lang === 'html' ? '⚠️ HTML Viewの生成に失敗しました' : '⚠️ Markdown Viewの生成に失敗しました');
-          }
-        } else {
-          restoreMonacoView();
-        }
+      htmlViewBtn.addEventListener('click', () => {
+        if (isRichDiffView && richViewMode === 'html') { restoreMonacoView(); return; }
+        openHtmlView();
       });
       // ==============================================================
 
@@ -1242,11 +1384,12 @@ del[data-diff="del"]{
       btn.style.pointerEvents = 'none';
 
       const lang = document.getElementById('langSelect').value;
-      const data = JSON.stringify({ 
-        b: beforeModel.getValue(), 
-        a: afterModel.getValue(), 
-        l: lang, 
-        m: isRichDiffView 
+      const data = JSON.stringify({
+        b: beforeModel.getValue(),
+        a: afterModel.getValue(),
+        l: lang,
+        m: isRichDiffView,
+        vm: richViewMode
       });
 
       LZMA.compress(data, 9, function(result, error) {
@@ -1300,12 +1443,14 @@ del[data-diff="del"]{
                 document.getElementById('langSelect').value = d.l;
                 monaco.editor.setModelLanguage(beforeModel, d.l); monaco.editor.setModelLanguage(afterModel, d.l);
               }
-              updateRichDiffButtonAvailability();
 
               if (d.m) {
+                // vm が無い古いペイロードは、復元後の言語が html なら 'html'、それ以外は 'markdown' とみなす。
+                const mode = d.vm || (d.l === 'html' ? 'html' : 'markdown');
                 setTimeout(() => {
-                  const btn = document.getElementById('richDiffBtn');
-                  if (btn && !isRichDiffView && !btn.disabled) btn.click();
+                  if (isRichDiffView) return;
+                  const btn = document.getElementById(mode === 'html' ? 'htmlViewBtn' : 'richDiffBtn');
+                  if (btn) btn.click();
                 }, 150);
               }
             } catch (e) {}
