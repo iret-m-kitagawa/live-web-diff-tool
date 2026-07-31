@@ -121,6 +121,10 @@
     /* Markdown由来の通常の取り消し線 */
     .rich-diff-viewer del:not(.diffdel):not(.diffmod) { color: var(--text-muted); text-decoration: line-through; background-color: transparent; }
 
+    /* ===== HTML View (rich-html-diff engine) ===== */
+    .html-diff-frame { display: none; width: 100%; height: 100%; border: none; background-color: #ffffff; }
+    .btn:disabled { opacity: 0.35; cursor: not-allowed; pointer-events: none; }
+
     /* ===== Markdown View Resizer (左右対称フローティング・ハンドル) ===== */
     .md-resizer {
       position: absolute; top: 0; bottom: 0; width: 12px; cursor: col-resize; z-index: 150;
@@ -231,9 +235,12 @@
       </select>
     </div>
     <div class="toolbar-right">
+      <button class="btn active" id="htmlScriptBtn" aria-pressed="true" title="貼り付けた HTML 内の script を実行する" style="display: none;">
+        スクリプト
+      </button>
       <button class="btn" id="richDiffBtn" title="Toggle Rich Markdown Diff">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
-        Markdown View
+        <span id="richDiffBtnLabel">Markdown View</span>
       </button>
       <button class="btn" id="swapBtn" title="Swap BEFORE and AFTER">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4L4 8l4 4M4 8h16M16 20l4-4-4-4M20 16H4"/></svg>
@@ -258,7 +265,11 @@
   <div class="main-container" id="mainContainer">
     <div id="diffEditor" style="width: 100%; height: 100%;"></div>
     <div id="richDiffViewer" class="rich-diff-viewer markdown-body"></div>
-    
+    <!-- sandbox="allow-scripts allow-popups" is intentional (matches the source rich-html-diff tool):
+         pasted HTML's own <script> tags are allowed to run inside this sandboxed iframe so that
+         content restored from a shared Diff URL behaves exactly as authored, including its JS. -->
+    <iframe id="htmlDiffFrame" class="html-diff-frame" title="HTML 差分プレビュー" sandbox="allow-scripts allow-popups"></iframe>
+
     <div id="mdResizerLeft" class="md-resizer left" data-dir="left"></div>
     <div id="mdResizerRight" class="md-resizer right" data-dir="right"></div>
     
@@ -292,6 +303,348 @@
   </div>
 
   <script>
+    /* =======================================================================
+       Ported verbatim from rich-html-diff.html (source of truth, lines 118-418
+       core engine + 420-443 DIFF_CSS). Do NOT hand-edit; re-port from the source
+       file if changes are needed. CONTROLLER (lines 445-468) is intentionally
+       NOT ported — out of scope for this phase.
+       唯一の意図的な差異: TOKEN_RE のフラグを 'g' → 'gu'（該当箇所のコメント参照）。
+       それ以外はコード 301 行 / DIFF_CSS 文字列ともにバイト一致を検証済み。
+       ======================================================================= */
+    /* =======================================================================
+       Rich HTML Diff — core
+       レンダリング済みの見た目を保ったまま、テキストの差分だけを ins/del で
+       重ねる。外部依存なし。すべてローカル（ネットワーク送信は一切なし）。
+       ======================================================================= */
+
+    /* ---------- 1. トークナイザ（日本語は 1 文字単位） ---------- */
+    const TOKEN_RE = new RegExp(
+      '[\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff\\uf900-\\ufaff\\uff66-\\uff9f]' + // かな/漢字/半角カナ
+      '|[A-Za-z]+(?:[\'\u2019][A-Za-z]+)*' +                                            // 英単語
+      '|[0-9]+(?:[.,][0-9]+)*' +                                                        // 数値
+      '|\\s+' +                                                                          // 空白
+      '|[^\\s]',                                                                         // その他 1 文字
+      // 移植元からの唯一の意図的な差異: 'g' → 'gu'。
+      // u フラグ無しだと最後の [^\s] が UTF-16 コードユニット単位で一致するため、
+      // 絵文字などのサロゲートペアが 2 トークンに割れ、後段の splitText() が
+      // ペアの途中を切って文字が U+FFFD に破壊される（移植元にも同じ不具合あり）。
+      // u フラグを付けるとコードポイント単位になり解消する。かな/漢字/半角カナ/
+      // 数値/アポストロフィを含む非アストラル文字の分割結果は完全に不変であることを確認済み。
+      'gu');
+
+    function tokenize(s){ return s.match(TOKEN_RE) || []; }
+
+    /* ---------- 2. Myers 差分（トークン列） ---------- */
+    // 返り値: [{op:-1|0|1, items:[...]}, ...]  -1=削除 0=同一 1=追加
+    function diffSeq(a, b, maxD){
+      maxD = maxD || 6000;
+      const N = a.length, M = b.length;
+      if (N === 0 && M === 0) return [];
+      if (N === 0) return [{op:1, items:b.slice()}];
+      if (M === 0) return [{op:-1, items:a.slice()}];
+
+      const MAX = Math.min(N + M, maxD);
+      const off = MAX + 1;
+      let v = new Int32Array(2 * MAX + 3);
+      const trace = [];
+      let found = -1;
+
+      outer:
+      for (let d = 0; d <= MAX; d++){
+        trace.push(v.slice());
+        for (let k = -d; k <= d; k += 2){
+          let x;
+          if (k === -d || (k !== d && v[off + k - 1] < v[off + k + 1])) x = v[off + k + 1];
+          else x = v[off + k - 1] + 1;
+          let y = x - k;
+          while (x < N && y < M && a[x] === b[y]) { x++; y++; }
+          v[off + k] = x;
+          if (x >= N && y >= M){ found = d; break outer; }
+        }
+      }
+      if (found < 0) return null; // 差分が大きすぎる → 呼び出し側でフォールバック
+
+      // バックトラック
+      const rev = [];
+      let x = N, y = M;
+      for (let d = found; d >= 0; d--){
+        const vv = trace[d];
+        const k = x - y;
+        let prevK;
+        if (k === -d || (k !== d && vv[off + k - 1] < vv[off + k + 1])) prevK = k + 1;
+        else prevK = k - 1;
+        const prevX = vv[off + prevK], prevY = prevX - prevK;
+        while (x > prevX && y > prevY){ rev.push([0, a[x - 1]]); x--; y--; }
+        if (d > 0){
+          if (x > prevX) rev.push([-1, a[x - 1]]);
+          else           rev.push([1,  b[y - 1]]);
+          x = prevX; y = prevY;
+        }
+      }
+      rev.reverse();
+
+      const out = [];
+      for (const [op, item] of rev){
+        if (out.length && out[out.length - 1].op === op) out[out.length - 1].items.push(item);
+        else out.push({op, items:[item]});
+      }
+      return out;
+    }
+
+    /* ---------- 3. 構造単位の抽出 ---------- */
+    // 行(tr)とブロックを「単位」とし、他の単位を含まないものだけを葉として使う
+    const UNIT_SEL = 'tr,p,li,h1,h2,h3,h4,h5,h6,pre,blockquote,dd,dt,figcaption,caption';
+
+    function unitsOf(root){
+      const all = Array.from(root.querySelectorAll(UNIT_SEL));
+      return all.filter(el => !el.querySelector(UNIT_SEL));
+    }
+    function norm(s){ return (s || '').replace(/\s+/g, ' ').trim(); }
+    function sig(el){ return el.tagName + '\u0000' + norm(el.textContent); }
+
+    // 同種ブロックか（置換ペアとみなせるか）
+    function similar(a, b){
+      if (a.tagName !== b.tagName) return false;
+      const ta = tokenize(norm(a.textContent)), tb = tokenize(norm(b.textContent));
+      if (!ta.length && !tb.length) return true;
+      const setA = new Set(ta);
+      let hit = 0;
+      for (const t of tb) if (setA.has(t)) hit++;
+      return hit / Math.max(ta.length, tb.length) >= 0.34;
+    }
+
+    /* ---------- 4. テキストノード操作 ---------- */
+    function textNodes(root){
+      const out = [];
+      const walk = n => {
+        for (let c = n.firstChild; c; c = c.nextSibling){
+          if (c.nodeType === 3){ if (c.data.length) out.push(c); }
+          else if (c.nodeType === 1){
+            const t = c.tagName;
+            if (t === 'SCRIPT' || t === 'STYLE') continue;
+            if (c.dataset && c.dataset.diff === 'del') continue; // 自分が挿入した del は数えない
+            walk(c);
+          }
+        }
+      };
+      walk(root);
+      return out;
+    }
+
+    function wrapRange(root, start, end, cls){
+      if (end <= start) return;
+      const nodes = textNodes(root);
+      const targets = [];
+      let acc = 0;
+      for (const n of nodes){
+        const s = acc, e = acc + n.data.length; acc = e;
+        if (e <= start || s >= end) continue;
+        targets.push([n, Math.max(start, s) - s, Math.min(end, e) - s]);
+      }
+      for (let i = targets.length - 1; i >= 0; i--){
+        const [n, from, to] = targets[i];
+        let node = n;
+        if (to < node.data.length) node.splitText(to);
+        if (from > 0) node = node.splitText(from);
+        const w = node.ownerDocument.createElement('ins');
+        w.dataset.diff = cls;
+        node.parentNode.insertBefore(w, node);
+        w.appendChild(node);
+      }
+    }
+
+    function insertDeleted(root, at, text){
+      if (!text) return;
+      const doc = root.ownerDocument;
+      const mk = () => { const d = doc.createElement('del'); d.dataset.diff = 'del'; d.textContent = text; return d; };
+      const nodes = textNodes(root);
+      let acc = 0;
+      for (const n of nodes){
+        const s = acc, e = acc + n.data.length; acc = e;
+        if (at <= e){
+          const local = at - s;
+          if (local >= n.data.length){ n.parentNode.insertBefore(mk(), n.nextSibling); return; }
+          let node = n;
+          if (local > 0) node = n.splitText(local);
+          node.parentNode.insertBefore(mk(), node);
+          return;
+        }
+      }
+      root.appendChild(mk());
+    }
+
+    /* ---------- 5. 1 コンテナ内のインライン差分 ---------- */
+    function inlineDiff(oldEl, newEl, tally){
+      const oldText = oldEl ? oldEl.textContent : '';
+      const newText = newEl.textContent;
+      if (oldText === newText) return false;
+
+      const ops = diffSeq(tokenize(oldText), tokenize(newText));
+      if (!ops){ // 大きすぎる → ブロックごと置換扱い
+        markBlock(newEl, 'ins', tally, newText.length);
+        return true;
+      }
+
+      const edits = [];
+      let pos = 0;
+      for (const op of ops){
+        const text = op.items.join('');
+        if (op.op === 0) pos += text.length;
+        else if (op.op === 1){ edits.push({k:'ins', s:pos, e:pos + text.length}); pos += text.length; tally.add += text.length; }
+        else { edits.push({k:'del', at:pos, text}); tally.del += text.length; }
+      }
+      edits.sort((x, y) => (y.k === 'ins' ? y.s : y.at) - (x.k === 'ins' ? x.s : x.at));
+      for (const ed of edits){
+        if (ed.k === 'ins') wrapRange(newEl, ed.s, ed.e, 'ins');
+        else insertDeleted(newEl, ed.at, ed.text);
+      }
+      return edits.length > 0;
+    }
+
+    function markBlock(el, kind, tally, chars){
+      el.setAttribute('data-diff-block', kind);
+      if (kind === 'ins') tally.add += chars; else tally.del += chars;
+    }
+
+    /* ---------- 6. 行(tr)はセル単位で突き合わせる ---------- */
+    const CELL_SEL = 'td,th';
+    function diffUnitPair(oldU, newU, tally){
+      let changed = false;
+      if (newU.tagName === 'TR' && oldU.tagName === 'TR'){
+        const oc = Array.from(oldU.querySelectorAll(CELL_SEL));
+        const nc = Array.from(newU.querySelectorAll(CELL_SEL));
+        const n = Math.min(oc.length, nc.length);
+        for (let i = 0; i < n; i++) changed = inlineDiff(oc[i], nc[i], tally) || changed;
+        for (let i = n; i < nc.length; i++){ markBlock(nc[i], 'ins', tally, nc[i].textContent.length); changed = true; }
+        if (oc.length > nc.length) changed = true; // 減ったセルは表構造を壊すため印のみ
+        if (changed) newU.setAttribute('data-diff-row', 'changed');
+        return changed;
+      }
+      changed = inlineDiff(oldU, newU, tally);
+      if (changed) newU.setAttribute('data-diff-row', 'changed');
+      return changed;
+    }
+
+    /* ---------- 7. ドキュメント全体 ---------- */
+    function buildDiff(oldDoc, newDoc){
+      const tally = {add:0, del:0, blocks:0};
+      const oldUnits = unitsOf(oldDoc.body);
+      const newUnits = unitsOf(newDoc.body);
+
+      const ops = diffSeq(oldUnits.map(sig), newUnits.map(sig), 20000);
+      const plan = []; // {type:'pair'|'ins'|'del', o, n, idx}
+
+      if (!ops){
+        const m = Math.min(oldUnits.length, newUnits.length);
+        for (let i = 0; i < m; i++) plan.push({type:'pair', o:oldUnits[i], n:newUnits[i]});
+        for (let i = m; i < newUnits.length; i++) plan.push({type:'ins', n:newUnits[i]});
+        for (let i = m; i < oldUnits.length; i++) plan.push({type:'del', o:oldUnits[i], idx:newUnits.length});
+      } else {
+        let oi = 0, ni = 0, i = 0;
+        while (i < ops.length){
+          const op = ops[i];
+          if (op.op === 0){
+            for (let j = 0; j < op.items.length; j++, oi++, ni++) plan.push({type:'pair', o:oldUnits[oi], n:newUnits[ni]});
+            i++; continue;
+          }
+          // 削除ラン + 隣接する追加ラン を「置換」として突き合わせる
+          let delRun = [], insRun = [], insStart = ni;
+          if (op.op === -1){
+            delRun = oldUnits.slice(oi, oi + op.items.length); oi += op.items.length; i++;
+            if (i < ops.length && ops[i].op === 1){ insStart = ni; insRun = newUnits.slice(ni, ni + ops[i].items.length); ni += ops[i].items.length; i++; }
+          } else {
+            insStart = ni; insRun = newUnits.slice(ni, ni + op.items.length); ni += op.items.length; i++;
+            if (i < ops.length && ops[i].op === -1){ delRun = oldUnits.slice(oi, oi + ops[i].items.length); oi += ops[i].items.length; i++; }
+          }
+          let d = 0, n = 0;
+          while (d < delRun.length && n < insRun.length){
+            if (similar(delRun[d], insRun[n])){ plan.push({type:'pair', o:delRun[d], n:insRun[n]}); d++; n++; }
+            else if (delRun.length - d > insRun.length - n){ plan.push({type:'del', o:delRun[d], idx:insStart + n}); d++; }
+            else { plan.push({type:'ins', n:insRun[n]}); n++; }
+          }
+          for (; d < delRun.length; d++) plan.push({type:'del', o:delRun[d], idx:insStart + n});
+          for (; n < insRun.length; n++) plan.push({type:'ins', n:insRun[n]});
+        }
+      }
+
+      const removed = [];
+      for (const p of plan){
+        if (p.type === 'pair'){ if (diffUnitPair(p.o, p.n, tally)) tally.blocks++; }
+        else if (p.type === 'ins'){ markBlock(p.n, 'ins', tally, p.n.textContent.length); tally.blocks++; }
+        else removed.push(p);
+      }
+      // 削除ブロックは最後に挿入（インライン差分で DOM が動くのを避ける）
+      for (const p of removed){
+        const clone = newDoc.importNode(p.o, true);
+        clone.setAttribute('data-diff-block', 'del');
+        tally.del += p.o.textContent.length; tally.blocks++;
+        if (!placeDeleted(clone, newUnits, p.idx)) orphanBin(newDoc).appendChild(clone);
+      }
+      return tally;
+    }
+
+    // 削除ブロックを新版 DOM の妥当な位置に置く（表構造を壊さない）
+    const TABLE_PART = /^(TABLE|THEAD|TBODY|TFOOT|TR|TD|TH)$/;
+    function placeDeleted(clone, units, idx){
+      if (clone.tagName === 'TR'){
+        for (let i = idx; i < units.length; i++)
+          if (units[i].tagName === 'TR' && units[i].parentNode){ units[i].parentNode.insertBefore(clone, units[i]); return true; }
+        for (let i = idx - 1; i >= 0; i--)
+          if (units[i].tagName === 'TR' && units[i].parentNode){ units[i].parentNode.insertBefore(clone, units[i].nextSibling); return true; }
+        return false;
+      }
+      const escape = el => { // 表の中にいる参照要素は表そのものまで持ち上げる
+        let n = el;
+        while (n && n.parentNode && TABLE_PART.test(n.parentNode.tagName)) n = n.parentNode;
+        return n;
+      };
+      const after = units[idx] && escape(units[idx]);
+      if (after && after.parentNode){ after.parentNode.insertBefore(clone, after); return true; }
+      const before = units[idx - 1] && escape(units[idx - 1]);
+      if (before && before.parentNode){ before.parentNode.insertBefore(clone, before.nextSibling); return true; }
+      return false;
+    }
+
+    function orphanBin(doc){
+      let bin = doc.getElementById('__diff_removed__');
+      if (!bin){
+        bin = doc.createElement('div');
+        bin.id = '__diff_removed__';
+        bin.setAttribute('data-diff-block', 'del');
+        const h = doc.createElement('p');
+        h.textContent = '── 新版で削除され、挿入位置を特定できなかったブロック ──';
+        bin.appendChild(h);
+        doc.body.appendChild(bin);
+      }
+      return bin;
+    }
+
+    /* ---------- 8. 差分表示用スタイル ---------- */
+    const DIFF_CSS = `
+ins[data-diff="ins"]{
+  background:rgba(46,160,67,.30); color:inherit; text-decoration:none;
+  border-radius:2px; box-shadow:0 0 0 1px rgba(46,160,67,.35);
+}
+del[data-diff="del"]{
+  background:rgba(248,81,73,.22); color:inherit; text-decoration:line-through;
+  border-radius:2px; box-shadow:0 0 0 1px rgba(248,81,73,.30); opacity:.9;
+}
+[data-diff-block="ins"]{ background:rgba(46,160,67,.14) !important; box-shadow:inset 3px 0 0 #2ea043; }
+[data-diff-block="del"]{ background:rgba(248,81,73,.12) !important; box-shadow:inset 3px 0 0 #f85149; opacity:.75; }
+[data-diff-block="del"] *{ text-decoration:line-through; }
+#__diff_removed__{ margin-top:2rem; padding:1rem; }
+.diff-only [data-diff-row], .diff-only [data-diff-block]{ outline:1px dashed rgba(195,154,95,.4); outline-offset:2px; }
+.diff-only tr:not([data-diff-row]):not([data-diff-block]),
+.diff-only li:not([data-diff-row]):not([data-diff-block]),
+.diff-only p:not([data-diff-row]):not([data-diff-block]),
+.diff-only pre:not([data-diff-row]):not([data-diff-block]),
+.diff-only blockquote:not([data-diff-row]):not([data-diff-block]){ display:none; }
+.diff-flash{ animation:diffFlash .8s ease-out; }
+@keyframes diffFlash{ 0%{filter:brightness(1)} 35%{filter:brightness(2.1)} 100%{filter:brightness(1)} }
+@media (prefers-reduced-motion:reduce){ .diff-flash{ animation:none; outline:2px solid #c39a5f } }
+`;
+    /* ===================== end ported rich-html-diff engine ===================== */
+
     const THEMES = {
       'vs-dark': {
         css: { '--bg-main': '#1e1e1e', '--bg-panel': '#252526', '--border-color': '#3c3c3c', '--text-main': '#cccccc', '--text-muted': '#858585' },
@@ -366,6 +719,34 @@
       try { sessionStorage.removeItem(AUTO_SAVE_KEY); } catch (e) {}
     }
 
+    // 現在の langSelect の値に応じて、Rich View 切替ボタン (richDiffBtn) とスクリプト実行
+    // トグル (htmlScriptBtn) の有効/表示状態を更新する。restoreAutoSave / loadFromUrl /
+    // 初期化時の 3 箇所と langSelect の change ハンドラから呼ばれるため top-level 関数にする。
+    function updateRichDiffButtonAvailability() {
+      const richBtn = document.getElementById('richDiffBtn');
+      const richBtnLabel = document.getElementById('richDiffBtnLabel');
+      const scriptBtn = document.getElementById('htmlScriptBtn');
+      const langSelectEl = document.getElementById('langSelect');
+      if (!richBtn || !langSelectEl) return;
+
+      const lang = langSelectEl.value;
+      const supported = (lang === 'markdown' || lang === 'html');
+
+      // 対応外の言語に切り替わった場合、無効化する「前」に開いている Rich View を閉じる。
+      // disabled 状態のボタンへ .click() してもリスナーは発火しない (ブラウザ仕様) ため、
+      // 「閉じてから無効化」の順序を必ず守る。
+      if (!supported && isRichDiffView && !richBtn.disabled) {
+        richBtn.click();
+      }
+
+      richBtn.disabled = !supported;
+      if (richBtnLabel) richBtnLabel.textContent = (lang === 'html') ? 'HTML View' : 'Markdown View';
+      richBtn.title = supported
+        ? ((lang === 'html') ? 'Toggle Rich HTML Diff' : 'Toggle Rich Markdown Diff')
+        : 'Rich View は Markdown / HTML でのみ利用できます';
+      if (scriptBtn) scriptBtn.style.display = (lang === 'html') ? 'flex' : 'none';
+    }
+
     function restoreAutoSave() {
       let raw;
       try { raw = sessionStorage.getItem(AUTO_SAVE_KEY); } catch (e) { return; }
@@ -379,10 +760,11 @@
           monaco.editor.setModelLanguage(beforeModel, d.l);
           monaco.editor.setModelLanguage(afterModel, d.l);
         }
+        updateRichDiffButtonAvailability();
         if (d.m) {
           setTimeout(() => {
             const btn = document.getElementById('richDiffBtn');
-            if (btn && !isRichDiffView) btn.click();
+            if (btn && !isRichDiffView && !btn.disabled) btn.click();
           }, 150);
         }
       } catch (e) {}
@@ -633,33 +1015,44 @@
 
       document.getElementById('langSelect').addEventListener('change', (e) => {
         const lang = e.target.value; monaco.editor.setModelLanguage(beforeModel, lang); monaco.editor.setModelLanguage(afterModel, lang);
+        updateRichDiffButtonAvailability();
         saveAutoSave();
       });
 
-      // ========== 👁️ Markdown View 機能 ==========
+      // ========== 👁️ Markdown View / HTML View 機能 ==========
       const richDiffBtn = document.getElementById('richDiffBtn');
+      const htmlScriptBtn = document.getElementById('htmlScriptBtn');
       const diffEditorContainer = document.getElementById('diffEditor');
       const richDiffViewer = document.getElementById('richDiffViewer');
+      const htmlDiffFrame = document.getElementById('htmlDiffFrame');
       const changeActionsContainer = document.getElementById('changeActions');
       const jumpControls = document.querySelector('.jump-controls');
+
+      // HTML View 用: 貼り付けた HTML 内の <script> を実行するかどうか。source tool の
+      // bJs (aria-pressed="true" がデフォルト) に合わせ、デフォルトは実行する (true)。
+      let runHtmlScripts = true;
+
+      updateRichDiffButtonAvailability();
 
       const restoreMonacoView = () => {
         // Monacoの表示を元に戻す (display: none からの復帰ではないためバグが発生しない)
         diffEditorContainer.style.position = '';
         diffEditorContainer.style.left = '';
         diffEditorContainer.style.visibility = '';
-        
+
         richDiffViewer.style.display = 'none';
-        
+        htmlDiffFrame.style.display = 'none';
+        htmlDiffFrame.removeAttribute('srcdoc');
+
         if (typeof mdResizers !== 'undefined') {
           mdResizers.forEach(r => r.style.display = 'none');
         }
-        
+
         changeActionsContainer.style.display = 'block';
         if (jumpControls) jumpControls.style.display = isInlineView ? 'none' : 'flex';
         richDiffBtn.classList.remove('active');
         isRichDiffView = false;
-        
+
         // 念のためレイアウト再計算
         if (typeof diffEditor !== 'undefined' && diffEditor) {
           diffEditor.layout();
@@ -669,38 +1062,98 @@
         saveAutoSave();
       };
 
+      // 貼り付けた HTML の生 BEFORE/AFTER テキストに対して、ported された
+      // rich-html-diff エンジン (buildDiff / DIFF_CSS ほか) を実行し、
+      // htmlDiffFrame の srcdoc として結果ドキュメントを組み立てる。
+      function renderHtmlDiffDocument(bText, aText) {
+        const parser = new DOMParser();
+        const oldDoc = parser.parseFromString(bText, 'text/html');
+        const newDoc = parser.parseFromString(aText, 'text/html');
+        buildDiff(oldDoc, newDoc);
+
+        if (!runHtmlScripts) newDoc.querySelectorAll('script').forEach(s => s.remove());
+
+        const styleEl = newDoc.createElement('style');
+        styleEl.textContent = DIFF_CSS;
+        newDoc.head.appendChild(styleEl);
+
+        return '<!DOCTYPE html>\n' + newDoc.documentElement.outerHTML;
+      }
+
+      if (htmlScriptBtn) {
+        htmlScriptBtn.addEventListener('click', () => {
+          runHtmlScripts = !runHtmlScripts;
+          htmlScriptBtn.setAttribute('aria-pressed', String(runHtmlScripts));
+          htmlScriptBtn.classList.toggle('active', runHtmlScripts);
+          // HTML View が開いていれば、新しい設定で再描画する
+          if (isRichDiffView && document.getElementById('langSelect').value === 'html') {
+            try {
+              htmlDiffFrame.srcdoc = renderHtmlDiffDocument(beforeModel.getValue(), afterModel.getValue());
+            } catch (error) {
+              console.error("HTML View Render Error:", error);
+              restoreMonacoView();
+              showToast('⚠️ HTML Viewの生成に失敗しました');
+            }
+          }
+        });
+      }
+
       richDiffBtn.addEventListener('click', () => {
         if (!isRichDiffView) {
+          const lang = document.getElementById('langSelect').value;
           try {
-            const bText = beforeModel.getValue();
-            const aText = afterModel.getValue();
-            
-            const bHtml = marked.parse(bText);
-            const aHtml = marked.parse(aText);
-            
-            if (typeof HtmlDiff === 'undefined') throw new Error("HtmlDiff library is missing");
-            const diffedHtml = HtmlDiff.execute(bHtml, aHtml);
+            if (lang === 'html') {
+              // ---- HTML View (ported rich-html-diff engine) ----
+              const bText = beforeModel.getValue();
+              const aText = afterModel.getValue();
 
-            if (typeof DOMPurify === 'undefined') throw new Error("DOMPurify library is missing");
-            richDiffViewer.innerHTML = DOMPurify.sanitize(diffedHtml);
-            
-            // Monacoエディタを display: none で隠さず、絶対配置で画面外へ退避させる
-            diffEditorContainer.style.position = 'absolute';
-            diffEditorContainer.style.left = '-9999px';
-            diffEditorContainer.style.visibility = 'hidden';
-            
-            changeActionsContainer.style.display = 'none';
-            if (jumpControls) jumpControls.style.display = 'none';
-            richDiffViewer.style.display = 'block';
-            mdResizers.forEach(r => r.style.display = 'flex');
-            
-            richDiffBtn.classList.add('active');
-            isRichDiffView = true;
-            saveAutoSave();
+              htmlDiffFrame.srcdoc = renderHtmlDiffDocument(bText, aText);
+
+              // Monacoエディタを display: none で隠さず、絶対配置で画面外へ退避させる
+              diffEditorContainer.style.position = 'absolute';
+              diffEditorContainer.style.left = '-9999px';
+              diffEditorContainer.style.visibility = 'hidden';
+
+              changeActionsContainer.style.display = 'none';
+              if (jumpControls) jumpControls.style.display = 'none';
+              richDiffViewer.style.display = 'none';
+              mdResizers.forEach(r => r.style.display = 'none');
+              htmlDiffFrame.style.display = 'block';
+
+              richDiffBtn.classList.add('active');
+              isRichDiffView = true;
+              saveAutoSave();
+            } else {
+              const bText = beforeModel.getValue();
+              const aText = afterModel.getValue();
+
+              const bHtml = marked.parse(bText);
+              const aHtml = marked.parse(aText);
+
+              if (typeof HtmlDiff === 'undefined') throw new Error("HtmlDiff library is missing");
+              const diffedHtml = HtmlDiff.execute(bHtml, aHtml);
+
+              if (typeof DOMPurify === 'undefined') throw new Error("DOMPurify library is missing");
+              richDiffViewer.innerHTML = DOMPurify.sanitize(diffedHtml);
+
+              // Monacoエディタを display: none で隠さず、絶対配置で画面外へ退避させる
+              diffEditorContainer.style.position = 'absolute';
+              diffEditorContainer.style.left = '-9999px';
+              diffEditorContainer.style.visibility = 'hidden';
+
+              changeActionsContainer.style.display = 'none';
+              if (jumpControls) jumpControls.style.display = 'none';
+              richDiffViewer.style.display = 'block';
+              mdResizers.forEach(r => r.style.display = 'flex');
+
+              richDiffBtn.classList.add('active');
+              isRichDiffView = true;
+              saveAutoSave();
+            }
           } catch (error) {
-            console.error("Markdown View Render Error:", error);
+            console.error(lang === 'html' ? "HTML View Render Error:" : "Markdown View Render Error:", error);
             restoreMonacoView();
-            showToast('⚠️ Markdown Viewの生成に失敗しました');
+            showToast(lang === 'html' ? '⚠️ HTML Viewの生成に失敗しました' : '⚠️ Markdown Viewの生成に失敗しました');
           }
         } else {
           restoreMonacoView();
@@ -847,11 +1300,12 @@
                 document.getElementById('langSelect').value = d.l;
                 monaco.editor.setModelLanguage(beforeModel, d.l); monaco.editor.setModelLanguage(afterModel, d.l);
               }
-              
+              updateRichDiffButtonAvailability();
+
               if (d.m) {
                 setTimeout(() => {
                   const btn = document.getElementById('richDiffBtn');
-                  if (btn && !isRichDiffView) btn.click();
+                  if (btn && !isRichDiffView && !btn.disabled) btn.click();
                 }, 150);
               }
             } catch (e) {}
