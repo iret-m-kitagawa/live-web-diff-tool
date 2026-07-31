@@ -418,7 +418,45 @@
       'H4','H5','H6','HEADER','HGROUP','LEGEND','LI','MAIN','NAV','OL','P','PRE',
       'SECTION','SUMMARY','TABLE','TBODY','TD','TFOOT','TH','THEAD','TR','UL'
     ]);
-    function isBlockEl(el){ return !!el && el.nodeType === 1 && BLOCK_TAGS.has(el.tagName); }
+    // 単位の境界は本来タグではなく CSS の display で決まる。BLOCK_TAGS はあくまで
+    // フォールバックで、通常は「両ドキュメントを非表示 iframe に描画して
+    // getComputedStyle で解決した実際の display」で判定する（classifyBlockBoundaries）。
+    //
+    // タグ名だけで判定すると、例えば .toc a{display:block} のように CSS でブロック化
+    // されたリンクをインライン扱いしてしまい、目次全体が 1 単位に潰れて各リンクの
+    // 追加・削除が独立して表現できない。逆に display:inline な div も誤判定になる。
+    // なお flex/grid の子要素は CSS 仕様で display がブロック化されるため、
+    // 計算値を見るだけで「flex アイテムは独立した単位」も自動的に満たされる。
+    //
+    // display:none も境界として扱う。単位にはならず親に混ざる、という状態を避けたい
+    // （非表示テキストが見える単位の差分に混入してしまう）ため。
+    const BLOCKISH_DISPLAY = new Set([
+      'block','flow-root','flex','grid','list-item','table','table-row','table-cell',
+      'table-header-group','table-row-group','table-footer-group','table-caption','none'
+    ]);
+    let boundaryEls = null;    // Set<Element> — 境界と判定された要素
+    let classifiedDocs = null; // Set<Document> — 判定済みのドキュメント
+
+    function classifyBlockBoundaries(doc){
+      const win = doc.defaultView;
+      if (!win) return false;
+      for (const el of doc.querySelectorAll('*')){
+        let d = null;
+        try { d = win.getComputedStyle(el).display; } catch (e) { d = null; }
+        const isB = d ? BLOCKISH_DISPLAY.has(d) : BLOCK_TAGS.has(el.tagName);
+        if (isB) boundaryEls.add(el);
+      }
+      if (doc.body) boundaryEls.add(doc.body);
+      classifiedDocs.add(doc);
+      return true;
+    }
+
+    function isBlockEl(el){
+      if (!el || el.nodeType !== 1) return false;
+      // 判定済みドキュメントの要素はその結果を信じる（未収録＝インライン）
+      if (classifiedDocs && classifiedDocs.has(el.ownerDocument)) return boundaryEls.has(el);
+      return BLOCK_TAGS.has(el.tagName);
+    }
 
     function unitsOf(root){
       const out = [];
@@ -724,8 +762,46 @@
         while (n-- > 0 && x.parentElement && x.parentElement.tagName !== 'BODY') x = x.parentElement;
         return x;
       };
+      // 旧DOMの要素 sib に対応する新DOMの要素を求める。sib の中（または sib 自身）に
+      // ある対応済み単位を1つ見つけ、その単位から sib までの階層数ぶん新DOM側を
+      // 持ち上げる。
+      const mapToNew = (sib) => {
+        for (let i = 0; i < oldUnits.length; i++){
+          const u = oldUnits[i];
+          if (u !== sib && !sib.contains(u)) continue;
+          const nu = pairMap.get(u);
+          if (!nu || !nu.parentElement) continue;
+          let lv = 0, x = u;
+          while (x && x !== sib && x.parentElement && lv < 40) { x = x.parentElement; lv++; }
+          if (x !== sib) continue;
+          const t = liftLevels(nu, lv);
+          if (t && t.parentElement) return t;
+        }
+        return null;
+      };
+
       const placeDeletedBlock = (clone, anc, a, b) => {
-        // 後ろ側の対応単位を優先（削除位置の直後に入るので元の順序に近い）
+        // まず「旧DOMで同じ親を共有する兄弟」を基準にする。文書順で最も近い対応単位を
+        // 使うと、単位が細かい場合に全く別のサブツリー（例: ヘッダのバッジに対して
+        // 目次の最初のリンク）が基準になり、無関係なコンテナへ挿入されてしまう。
+        // 同じ親の中で位置を決めれば、その取り違えは起きない。
+        const parent = anc.parentElement;
+        if (parent){
+          const sibs = Array.from(parent.children);
+          const at = sibs.indexOf(anc);
+          for (let i = at + 1; i < sibs.length; i++){
+            const t = mapToNew(sibs[i]);
+            if (t){ const f = fitTarget(t, clone.tagName); if (f.parentElement){ f.parentElement.insertBefore(clone, f); return true; } }
+          }
+          for (let i = at - 1; i >= 0; i--){
+            const t = mapToNew(sibs[i]);
+            if (t){ const f = fitTarget(t, clone.tagName); if (f.parentElement){ f.parentElement.insertBefore(clone, f.nextSibling); return true; } }
+          }
+          // 兄弟に手がかりが無い場合は、親そのものの対応先の内側へ入れる
+          const pt = mapToNew(parent);
+          if (pt){ const f = fitTarget(pt, clone.tagName); if (f === pt) { pt.appendChild(clone); return true; } }
+        }
+        // 最後の手段: 文書順で近い対応単位を基準にする（旧来の挙動）
         for (let i = b + 1; i < oldUnits.length; i++){
           const nu = pairMap.get(oldUnits[i]);
           if (!nu || !nu.parentElement) continue;
@@ -1189,10 +1265,65 @@ a[data-diff-nolink]{ cursor: default; }
       // 貼り付けた HTML の生 BEFORE/AFTER テキストに対して、ported された
       // rich-html-diff エンジン (buildDiff / DIFF_CSS ほか) を実行し、
       // htmlDiffFrame の srcdoc として結果ドキュメントを組み立てる。
-      function renderHtmlDiffDocument(bText, aText) {
-        const parser = new DOMParser();
-        const oldDoc = parser.parseFromString(bText, 'text/html');
-        const newDoc = parser.parseFromString(aText, 'text/html');
+      // 計測用の隠し iframe に HTML を描画して、CSS が解決された document を得る。
+      // sandbox は 'allow-same-origin' のみ: 親から contentDocument /
+      // getComputedStyle を読む必要がある一方、貼り付けたページのスクリプトは
+      // この計測用フレームでは絶対に実行させない（実行するのは表示用フレームだけ）。
+      // sandbox="" にすると不透明オリジンになり contentDocument が読めなくなる。
+      function stageDocument(html) {
+        return new Promise((resolve, reject) => {
+          const f = document.createElement('iframe');
+          f.setAttribute('sandbox', 'allow-same-origin');
+          f.setAttribute('aria-hidden', 'true');
+          f.setAttribute('tabindex', '-1');
+          f.style.cssText = 'position:absolute;left:-99999px;top:0;width:1200px;height:800px;border:0;visibility:hidden;';
+          // srcdoc は DOM 挿入より前に設定する。挿入してから設定すると、挿入時の
+          // about:blank ロードで load イベントが先に発火し、中身が空のドキュメントを
+          // つかんでしまう（実際にそれで出力が 1.3KB に欠落した）。
+          f.srcdoc = html;
+
+          const wantsContent = !!(html && html.trim());
+          const deadline = Date.now() + 8000;
+          const ready = () => {
+            const doc = f.contentDocument;
+            if (!doc || doc.readyState !== 'complete' || !doc.body) return false;
+            // 中身があるはずなのに空なら、まだ about:blank 段階と判断して待つ
+            return !wantsContent || doc.body.children.length > 0 || !!doc.body.textContent.trim();
+          };
+          const poll = () => {
+            if (ready()) { resolve({ frame: f, doc: f.contentDocument }); return; }
+            if (!f.contentDocument) { removeStage(f); reject(new Error('staged document is not readable')); return; }
+            if (Date.now() > deadline) { removeStage(f); reject(new Error('staging timed out')); return; }
+            setTimeout(poll, 16);
+          };
+          document.body.appendChild(f);
+          poll();
+        });
+      }
+      function removeStage(f) { if (f && f.parentNode) f.parentNode.removeChild(f); }
+
+      async function renderHtmlDiffDocument(bText, aText) {
+        let oldStage = null, newStage = null;
+        try {
+          oldStage = await stageDocument(bText);
+          newStage = await stageDocument(aText);
+          const oldDoc = oldStage.doc, newDoc = newStage.doc;
+
+          boundaryEls = new Set();
+          classifiedDocs = new Set();
+          classifyBlockBoundaries(oldDoc);
+          classifyBlockBoundaries(newDoc);
+
+          return buildHtmlDiffOutput(oldDoc, newDoc);
+        } finally {
+          boundaryEls = null;
+          classifiedDocs = null;
+          removeStage(oldStage && oldStage.frame);
+          removeStage(newStage && newStage.frame);
+        }
+      }
+
+      function buildHtmlDiffOutput(oldDoc, newDoc) {
         buildDiff(oldDoc, newDoc);
 
         // about:srcdoc ドキュメントは親ページ（このツール自身）の base URL を継承するため、
@@ -1253,7 +1384,8 @@ a[data-diff-nolink]{ cursor: default; }
       }
 
       // ---- HTML View を開く (ported rich-html-diff engine) ----
-      function openHtmlView() {
+      let htmlRenderSeq = 0;
+      async function openHtmlView() {
         const bText = beforeModel.getValue();
         const aText = afterModel.getValue();
 
@@ -1267,7 +1399,11 @@ a[data-diff-nolink]{ cursor: default; }
         }
 
         try {
-          htmlDiffFrame.srcdoc = renderHtmlDiffDocument(bText, aText);
+          // 描画待ちが入るため非同期。連続クリック時は最後の要求だけを反映する。
+          const seq = ++htmlRenderSeq;
+          const docHtml = await renderHtmlDiffDocument(bText, aText);
+          if (seq !== htmlRenderSeq) return;
+          htmlDiffFrame.srcdoc = docHtml;
 
           // Monacoエディタを display: none で隠さず、絶対配置で画面外へ退避させる
           diffEditorContainer.style.position = 'absolute';
