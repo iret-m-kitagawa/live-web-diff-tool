@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>操作監査ログ - 管理コンソール</title>
+<style>
+  :root {
+    --bg: #0f1420;
+    --panel: #161d2e;
+    --panel-2: #1b2338;
+    --ink: #dce3f0;
+    --sub: #8b96ad;
+    --line: #2a334a;
+    --ok: #34d399;
+    --ok-bg: rgba(52,211,153,.12);
+    --ng: #f87171;
+    --ng-bg: rgba(248,113,113,.14);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    line-height: 1.6;
+  }
+  .page { max-width: 960px; margin: 0 auto; padding: 36px 28px 60px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.subtitle { color: var(--sub); font-size: 13px; margin: 0 0 22px; }
+  .statbar {
+    display: flex;
+    gap: 14px;
+    margin-bottom: 20px;
+  }
+  .stat {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 16px;
+    font-size: 12px;
+    color: var(--sub);
+  }
+  .stat b { display: block; font-size: 17px; color: var(--ink); font-weight: 600; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+    font-size: 13px;
+  }
+  thead th {
+    text-align: left;
+    padding: 10px 14px;
+    background: var(--panel-2);
+    color: var(--sub);
+    font-weight: 600;
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  tbody td {
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--panel-2); }
+  td.id, td.ts { font-family: "SF Mono", Menlo, Consolas, monospace; color: var(--sub); font-size: 12px; }
+  .badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .badge.ok { color: var(--ok); background: var(--ok-bg); }
+  .badge.ng { color: var(--ng); background: var(--ng-bg); }
+  footer.doc-footer { margin-top: 20px; font-size: 12px; color: var(--sub); }
+</style>
+</head>
+<body>
+  <div class="page">
+    <h1>操作監査ログ</h1>
+    <p class="subtitle">管理コンソール / 対象日: 2026-07-28 / 表示範囲: 09:00–17:00</p>
+
+    <div class="statbar">
+      <div class="stat"><b>9</b>表示件数</div>
+      <div class="stat"><b>7</b>成功</div>
+      <div class="stat"><b>2</b>失敗</div>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>ログID</th>
+          <th>日時</th>
+          <th>ユーザー</th>
+          <th>操作</th>
+          <th>対象</th>
+          <th>結果</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="id">LOG-0728-091203</td>
+          <td class="ts">2026-07-28 09:12:03</td>
+          <td>sato.k</td>
+          <td>ログイン</td>
+          <td>-</td>
+          <td><span class="badge ok">成功</span></td>
+        </tr>
+        <tr>
+          <td class="id">LOG-0728-091544</td>
+          <td class="ts">2026-07-28 09:15:44</td>
+          <td>sato.k</td>
+          <td>設定変更</td>
+          <td>通知設定</td>
+          <td><span class="badge ok">成功</span></td>
+        </tr>
+        <tr>
+          <td class="id">LOG-0728-100211</td>
+          <td class="ts">2026-07-28 10:02:11</td>
+          <td>suzuki.m</td>
+          <td>ログイン</td>
+          <td>-</td>
+          <td><span class="badge ok">成功</span></td>
+        </tr>
+        <tr>
+          <td class="id">LOG-0728-100537</td>
+          <td class="ts">2026-07-28 10:05:37</td>
+          <td>suzuki.m</td>
+          <td>データ出力</td>
+          <td>顧客一覧</td>
+          <td><span class="badge ok">成功</span></td>
+        </tr>
+        <tr>
+          <td class="id">LOG-0728-112351</td>
+          <td class="ts">2026-07-28 11:23:51</td>
+          <td>sato.k</td>
+          <td>データ削除</td>
+          <td>注文ID#88213</td>
+          <td><span class="badge ok">成功</span></td>
+        </tr>
+        <tr>
+          <td class="id">LOG-0728-134122</td>
+          <td class="ts">2026-07-28 13:41:22</td>
+          <td>tanaka.r</td>
+          <td>ログイン</td>
+          <td>-</td>
+          <td><span class="badge ng">失敗</span></td>
+        </tr>
+        <tr>
+          <td class="id">LOG-0728-134140</td>
+          <td class="ts">2026-07-28 13:41:40</td>
+          <td>tanaka.r</td>
+          <td>ログイン</td>
+          <td>-</td>
+          <td><span class="badge ok">成功</span></td>
+        </tr>
+        <tr>
+          <td class="id">LOG-0728-140215</td>
+          <td class="ts">2026-07-28 14:02:15</td>
+          <td>tanaka.r</td>
+          <td>設定変更</td>
+          <td>権限設定</td>
+          <td><span class="badge ng">失敗</span></td>
+        </tr>
+        <tr>
+          <td class="id">LOG-0728-163302</td>
+          <td class="ts">2026-07-28 16:33:02</td>
+          <td>suzuki.m</td>
+          <td>ログイン</td>
+          <td>-</td>
+          <td><span class="badge ok">成功</span></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <footer class="doc-footer">
+      <p>操作監査ログ / 管理コンソール / システム管理部</p>
+    </footer>
+  </div>
+</body>
+</html>

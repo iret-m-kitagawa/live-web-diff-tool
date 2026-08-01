@@ -1,0 +1,451 @@
+[
+  {
+    "slug": "01-table-structure",
+    "opened": true,
+    "renderMs": 928,
+    "insInline": 1,
+    "delInline": 1,
+    "insBlock": 8,
+    "delBlock": 1,
+    "rows": 8,
+    "attrMarked": 0,
+    "strikethrough": 0,
+    "insetShadow": 0,
+    "styleKept": true,
+    "bodyBg": "rgb(244, 246, 251)",
+    "bodyLevelDel": 0,
+    "orphanBin": false,
+    "tables": [
+      {
+        "headerCells": 6,
+        "maxRowCells": 6,
+        "rows": 9
+      }
+    ],
+    "delBlockPlacements": [
+      {
+        "what": "TR",
+        "where": "TBODY < TABLE < SECTION",
+        "text": "mail-01 メールサーバー 2vCPU 4GB 廃止予定"
+      }
+    ]
+  },
+  {
+    "slug": "02-nested-list-restructure",
+    "opened": true,
+    "renderMs": 969,
+    "insInline": 4,
+    "delInline": 2,
+    "insBlock": 5,
+    "delBlock": 5,
+    "rows": 1,
+    "attrMarked": 0,
+    "strikethrough": 0,
+    "insetShadow": 0,
+    "styleKept": true,
+    "bodyBg": "rgb(251, 251, 253)",
+    "bodyLevelDel": 0,
+    "orphanBin": false,
+    "tables": [],
+    "delBlockPlacements": [
+      {
+        "what": "LI",
+        "where": "UL < LI < UL.tree",
+        "text": "優先度の確認"
+      },
+      {
+        "what": "UL",
+        "where": "LI < UL < LI",
+        "text": "顧客レビュー 社内レビュー"
+      },
+      {
+        "what": "LI",
+        "where": "UL < LI < UL.tree",
+        "text": "データベース設計"
+      },
+      {
+        "what": "UL",
+        "where": "LI < UL.tree < DIV.page",
+        "text": "フロントエンド実装 バックエンド実装 単体テスト"
+      },
+      {
+        "what": "LI",
+        "where": "UL < LI < UL.tree",
+        "text": "受入テスト"
+      }
+    ]
+  },
+  {
+    "slug": "03-heading-and-section-reorder",
+    "opened": true,
+    "renderMs": 814,
+    "insInline": 1,
+    "delInline": 0,
+    "insBlock": 2,
+    "delBlock": 2,
+    "rows": 1,
+    "attrMarked": 0,
+    "strikethrough": 0,
+    "insetShadow": 0,
+    "styleKept": true,
+    "bodyBg": "rgb(242, 248, 247)",
+    "bodyLevelDel": 0,
+    "orphanBin": false,
+    "tables": [
+      {
+        "headerCells": 3,
+        "maxRowCells": 3,
+        "rows": 4
+      }
+    ],
+    "delBlockPlacements": [
+      {
+        "what": "SECTION",
+        "where": "MAIN < DIV.page < BODY",
+        "text": "背景 現行のECサイトでは、商品一覧がカテゴリ別の固定順で表示されており、ユーザーごとの興味関心を反"
+      },
+      {
+        "what": "SECTION",
+        "where": "MAIN < DIV.page < BODY",
+        "text": "アーキテクチャ レコメンド機能は独立したマイクロサービスとして構築し、既存の商品APIとは非同期に連"
+      }
+    ]
+  },
+  {
+    "slug": "04-inline-markup-only",
+    "opened": true,
+    "renderMs": 802,
+    "insInline": 0,
+    "delInline": 0,
+    "insBlock": 1,
+    "delBlock": 1,
+    "rows": 0,
+    "attrMarked": 2,
+    "strikethrough": 0,
+    "insetShadow": 0,
+    "styleKept": true,
+    "bodyBg": "rgb(251, 249, 246)",
+    "bodyLevelDel": 0,
+    "orphanBin": false,
+    "tables": [
+      {
+        "headerCells": 2,
+        "maxRowCells": 2,
+        "rows": 4
+      }
+    ],
+    "delBlockPlacements": [
+      {
+        "what": "EM",
+        "where": "P < MAIN < DIV.page",
+        "text": "対象は本番環境のみ"
+      }
+    ]
+  },
+  {
+    "slug": "05-code-block-edit",
+    "opened": true,
+    "renderMs": 804,
+    "insInline": 4,
+    "delInline": 4,
+    "insBlock": 0,
+    "delBlock": 0,
+    "rows": 2,
+    "attrMarked": 0,
+    "strikethrough": 0,
+    "insetShadow": 0,
+    "styleKept": true,
+    "bodyBg": "rgb(248, 250, 252)",
+    "bodyLevelDel": 0,
+    "orphanBin": false,
+    "tables": [
+      {
+        "headerCells": 2,
+        "maxRowCells": 2,
+        "rows": 3
+      }
+    ],
+    "delBlockPlacements": []
+  },
+  {
+    "slug": "06-repeated-similar-rows",
+    "opened": true,
+    "renderMs": 836,
+    "insInline": 1,
+    "delInline": 1,
+    "insBlock": 3,
+    "delBlock": 4,
+    "rows": 2,
+    "attrMarked": 0,
+    "strikethrough": 0,
+    "insetShadow": 0,
+    "styleKept": true,
+    "bodyBg": "rgb(15, 20, 32)",
+    "bodyLevelDel": 0,
+    "orphanBin": false,
+    "tables": [
+      {
+        "headerCells": 6,
+        "maxRowCells": 6,
+        "rows": 11
+      }
+    ],
+    "delBlockPlacements": [
+      {
+        "what": "DIV.stat",
+        "where": "DIV.statbar < DIV.page < BODY",
+        "text": "9成功"
+      },
+      {
+        "what": "DIV.stat",
+        "where": "DIV.statbar < DIV.page < BODY",
+        "text": "10表示件数"
+      },
+      {
+        "what": "DIV.stat",
+        "where": "DIV.statbar < DIV.page < BODY",
+        "text": "1失敗"
+      },
+      {
+        "what": "TR",
+        "where": "TBODY < TABLE < DIV.page",
+        "text": "LOG-0728-112009 2026-07-28 11:20:09 sato.k ログイン - "
+      }
+    ]
+  },
+  {
+    "slug": "07-card-grid-churn",
+    "opened": true,
+    "renderMs": 861,
+    "insInline": 0,
+    "delInline": 0,
+    "insBlock": 3,
+    "delBlock": 3,
+    "rows": 0,
+    "attrMarked": 0,
+    "strikethrough": 1,
+    "insetShadow": 0,
+    "styleKept": true,
+    "bodyBg": "rgb(246, 247, 251)",
+    "bodyLevelDel": 0,
+    "orphanBin": false,
+    "tables": [],
+    "delBlockPlacements": [
+      {
+        "what": "DIV.card",
+        "where": "DIV.grid < DIV.page < BODY",
+        "text": "決済API連携 新決済代行会社とのAPI連携テストを実施中です。 担当: 鈴木更新: 2026-07"
+      },
+      {
+        "what": "DIV.card",
+        "where": "DIV.grid < DIV.page < BODY",
+        "text": "通知基盤移行 外部ベンダー都合により着手を保留しています。 担当: 田中更新: 2026-07-18"
+      },
+      {
+        "what": "DIV.card",
+        "where": "DIV.grid < DIV.page < BODY",
+        "text": "管理画面リニューアル デザインチームとUI仕様のすり合わせ中です。 担当: 高橋更新: 2026-0"
+      }
+    ]
+  },
+  {
+    "slug": "08-longform-small-edits",
+    "opened": true,
+    "renderMs": 926,
+    "insInline": 4,
+    "delInline": 4,
+    "insBlock": 0,
+    "delBlock": 0,
+    "rows": 3,
+    "attrMarked": 0,
+    "strikethrough": 0,
+    "insetShadow": 0,
+    "styleKept": true,
+    "bodyBg": "rgb(250, 247, 242)",
+    "bodyLevelDel": 0,
+    "orphanBin": false,
+    "tables": [],
+    "delBlockPlacements": []
+  },
+  {
+    "slug": "09-column-inserted",
+    "opened": true,
+    "renderMs": 807,
+    "insInline": 4,
+    "delInline": 4,
+    "insBlock": 11,
+    "delBlock": 0,
+    "rows": 15,
+    "attrMarked": 0,
+    "strikethrough": 0,
+    "insetShadow": 0,
+    "styleKept": true,
+    "bodyBg": "rgb(244, 247, 246)",
+    "bodyLevelDel": 0,
+    "orphanBin": false,
+    "tables": [
+      {
+        "headerCells": 6,
+        "maxRowCells": 6,
+        "rows": 11
+      }
+    ],
+    "delBlockPlacements": []
+  },
+  {
+    "slug": "10-pricing-table-revision",
+    "opened": true,
+    "renderMs": 818,
+    "insInline": 6,
+    "delInline": 6,
+    "insBlock": 1,
+    "delBlock": 1,
+    "rows": 9,
+    "attrMarked": 0,
+    "strikethrough": 0,
+    "insetShadow": 0,
+    "styleKept": true,
+    "bodyBg": "rgb(245, 245, 250)",
+    "bodyLevelDel": 0,
+    "orphanBin": false,
+    "tables": [
+      {
+        "headerCells": 5,
+        "maxRowCells": 5,
+        "rows": 8
+      }
+    ],
+    "delBlockPlacements": [
+      {
+        "what": "TR",
+        "where": "TBODY < TABLE < SECTION",
+        "text": "Classic受付終了 $450 $4,500 10ユーザー メールサポート"
+      }
+    ]
+  },
+  {
+    "slug": "11-status-cards-swap",
+    "opened": true,
+    "renderMs": 921,
+    "insInline": 7,
+    "delInline": 7,
+    "insBlock": 2,
+    "delBlock": 2,
+    "rows": 5,
+    "attrMarked": 0,
+    "strikethrough": 0,
+    "insetShadow": 0,
+    "styleKept": true,
+    "bodyBg": "rgb(246, 247, 251)",
+    "bodyLevelDel": 0,
+    "orphanBin": false,
+    "tables": [],
+    "delBlockPlacements": [
+      {
+        "what": "SPAN.badge.warn",
+        "where": "DIV.head < DIV.card < DIV.grid",
+        "text": "注意"
+      },
+      {
+        "what": "DIV.card",
+        "where": "DIV.grid < DIV.page < BODY",
+        "text": "通知サービス（メール／Push）障害 送信遅延が発生中。キューの滞留を調査している。 稼働率 97."
+      }
+    ]
+  },
+  {
+    "slug": "12-flow-steps-reorder",
+    "opened": true,
+    "renderMs": 896,
+    "insInline": 2,
+    "delInline": 0,
+    "insBlock": 1,
+    "delBlock": 1,
+    "rows": 1,
+    "attrMarked": 0,
+    "strikethrough": 0,
+    "insetShadow": 0,
+    "styleKept": true,
+    "bodyBg": "rgb(250, 248, 247)",
+    "bodyLevelDel": 0,
+    "orphanBin": false,
+    "tables": [],
+    "delBlockPlacements": [
+      {
+        "what": "LI",
+        "where": "OL.steps < DIV.page < BODY",
+        "text": "障害対応チームの招集 一次対応者は障害対応チームメンバーをチャットで招集し、対応体制を立ち上げる。"
+      }
+    ]
+  },
+  {
+    "slug": "13-nav-and-footer-churn",
+    "opened": true,
+    "renderMs": 767,
+    "insInline": 3,
+    "delInline": 2,
+    "insBlock": 4,
+    "delBlock": 4,
+    "rows": 1,
+    "attrMarked": 0,
+    "strikethrough": 0,
+    "insetShadow": 0,
+    "styleKept": true,
+    "bodyBg": "rgb(247, 249, 250)",
+    "bodyLevelDel": 0,
+    "orphanBin": false,
+    "tables": [],
+    "delBlockPlacements": [
+      {
+        "what": "LI",
+        "where": "UL < NAV.side-nav < DIV.layout",
+        "text": "権限管理"
+      },
+      {
+        "what": "LI",
+        "where": "UL < NAV.side-nav < DIV.layout",
+        "text": "よくある質問"
+      },
+      {
+        "what": "H2",
+        "where": "SECTION < MAIN < DIV.layout",
+        "text": "よくある質問"
+      },
+      {
+        "what": "SECTION",
+        "where": "MAIN < DIV.layout < DIV.page",
+        "text": "権限管理 ワークスペースの管理者は、メンバーの権限を「閲覧のみ」「編集可」「管理者」の3段階で設定で"
+      }
+    ]
+  },
+  {
+    "slug": "14-definition-list-and-blockquote",
+    "opened": true,
+    "renderMs": 934,
+    "insInline": 3,
+    "delInline": 1,
+    "insBlock": 2,
+    "delBlock": 2,
+    "rows": 2,
+    "attrMarked": 0,
+    "strikethrough": 0,
+    "insetShadow": 0,
+    "styleKept": true,
+    "bodyBg": "rgb(250, 247, 248)",
+    "bodyLevelDel": 0,
+    "orphanBin": false,
+    "tables": [],
+    "delBlockPlacements": [
+      {
+        "what": "DT",
+        "where": "DL.glossary < SECTION < DIV.page",
+        "text": "オンコール"
+      },
+      {
+        "what": "DD",
+        "where": "DL.glossary < SECTION < DIV.page",
+        "text": "勤務時間外であっても、障害発生時に一次対応を行うため待機する体制。"
+      }
+    ]
+  }
+]

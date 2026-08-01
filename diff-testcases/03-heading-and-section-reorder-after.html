@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>商品レコメンド機能 設計書</title>
+<style>
+  :root {
+    --teal: #0f766e;
+    --teal-light: #14b8a6;
+    --ink: #1e2a2a;
+    --sub: #566664;
+    --line: #d8e6e3;
+    --card: #ffffff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", "Segoe UI", sans-serif;
+    background: #f2f8f7;
+    color: var(--ink);
+    line-height: 1.8;
+  }
+  .page { max-width: 880px; margin: 0 auto; padding: 44px 32px 60px; }
+  h1 { font-size: 24px; margin: 0 0 6px; color: var(--teal); }
+  p.subtitle { color: var(--sub); font-size: 13px; margin: 0 0 34px; }
+  main { counter-reset: section; }
+  section {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 22px 26px;
+    margin-bottom: 20px;
+  }
+  h2 {
+    counter-increment: section;
+    font-size: 18px;
+    color: var(--teal);
+    margin: 0 0 12px;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  h2::before {
+    content: counter(section) "章";
+    font-size: 12px;
+    font-weight: 700;
+    color: #fff;
+    background: var(--teal-light);
+    padding: 3px 9px;
+    border-radius: 5px;
+  }
+  h3 {
+    font-size: 14px;
+    color: var(--teal);
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    border-left: 3px solid var(--teal-light);
+    padding-left: 10px;
+    margin: 18px 0 8px;
+  }
+  p { color: #33403e; margin: 0 0 10px; }
+  ul.risks { list-style: none; padding: 0; margin: 10px 0 0; }
+  ul.risks li {
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    margin-bottom: 8px;
+    font-size: 14px;
+    color: #33403e;
+  }
+  .sev {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 999px;
+    margin-right: 8px;
+  }
+  .sev.high { background: #fde2e2; color: #b3261e; }
+  .sev.mid { background: #fff3d6; color: #9a6a00; }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--teal); font-weight: 600; }
+  footer.doc-footer {
+    margin-top: 30px;
+    font-size: 12px;
+    color: #7c8b88;
+  }
+</style>
+</head>
+<body>
+  <div class="page">
+    <h1>商品レコメンド機能 設計書</h1>
+    <p class="subtitle">文書番号: DES-0231 / 版数: v0.9（レビュー中） / 作成: ECプラットフォーム開発チーム</p>
+    <main>
+      <section>
+        <h2>概要</h2>
+        <p>
+          本書は、ECサイトにおける商品レコメンド機能の追加にあたり、設計方針をまとめたものである。
+          対象範囲はレコメンドAPIおよび管理画面とし、既存の商品検索機能およびカート機能には影響を与えない。
+          開発体制はバックエンド2名、フロントエンド1名を想定している。
+        </p>
+      </section>
+      <section>
+        <h2>リスクと対策</h2>
+        <p>本機能の導入にあたり想定されるリスクと対応方針を以下に示す。</p>
+        <ul class="risks">
+          <li><span class="sev high">高</span>特徴量バッチの遅延によりレコメンド精度が低下する可能性がある。監視アラートを設定し、遅延時は既定のランキング表示にフォールバックする。</li>
+          <li><span class="sev mid">中</span>個人の閲覧履歴を用いるため、プライバシーへの配慮が必要となる。会員規約を改定し、オプトアウト機能を提供する。</li>
+        </ul>
+      </section>
+      <section>
+        <h2>アーキテクチャ</h2>
+        <p>
+          レコメンド機能は独立したマイクロサービスとして構築し、既存の商品APIとは非同期に連携する。
+          以下に主要な構成要素を示す。
+        </p>
+        <h2>データフロー</h2>
+        <p>
+          ユーザーの閲覧・購入履歴はイベントとして収集基盤に送信され、バッチ処理により特徴量に変換される。
+          レコメンドAPIはこの特徴量ストアを参照し、リクエストの都度スコアリングを行って結果を返却する。
+        </p>
+        <h3>コンポーネント構成</h3>
+        <p>
+          収集基盤、特徴量ストア、レコメンドAPI、管理画面の4つのコンポーネントで構成する。
+          管理画面からはレコメンドロジックの重み付けを調整できるようにする。
+        </p>
+      </section>
+      <section>
+        <h2>背景</h2>
+        <p>
+          現行のECサイトでは、商品一覧がカテゴリ別の固定順で表示されており、ユーザーごとの興味関心を反映できていない。
+          競合サービスの多くはパーソナライズされたレコメンドを提供しており、回遊率および購入転換率の向上を目的として
+          本機能の導入を決定した。マーケティング部門からも早期導入の要望が寄せられている。
+        </p>
+      </section>
+      <section>
+        <h2>今後のスケジュール</h2>
+        <p>開発は3つのフェーズに分けて進める。詳細は下表のとおり。</p>
+        <table>
+          <thead>
+            <tr><th>フェーズ</th><th>内容</th><th>完了予定</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Phase 1</td><td>特徴量収集基盤の構築</td><td>2026年9月</td></tr>
+            <tr><td>Phase 2</td><td>レコメンドAPI開発</td><td>2026年11月</td></tr>
+            <tr><td>Phase 3</td><td>管理画面・全体結合</td><td>2027年1月</td></tr>
+          </tbody>
+        </table>
+      </section>
+    </main>
+    <footer class="doc-footer">
+      <p>商品レコメンド機能 設計書 / DES-0231 / 社外秘</p>
+    </footer>
+  </div>
+</body>
+</html>

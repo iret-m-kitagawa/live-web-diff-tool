@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>基幹システム移行プロジェクト 振り返りレポート</title>
+<style>
+  :root {
+    --maroon: #7a2e2e;
+    --maroon-bg: #f7ece9;
+    --ink: #2b2723;
+    --sub: #7d7267;
+    --line: #e6ddd1;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", "Segoe UI", sans-serif;
+    background: #faf7f2;
+    color: var(--ink);
+    line-height: 1.9;
+  }
+  .page { max-width: 760px; margin: 0 auto; padding: 52px 32px 70px; }
+  h1 { font-size: 25px; margin: 0 0 10px; }
+  .rule { height: 3px; background: var(--maroon); width: 64px; margin-bottom: 14px; }
+  p.subtitle { color: var(--sub); font-size: 13px; margin: 0 0 40px; }
+  main { counter-reset: para; }
+  article { margin-bottom: 30px; }
+  h2 {
+    counter-increment: para;
+    font-size: 16px;
+    color: var(--maroon);
+    margin: 0 0 10px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  h2::before {
+    content: counter(para, decimal-leading-zero);
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--maroon);
+    background: var(--maroon-bg);
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  p { margin: 0; color: #3a352e; font-size: 15px; }
+  footer.doc-footer {
+    margin-top: 34px;
+    padding-top: 16px;
+    border-top: 1px solid var(--line);
+    font-size: 12px;
+    color: var(--sub);
+  }
+</style>
+</head>
+<body>
+  <div class="page">
+    <h1>基幹システム移行プロジェクト 振り返りレポート</h1>
+    <div class="rule"></div>
+    <p class="subtitle">情報システム部 PMO / 2026年7月29日 / 社内共有用</p>
+
+    <main>
+      <article>
+        <h2>はじめに</h2>
+        <p>
+          本レポートは、2026年上期に実施した基幹システム移行プロジェクトの振り返りをまとめたものである。
+          プロジェクト関係者へのヒアリングおよび各種メトリクスの分析をもとに、成果と課題を整理した。
+          今後の類似プロジェクトにおける改善の参考とすることを目的とする。
+        </p>
+      </article>
+
+      <article>
+        <h2>プロジェクトの背景</h2>
+        <p>
+          旧基幹システムは導入から12年が経過しており、保守部材の調達が年々困難になっていた。
+          加えて、事業拡大に伴いトランザクション量が増加し、月次バッチ処理が想定時間内に完了しない事象が
+          複数回発生していた。これらの課題を踏まえ、2025年秋に経営会議にて全面刷新の方針が承認された。
+        </p>
+      </article>
+
+      <article>
+        <h2>プロジェクトの体制</h2>
+        <p>
+          プロジェクトは情報システム部を中心に、外部ベンダー2社を含む総勢28名の体制で推進した。
+          全体統括はPMOが担い、業務要件の確認は各事業部門の代表者が担当した。
+          週次の進捗会議に加え、リスクが顕在化した際には随時エスカレーション会議を開催する運用とした。
+        </p>
+      </article>
+
+      <article>
+        <h2>うまくいった点</h2>
+        <p>
+          移行リハーサルを本番想定で3回実施したことにより、切替当日の作業手順に大きな迷いが生じなかった点は
+          高く評価できる。また、データ移行ツールを早期に内製したことで、テストサイクルを柔軟に繰り返すことが
+          できた。関係部門との合意形成についても、要件定義の初期段階から週次で意見交換の場を設けたことが
+          功を奏した。
+        </p>
+      </article>
+
+      <article>
+        <h2>課題として残った点</h2>
+        <p>
+          一方で、外部インターフェースを持つ関連システムの洗い出しが当初不十分であり、開発後半になって
+          連携仕様の見直しが発生した。これにより一部工程でスケジュールの後ろ倒しを余儀なくされた。
+          また、テスト環境の払い出しに想定より時間を要し、結合テストの開始が遅れたことも反省点である。
+        </p>
+      </article>
+
+      <article>
+        <h2>定量的な成果</h2>
+        <p>
+          移行後の効果測定では、月次バッチの平均処理時間を42%削減することができた。
+          あわせて、問い合わせ対応にかかる一次回答時間も短縮しており、利用部門からは総じて好意的な評価を
+          得ている。今後も定点観測を継続し、効果の推移を確認していく。
+        </p>
+      </article>
+
+      <article>
+        <h2>今後のスケジュール</h2>
+        <p>
+          残課題への対応として、二次改善フェーズを2026年10月15日までに完了させる計画である。
+          対応状況は月次の運営会議で共有し、完了後には最終報告書を取りまとめる予定である。
+          関連部門には別途スケジュールの詳細を共有する。
+        </p>
+      </article>
+
+      <article>
+        <h2>総括</h2>
+        <p>
+          総括すると、本プロジェクトは大きな障害なく本番移行を完了できた点で成功と言える。
+          一方で、体制面・スケジュール面の懸念は次回以降のプロジェクトにも共通しうるため、教訓として
+          組織全体で共有していく必要がある。振り返りの内容は社内ナレッジベースに登録し、他プロジェクトからも
+          参照できるようにする。
+        </p>
+      </article>
+    </main>
+
+    <footer class="doc-footer">
+      <p>基幹システム移行プロジェクト 振り返りレポート / 情報システム部 PMO</p>
+    </footer>
+  </div>
+</body>
+</html>

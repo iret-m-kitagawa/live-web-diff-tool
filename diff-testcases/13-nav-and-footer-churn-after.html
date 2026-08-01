@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Workhub 操作ガイド</title>
+<style>
+  :root {
+    --ink: #1e2530;
+    --sub: #5a6270;
+    --line: #e0e4ea;
+    --brand: #0d7a8c;
+    --brand-bg: #e4f4f6;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", "Segoe UI", sans-serif;
+    background: #f7f9fa;
+    color: var(--ink);
+    line-height: 1.75;
+  }
+  .page { max-width: 1000px; margin: 0 auto; padding: 40px 32px 56px; }
+  header.top-bar {
+    padding-bottom: 18px;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 30px;
+  }
+  header.top-bar h1 { font-size: 22px; margin: 0 0 6px; }
+  header.top-bar p.subtitle { color: var(--sub); font-size: 13px; margin: 0; }
+  .layout { display: flex; gap: 40px; align-items: flex-start; }
+  nav.side-nav { width: 200px; flex: 0 0 200px; }
+  nav.side-nav ul { list-style: none; margin: 0; padding: 0; }
+  nav.side-nav li { margin-bottom: 4px; }
+  nav.side-nav a {
+    display: block;
+    padding: 8px 12px;
+    border-radius: 6px;
+    color: var(--ink);
+    text-decoration: none;
+    font-size: 14px;
+  }
+  nav.side-nav a:hover { background: var(--brand-bg); color: var(--brand); }
+  main { flex: 1; min-width: 0; }
+  section { margin-bottom: 30px; }
+  section h2 {
+    font-size: 17px;
+    color: var(--brand);
+    margin: 0 0 10px;
+    padding-bottom: 6px;
+    border-bottom: 2px solid var(--brand-bg);
+  }
+  section p { margin: 0 0 10px; color: #333a44; font-size: 14px; }
+  footer.doc-footer {
+    margin-top: 40px;
+    padding-top: 16px;
+    border-top: 1px solid var(--line);
+    font-size: 12px;
+    color: #8a92a0;
+  }
+</style>
+</head>
+<body>
+  <div class="page">
+    <header class="top-bar">
+      <h1>Workhub 操作ガイド</h1>
+      <p class="subtitle">社内システム操作マニュアル / バージョン: v3.4 / 発行: 情報システム部</p>
+    </header>
+    <div class="layout">
+      <nav class="side-nav">
+        <ul>
+          <li><a href="#section-intro">はじめに</a></li>
+          <li><a href="#section-setup">導入手順</a></li>
+          <li><a href="#section-basic">基本操作</a></li>
+          <li><a href="#section-advanced">応用設定</a></li>
+          <li><a href="#section-integration">外部連携</a></li>
+          <li><a href="#section-faq">FAQ・トラブルシューティング</a></li>
+          <li><a href="#section-contact">お問い合わせ</a></li>
+        </ul>
+      </nav>
+      <main>
+        <section id="section-intro">
+          <h2>はじめに</h2>
+          <p>
+            Workhubは、タスク管理・情報共有を一元化する社内向けクラウドツールである。本ガイドでは、
+            初期導入から日常的な操作、応用設定までを解説する。
+          </p>
+        </section>
+        <section id="section-setup">
+          <h2>導入手順</h2>
+          <p>
+            利用開始にあたっては、情報システム部が発行するアカウント招待メールからサインアップを行う。
+            初回ログイン後、プロフィールとチーム所属の設定を完了させること。
+          </p>
+        </section>
+        <section id="section-basic">
+          <h2>基本操作</h2>
+          <p>
+            ダッシュボードから新規タスクを作成し、担当者と期限を設定する。タスクの進捗はカンバンボードまたは
+            リスト表示で確認できる。
+          </p>
+        </section>
+        <section id="section-advanced">
+          <h2>応用設定</h2>
+          <p>
+            通知条件やタスクテンプレートは「設定」メニューから個別にカスタマイズ可能である。部署単位の
+            ワークスペースを分割して運用することもできる。
+          </p>
+        </section>
+        <section id="section-integration">
+          <h2>外部連携</h2>
+          <p>
+            Workhubは、社内チャットツールおよび共有カレンダーとの連携に対応している。連携設定は、
+            管理者権限を持つユーザーのみ行うことができる。
+          </p>
+        </section>
+        <section id="section-faq">
+          <h2>FAQ・トラブルシューティング</h2>
+          <p>
+            パスワードを忘れた場合は、ログイン画面の「パスワードをお忘れですか」からリセットできる。
+            添付ファイルの上限サイズは1件あたり50MBである。
+          </p>
+        </section>
+        <section id="section-contact">
+          <h2>お問い合わせ</h2>
+          <p>操作方法に関するご質問は、下記の社内ヘルプデスクまでお問い合わせください。</p>
+        </section>
+      </main>
+    </div>
+    <footer class="doc-footer">
+      <p>&copy; 2026 Workhub運用チーム. 社内利用限定。お問い合わせ: workhub-support@example.internal（平日 9:00〜19:00に延長）</p>
+    </footer>
+  </div>
+</body>
+</html>
