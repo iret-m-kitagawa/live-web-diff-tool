@@ -458,48 +458,9 @@
       return BLOCK_TAGS.has(el.tagName);
     }
 
-    function unitsOf(root){
-      const out = [];
-      const cand = [root].concat(Array.from(root.querySelectorAll('*')));
-      for (const el of cand){
-        if (!isBlockEl(el)) continue;
-        if (!ownText(el).trim()) continue;
-        out.push(el);
-      }
-      return out;
-    }
     function norm(s){ return (s || '').replace(/\s+/g, ' ').trim(); }
     // その要素が直接持つインラインテキスト（入れ子ブロックの中身は含まない）
     function ownText(el){ return textNodes(el).map(n => n.data).join(''); }
-    function sig(el){ return el.tagName + '\u0000' + norm(ownText(el)); }
-
-    // 置換ペアとみなす条件を判定する際の「文脈」。親・祖父のタグまで一致を要求
-    // することで、別のコンテナに属する似た要素同士（削除されたセクション内の
-    // <li> と、新版で追加された callout 内の <li> など）が誤ってペアになるのを
-    // 防ぐ。誤ペアが起きると「コンテナ配下がすべて削除された」判定が崩れ、
-    // 削除ブロックが 1 塊にまとまらず無関係な場所へ散らばる原因になる。
-    function contextKey(el){
-      const p = el.parentElement, gp = p && p.parentElement;
-      return (gp ? gp.tagName : '') + '>' + (p ? p.tagName : '');
-    }
-
-    // 同種ブロックか（置換ペアとみなせるか）
-    function similar(a, b){
-      if (a.tagName !== b.tagName) return false;
-      if (contextKey(a) !== contextKey(b)) return false;
-      const ta = tokenize(norm(ownText(a))), tb = tokenize(norm(ownText(b)));
-      if (!ta.length && !tb.length) return true;
-      if (!ta.length || !tb.length) return false;
-      const setA = new Set(ta);
-      let hit = 0;
-      for (const t of tb) if (setA.has(t)) hit++;
-      // max 基準だけだと「片側から大きな塊が消えた」ケース（例: 日付 span と
-      // status span を持つ div から status が丸ごと消え、日付だけ変わった）で
-      // 重複率が閾値を下回り、インライン差分にならず別々の del/ins になる。
-      // min 基準の条件を併用して、短くなった側がほぼ含まれる場合もペアとする。
-      return hit / Math.max(ta.length, tb.length) >= 0.34
-          || hit / Math.min(ta.length, tb.length) >= 0.6;
-    }
 
     /* ---------- 4. テキストノード操作 ---------- */
     function textNodes(root){
@@ -584,13 +545,63 @@
     }
 
     /* ---------- 5. 1 コンテナ内のインライン差分 ---------- */
-    function inlineDiff(oldEl, newEl, tally){
+    // 要素が自分自身で持つインラインテキストの差分。
+    //
+    // 全面的な書き換えの場合はインラインで混ぜない。以前は語単位の差分をそのまま
+    // 差し込んでいたため、文章がまるごと差し替わったときに
+    // 「開発環境 NAT Gatewayバッチ処理の構成変更Spot Instance中断検証テスト」
+    // のような判読不能な交互混在になっていた。変化した割合が高いときは
+    // 「旧テキストのブロック」＋「新テキストのブロック」として並べて見せる。
+    const REPLACE_RATIO = 0.6;
+
+    // 見出しは交互混在の読みにくさが本文より大きく、しかも短いので混ぜても得がない。
+    // 実例: 「CP：JSM / JCPアクセスのテナント単位サービスアカウント化」を
+    // 「CP：顧客ごとのサービスアカウント切り替え」に書き換えた見出しが
+    // 「CP：JSM / JCPアクセス顧客ごとのテナント単位サービスアカウント化切り替え」
+    // という読めない 1 行になっていた。見出しだけは早めに旧／新の並置へ切り替える。
+    const HEADING_REPLACE_RATIO = 0.3;
+    const HEADING_TAGS = new Set(['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'DT', 'CAPTION', 'LEGEND', 'SUMMARY']);
+
+    // 旧要素の見た目を保った削除表示用クローンを作る。ブロックの子要素は
+    // それ自体が別の対応対象なので、クローンからは落とす（二重表示を防ぐ）。
+    function ownTextClone(oldEl, doc){
+      const clone = doc.importNode(oldEl, true);
+      const drop = [];
+      for (let c = clone.firstElementChild; c; c = c.nextElementSibling){
+        if (BLOCK_TAGS.has(c.tagName) || c.tagName === 'SCRIPT' || c.tagName === 'STYLE') drop.push(c);
+      }
+      drop.forEach(c => c.remove());
+      return clone;
+    }
+
+    function diffOwnText(oldEl, newEl, tally){
       const oldText = oldEl ? ownText(oldEl) : '';
       const newText = ownText(newEl);
       if (oldText === newText) return false;
 
-      const ops = diffSeq(tokenize(oldText), tokenize(newText));
+      const oldToks = tokenize(oldText), newToks = tokenize(newText);
+      const ops = diffSeq(oldToks, newToks);
       if (!ops){ // 大きすぎる → ブロックごと置換扱い
+        markBlock(newEl, 'ins', tally, newText.length);
+        return true;
+      }
+
+      // 変化が支配的なら、混ぜずに置換として見せる。
+      // ただし親の内容モデル上その要素を兄弟として並べられない場合（表のセルなど）は
+      // 使えない。無理に insertBefore すると行のセルが増えて表の桁が崩れる。
+      let changedToks = 0;
+      for (const op of ops) if (op.op !== 0) changedToks += op.items.length;
+      const totalToks = oldToks.length + newToks.length;
+      const parent = newEl.parentNode;
+      const canSplit = parent && parent.nodeType === 1
+        && canHold(parent.tagName, oldEl ? oldEl.tagName : newEl.tagName);
+      const ratio = HEADING_TAGS.has(newEl.tagName) ? HEADING_REPLACE_RATIO : REPLACE_RATIO;
+      if (canSplit && oldToks.length && newToks.length && totalToks > 0
+          && changedToks / totalToks > ratio){
+        const clone = ownTextClone(oldEl, newEl.ownerDocument);
+        clone.setAttribute('data-diff-block', 'del');
+        tally.del += norm(oldText).length; tally.blocks++;
+        parent.insertBefore(clone, newEl);
         markBlock(newEl, 'ins', tally, newText.length);
         return true;
       }
@@ -608,6 +619,7 @@
         if (ed.k === 'ins') wrapRange(newEl, ed.s, ed.e, 'ins');
         else insertDeleted(newEl, ed.at, ed.text);
       }
+      if (edits.length){ newEl.setAttribute('data-diff-row', 'changed'); tally.blocks++; }
       return edits.length > 0;
     }
 
@@ -616,221 +628,398 @@
       if (kind === 'ins') tally.add += chars; else tally.del += chars;
     }
 
-    /* ---------- 6. 行(tr)はセル単位で突き合わせる ---------- */
-    const CELL_SEL = 'td,th';
-    function diffUnitPair(oldU, newU, tally){
-      let changed = false;
-      if (newU.tagName === 'TR' && oldU.tagName === 'TR'){
-        const oc = Array.from(oldU.querySelectorAll(CELL_SEL));
-        const nc = Array.from(newU.querySelectorAll(CELL_SEL));
-        const n = Math.min(oc.length, nc.length);
-        for (let i = 0; i < n; i++) changed = inlineDiff(oc[i], nc[i], tally) || changed;
-        for (let i = n; i < nc.length; i++){ markBlock(nc[i], 'ins', tally, ownText(nc[i]).length); changed = true; }
-        if (oc.length > nc.length) changed = true; // 減ったセルは表構造を壊すため印のみ
-        if (changed) newU.setAttribute('data-diff-row', 'changed');
-        return changed;
+    // 属性だけが変わった要素を表現する。テキストが同じだと従来は完全一致扱いで
+    // 何も表示されず、class="card" -> class="card recommended" のような
+    // 「見た目や意味は変わったがテキストは同じ」変更が丸ごと消えていた。
+    // 自分たちが付けた診断用属性は比較対象から除く。
+    const DIFF_OWN_ATTRS = new Set([
+      'data-diff', 'data-diff-block', 'data-diff-row', 'data-diff-attr', 'data-diff-nolink', 'data-diff-pad'
+    ]);
+
+    function attrMap(el){
+      const m = new Map();
+      const list = el.attributes;
+      for (let i = 0; i < list.length; i++){
+        const a = list[i];
+        if (DIFF_OWN_ATTRS.has(a.name)) continue;
+        m.set(a.name, a.value);
       }
-      changed = inlineDiff(oldU, newU, tally);
-      if (changed) newU.setAttribute('data-diff-row', 'changed');
-      return changed;
+      return m;
+    }
+
+    function diffAttributes(oldEl, newEl, tally){
+      if (!oldEl || !newEl || newEl.nodeType !== 1 || oldEl.nodeType !== 1) return;
+      // body 全体に枠を出すと画面全部が囲まれるので対象外
+      if (newEl.tagName === 'BODY' || newEl.tagName === 'HTML') return;
+      // 要素まるごと追加/削除なら、それだけで伝わるので重ねない
+      if (newEl.hasAttribute('data-diff-block')) return;
+
+      const om = attrMap(oldEl), nm = attrMap(newEl);
+      const names = new Set();
+      om.forEach((v, k) => { if (nm.get(k) !== v) names.add(k); });
+      nm.forEach((v, k) => { if (om.get(k) !== v) names.add(k); });
+      if (!names.size) return;
+
+      // 値は入れない（style や長い URL で表示が崩れるため）。変わった属性名だけ残す。
+      newEl.setAttribute('data-diff-attr', Array.from(names).sort().join(','));
+      tally.attrs = (tally.attrs || 0) + 1;
+    }
+
+    /* ---------- 6. 階層ごとの再帰差分 ---------- */
+    // 以前は DOM を「単位（インラインテキストを持つブロック要素）」の平坦な配列に
+    // 潰して Myers 差分をかけ、その後ヒューリスティックで構造を復元していた。
+    // これが深刻な破損の原因だった。似たコンテナが並ぶ中で 1 つ挿入/削除されると
+    // 平坦な列が 1 つズレ、以降がすべて誤ペアになる（古典的なアラインメント崩壊）。
+    // 実例: before=[card1, cardNAT, cardS3] / after=[card1, cardS3', cardSpot] で
+    // 「2. NAT Gatewayの集約」と「2. S3 ライフサイクルルールの適用」が
+    // 先頭の "2. " や助詞などの共通トークンでペア判定され、1 つのカード枠の中に
+    // 新旧のカード名・本文・旧ヘッダが全部詰め込まれた。表でも削除行のセルが
+    // 新しい行に流れ込み、2,800 と 8,000 が 1 セルに融合した。
+    //
+    // そこで階層ごとに子要素を突き合わせ、一致したペアだけ再帰する方式にする。
+    // 挿入位置は「同じ親の子リスト内」で自明に決まるので、配置ヒューリスティック
+    // （contextKey / levelsToSiblingOf / liftLevels / canContain /
+    //  maximalDeletedContainer / placeDeletedBlock）は不要になり全廃した。
+    const MAX_DIFF_DEPTH = 60;
+
+    // 部分木の同一性キー。全文テキストを使うので「カードはカードと」対応が付く。
+    function childKey(el){ return el.tagName + ' ' + norm(el.textContent); }
+
+    function diffableChildren(el, blockOnly){
+      const out = [];
+      for (let c = el.firstElementChild; c; c = c.nextElementSibling){
+        if (c.tagName === 'SCRIPT' || c.tagName === 'STYLE') continue;
+        // 自分が差分表示のために挿入した要素は対象外
+        if (c.hasAttribute('data-diff') || c.hasAttribute('data-diff-block')) continue;
+        // 親のテキスト差分で既に扱ったインライン要素は対象外（下の説明を参照）
+        if (blockOnly && !isBlockEl(c)) continue;
+        out.push(c);
+      }
+      return out;
+    }
+
+    // 要素の「識別テキスト」。同じレコードが編集されたのか、別のレコードなのかは
+    // 全文の重なりではなく見出しやキー列が一致しているかで決まる。
+    // 表の行なら先頭セル、カードやセクションなら見出しがそれに当たる。
+    function identityText(el){
+      const h = el.querySelector('h1,h2,h3,h4,h5,h6,caption,legend,summary,dt,th');
+      if (h) return norm(h.textContent);
+      const first = el.firstElementChild;
+      if (first) return norm(first.textContent);
+      return norm(el.textContent);
+    }
+
+    // トークン袋の重なり率
+    function tokenOverlap(sa, sb){
+      const ta = tokenize(sa), tb = tokenize(sb);
+      if (!ta.length && !tb.length) return 1;
+      if (!ta.length || !tb.length) return 0;
+      const setA = new Set(ta);
+      let hit = 0;
+      for (const t of tb) if (setA.has(t)) hit++;
+      return hit / Math.max(ta.length, tb.length);
+    }
+
+    // 識別テキスト専用の重なり率。ハイフンなどの区切り記号だけのトークンは
+    // 識別情報を持たないため比較から除く。記号を残したまま比較すると、
+    // 表の "mail-01" 行と "app-02" 行のように先頭セルが別レコードを指して
+    // いても記号 "-" を共有するだけで重なりが生じてしまう（実測 1/3 ≈ .33）。
+    // 行テンプレートの共通語（サーバー/vCPU/GB 等）で全文側の重なりも高いと、
+    // 合算が閾値 0.4 をわずかに超えて「変更」に潰れてしまっていた。
+    function identityOverlap(sa, sb){
+      const isMeaningful = t => /[\p{L}\p{N}]/u.test(t);
+      const ta = tokenize(sa).filter(isMeaningful), tb = tokenize(sb).filter(isMeaningful);
+      if (!ta.length && !tb.length) return 1;
+      if (!ta.length || !tb.length) return 0;
+      const setA = new Set(ta);
+      let hit = 0;
+      for (const t of tb) if (setA.has(t)) hit++;
+      return hit / Math.max(ta.length, tb.length);
+    }
+
+    // 置換ペアの候補スコア。全文だけで見ると、日本語は文字単位でトークン化される
+    // ため「別のレコード」同士でも共通文字が大量に出て閾値を超えてしまう。
+    // 実例: 表の Classic 行と Pro Plus 行が $ , 0 ユ ー ザ サ ポ ト を共有するだけで
+    // 1 組のペアと判定され、行の削除・追加が「変更」に潰れていた。
+    // そこで識別テキスト（見出し／キー列）の一致を同じ重みで見る。
+    function nodeSimilarity(a, b){
+      if (a.tagName !== b.tagName) return 0;
+      const full = tokenOverlap(norm(a.textContent), norm(b.textContent));
+      const ia = identityText(a), ib = identityText(b);
+      // 識別テキストが取れない（全文と同じ）要素は従来どおり全文だけで判定する
+      if (!ia && !ib) return full;
+      if (ia === norm(a.textContent) && ib === norm(b.textContent)) return full;
+      return 0.5 * identityOverlap(ia, ib) + 0.5 * full;
+    }
+    const PAIR_THRESHOLD = 0.4;
+
+    function markInserted(el, tally){
+      el.setAttribute('data-diff-block', 'ins');
+      tally.add += norm(el.textContent).length; tally.blocks++;
+    }
+    function markDeleted(el, tally){
+      el.setAttribute('data-diff-block', 'del');
+      tally.del += norm(el.textContent).length; tally.blocks++;
+    }
+
+    // 親が構造上その子を持てるか（持てない場合だけ orphanBin へ退避する）
+    const CHILD_RULES = {
+      UL: /^LI$/, OL: /^LI$/, DL: /^(DT|DD)$/,
+      TABLE: /^(THEAD|TBODY|TFOOT|CAPTION|COLGROUP|TR)$/,
+      THEAD: /^TR$/, TBODY: /^TR$/, TFOOT: /^TR$/, TR: /^(TD|TH)$/
+    };
+    function canHold(parentTag, childTag){
+      // 行にセルを足すのは HTML としては妥当でも表の桁が崩れるので禁止する。
+      // 実際にこれで削除セルが新しい行へ流れ込み、ヘッダ 6 列の表に 8 セルの行が
+      // できていた（$2,800 と $8,000 が 1 セルに融合した件と同じ壊れ方）。
+      if (parentTag === 'TR') return false;
+      const r = CHILD_RULES[parentTag];
+      return r ? r.test(childTag) : true;
+    }
+
+    // 削除された子要素を、新DOMの同じ親の中の相当位置へ戻す
+    function insertDeletedChild(newParent, oldKid, beforeNode, tally){
+      const clone = newParent.ownerDocument.importNode(oldKid, true);
+      markDeleted(clone, tally);
+      // oldKid は旧文書側の要素なので closest('table') は旧表を返す
+      padDeletedRow(clone, oldKid.closest('table'), newParent.closest('table'));
+      if (!canHold(newParent.tagName, clone.tagName)){
+        orphanBin(newParent.ownerDocument).appendChild(clone);
+        return;
+      }
+      if (beforeNode && beforeNode.parentNode === newParent) newParent.insertBefore(clone, beforeNode);
+      else newParent.appendChild(clone);
+    }
+
+    // 削除ラン + 追加ラン を「最良一致」で突き合わせる。順送りに比べる方式だと
+    // 1 つズレたときに全部が誤ペアになるため、スコア最大の組から確定していく。
+    // ペア成立に必要なスコアは「取り違えの起きやすさ」で決める。
+    // 同じタグの兄弟が複数並ぶ場所（表の行、カード、リスト項目）は取り違えると
+    // 別レコード同士が 1 つに潰れるので厳しく見る。一方、兄弟の中でそのタグが
+    // 唯一の要素（ヘッダ、フッタ、単独のセクションなど）は取り違えようがないので
+    // 緩める。これを一律 PAIR_THRESHOLD にしていたため、見出しを書き換えただけの
+    // <header> が丸ごと削除＋追加として二重表示されていた。
+    const LONE_PAIR_THRESHOLD = 0.1;
+    function pairThresholdFor(newParent, tag){
+      let n = 0;
+      for (let c = newParent.firstElementChild; c; c = c.nextElementSibling){
+        if (c.tagName === tag && ++n > 1) return PAIR_THRESHOLD;
+      }
+      return LONE_PAIR_THRESHOLD;
+    }
+
+    function resolveRuns(newParent, delRun, insRun, beforeNode, tally, depth){
+      const pairs = [];
+      for (let i = 0; i < delRun.length; i++){
+        for (let j = 0; j < insRun.length; j++){
+          const sc = nodeSimilarity(delRun[i], insRun[j]);
+          if (sc >= pairThresholdFor(newParent, insRun[j].tagName)) pairs.push({ i: i, j: j, sc: sc });
+        }
+      }
+      pairs.sort((x, y) => y.sc - x.sc);
+      const usedDel = new Set(), usedIns = new Set();
+      for (const pr of pairs){
+        if (usedDel.has(pr.i) || usedIns.has(pr.j)) continue;
+        usedDel.add(pr.i); usedIns.add(pr.j);
+        diffNode(delRun[pr.i], insRun[pr.j], tally, depth + 1);
+      }
+      for (let j = 0; j < insRun.length; j++) if (!usedIns.has(j)) markInserted(insRun[j], tally);
+      for (let i = 0; i < delRun.length; i++) if (!usedDel.has(i)) insertDeletedChild(newParent, delRun[i], beforeNode, tally);
+    }
+
+    // 表の列対応。列が途中に挿入・削除されると index 位置での突き合わせは全部ずれ、
+    // 無関係な列同士が比較されてしまう（例: 旧「ステータス」列が新「担当者」列に
+    // 対応してしまい「山田稼働中」のような値の融合が起きる）。そこで先頭行（ヘッダ）
+    // のセル内容で列を対応付け、その対応を全ての行に使い回す。
+    const tableColMaps = new WeakMap();
+
+    // colspan / rowspan がある表は index と列が 1:1 対応しないため対応付けを諦める
+    function hasSpans(tr){
+      for (let c = tr.firstElementChild; c; c = c.nextElementSibling){
+        if (c.tagName !== 'TD' && c.tagName !== 'TH') continue;
+        const cs = parseInt(c.getAttribute('colspan') || '1', 10);
+        const rs = parseInt(c.getAttribute('rowspan') || '1', 10);
+        if (cs > 1 || rs > 1) return true;
+      }
+      return false;
+    }
+
+    // 新表の列 index → 旧表の列 index（対応なしは -1）。新表ごとに1回だけ計算して
+    // キャッシュする。cellsOf の「印付きセル除外」と噛み合わなくなるのを避けるため、
+    // ここでは印を付ける前提の生のセル列を firstElementChild で直接数える。
+    function columnMap(oldTable, newTable){
+      let m = tableColMaps.get(newTable);
+      if (m !== undefined) return m;
+      m = null;
+      const oldHead = oldTable.querySelector('tr'), newHead = newTable.querySelector('tr');
+      if (oldHead && newHead && !hasSpans(oldHead) && !hasSpans(newHead)){
+        const ok = [], nk = [];
+        for (let c = oldHead.firstElementChild; c; c = c.nextElementSibling)
+          if (c.tagName === 'TD' || c.tagName === 'TH') ok.push(norm(c.textContent));
+        for (let c = newHead.firstElementChild; c; c = c.nextElementSibling)
+          if (c.tagName === 'TD' || c.tagName === 'TH') nk.push(norm(c.textContent));
+        const ops = ok.length && nk.length ? diffSeq(ok, nk, 20000) : null;
+        if (ops){
+          const map = [];
+          let oi = 0;
+          for (const op of ops){
+            if (op.op === 0){ for (let k = 0; k < op.items.length; k++) map.push(oi++); }
+            else if (op.op === 1){ for (let k = 0; k < op.items.length; k++) map.push(-1); }
+            else { oi += op.items.length; } // op === -1: 旧列が新表になくなった
+          }
+          if (map.length === nk.length) m = { map: map, oldCols: ok.length, newCols: nk.length };
+        }
+      }
+      tableColMaps.set(newTable, m);
+      return m;
+    }
+
+    // 旧文書と新文書で列数が違う場合、削除行をそのまま戻すと桁が崩れる。
+    // 実例: 旧 5 列・新 6 列（「担当者」列が追加）で mail-01 行を戻すと、
+    // 行末のステータスセルが新しい「担当者」列の位置にずれ込み、表全体の桁が
+    // 1 列分ずれて見える。新しく増えた列の位置に空セルを補って揃える。
+    function padDeletedRow(clone, oldTable, newTable){
+      if (clone.tagName !== 'TR' || !oldTable || !newTable) return;
+      const info = columnMap(oldTable, newTable);
+      if (!info) return;
+      const cells = [];
+      for (let c = clone.firstElementChild; c; c = c.nextElementSibling){
+        if (c.tagName === 'TD' || c.tagName === 'TH') cells.push(c);
+      }
+      if (cells.length !== info.oldCols) return; // 想定外の桁数なら触らない
+      const doc = clone.ownerDocument;
+      for (let j = 0; j < info.map.length; j++){
+        if (info.map[j] >= 0) continue;
+        const pad = doc.createElement(cells[0] && cells[0].tagName === 'TH' ? 'th' : 'td');
+        pad.setAttribute('data-diff-pad', '');
+        const at = clone.children[j] || null;
+        if (at) clone.insertBefore(pad, at); else clone.appendChild(pad);
+      }
+    }
+
+    // 表の行はできる限りヘッダ由来の列対応で突き合わせる。セルを増減させると桁が
+    // ずれて表が壊れるため、行のセル数は一切変更しない。列対応が使えない場合
+    // （colspan がある、行の桁数がヘッダと食い違う等）は、従来どおり位置で
+    // 突き合わせる。列が増えた分は新しいセルを追加としてマークし、減った分は
+    // 行に印を付けるだけ。
+    function cellsOf(tr){
+      const out = [];
+      for (let c = tr.firstElementChild; c; c = c.nextElementSibling){
+        if (c.tagName !== 'TD' && c.tagName !== 'TH') continue;
+        if (c.hasAttribute('data-diff') || c.hasAttribute('data-diff-block')) continue;
+        out.push(c);
+      }
+      return out;
+    }
+    function diffTableRow(oldTr, newTr, tally, depth){
+      const oc = cellsOf(oldTr), nc = cellsOf(newTr);
+      let changed = false;
+
+      // ヘッダから得た列対応が使えて、両行の桁数がヘッダと一致していれば列で対応付ける
+      const oldTable = oldTr.closest('table'), newTable = newTr.closest('table');
+      let cm = null;
+      if (oldTable && newTable && !hasSpans(oldTr) && !hasSpans(newTr)){
+        const info = columnMap(oldTable, newTable);
+        if (info && oc.length === info.oldCols && nc.length === info.newCols) cm = info.map;
+      }
+
+      if (cm){
+        for (let j = 0; j < nc.length; j++){
+          const oi = cm[j];
+          if (oi >= 0 && oi < oc.length){
+            const before = nc[j].outerHTML;
+            diffNode(oc[oi], nc[j], tally, depth + 1);
+            if (nc[j].outerHTML !== before) changed = true;
+          } else {
+            markInserted(nc[j], tally); changed = true; // 新しく増えた列
+          }
+        }
+        if (oc.length > nc.length) changed = true; // 消えた列は印のみ
+      } else {
+        // 対応が取れない表（colspan あり、桁数不一致等）は従来どおり位置で突き合わせる
+        const n = Math.min(oc.length, nc.length);
+        for (let i = 0; i < n; i++){
+          const before = nc[i].outerHTML;
+          diffNode(oc[i], nc[i], tally, depth + 1);
+          if (nc[i].outerHTML !== before) changed = true;
+        }
+        for (let i = n; i < nc.length; i++){ markInserted(nc[i], tally); changed = true; }
+        if (oc.length > nc.length) changed = true; // 減った列は印のみ（セルは消さない）
+      }
+
+      if (changed) newTr.setAttribute('data-diff-row', 'changed');
+    }
+
+    const visitedPairs = new WeakMap();
+
+    function diffNode(oldEl, newEl, tally, depth){
+      depth = depth || 0;
+      if (depth > MAX_DIFF_DEPTH) return;
+      let seen = visitedPairs.get(oldEl);
+      if (!seen){ seen = new WeakSet(); visitedPairs.set(oldEl, seen); }
+      if (seen.has(newEl)) return;
+      seen.add(newEl);
+
+      // 0. 属性の変化（テキストが同じでも意味や見た目が変わるため先に見る）
+      diffAttributes(oldEl, newEl, tally);
+
+      // 1. この要素自身が直接持つインラインテキスト
+      // ownText は入れ子のブロックで止まるだけで、インラインの子孫（span など）の
+      // テキストは含む。そのためここで差分を付けたあとに同じ子要素をもう一度
+      // 要素として突き合わせると、1 つの変更が二重に描かれる。実際に
+      // <td><span class="badge">故障中</span></td> が
+      // <del>故障中</del> ＋ ins のバッジ ＋ del のバッジ の 3 つになっていた。
+      // テキスト差分を付けた場合は、インラインの子は下の突き合わせから外す。
+      let ownTextEdited = false;
+      if (ownText(oldEl).trim() || ownText(newEl).trim()) ownTextEdited = diffOwnText(oldEl, newEl, tally);
+
+      // 2. 表の行はセル単位で位置合わせする（セル数は絶対に変えない）
+      if (oldEl.tagName === 'TR' && newEl.tagName === 'TR'){
+        diffTableRow(oldEl, newEl, tally, depth);
+        return;
+      }
+
+      // 3. それ以外は子要素列を突き合わせる
+      const oldKids = diffableChildren(oldEl, ownTextEdited);
+      const newKids = diffableChildren(newEl, ownTextEdited);
+      if (!oldKids.length && !newKids.length) return;
+      if (!oldKids.length){ for (const k of newKids) markInserted(k, tally); return; }
+      if (!newKids.length){ for (const k of oldKids) insertDeletedChild(newEl, k, null, tally); return; }
+
+      const ops = diffSeq(oldKids.map(childKey), newKids.map(childKey), 20000);
+      if (!ops){ // 大きすぎる場合は位置合わせで妥協
+        const m = Math.min(oldKids.length, newKids.length);
+        for (let i = 0; i < m; i++) diffNode(oldKids[i], newKids[i], tally, depth + 1);
+        for (let i = m; i < newKids.length; i++) markInserted(newKids[i], tally);
+        for (let i = m; i < oldKids.length; i++) insertDeletedChild(newEl, oldKids[i], null, tally);
+        return;
+      }
+
+      let oi = 0, ni = 0, i = 0;
+      while (i < ops.length){
+        const op = ops[i];
+        if (op.op === 0){
+          for (let k = 0; k < op.items.length; k++, oi++, ni++) diffNode(oldKids[oi], newKids[ni], tally, depth + 1);
+          i++; continue;
+        }
+        let delRun = [], insRun = [];
+        if (op.op === -1){
+          delRun = oldKids.slice(oi, oi + op.items.length); oi += op.items.length; i++;
+          if (i < ops.length && ops[i].op === 1){ insRun = newKids.slice(ni, ni + ops[i].items.length); ni += ops[i].items.length; i++; }
+        } else {
+          insRun = newKids.slice(ni, ni + op.items.length); ni += op.items.length; i++;
+          if (i < ops.length && ops[i].op === -1){ delRun = oldKids.slice(oi, oi + ops[i].items.length); oi += ops[i].items.length; i++; }
+        }
+        // 削除分を戻す位置 = 次に残っている新DOM側の子
+        const beforeNode = newKids[ni] || null;
+        resolveRuns(newEl, delRun, insRun, beforeNode, tally, depth);
+      }
     }
 
     /* ---------- 7. ドキュメント全体 ---------- */
     function buildDiff(oldDoc, newDoc){
-      const tally = {add:0, del:0, blocks:0};
-      const oldUnits = unitsOf(oldDoc.body);
-      const newUnits = unitsOf(newDoc.body);
-
-      const ops = diffSeq(oldUnits.map(sig), newUnits.map(sig), 20000);
-      const plan = []; // {type:'pair'|'ins'|'del', o, n, idx}
-
-      if (!ops){
-        const m = Math.min(oldUnits.length, newUnits.length);
-        for (let i = 0; i < m; i++) plan.push({type:'pair', o:oldUnits[i], n:newUnits[i]});
-        for (let i = m; i < newUnits.length; i++) plan.push({type:'ins', n:newUnits[i]});
-        for (let i = m; i < oldUnits.length; i++) plan.push({type:'del', o:oldUnits[i], idx:newUnits.length});
-      } else {
-        let oi = 0, ni = 0, i = 0;
-        while (i < ops.length){
-          const op = ops[i];
-          if (op.op === 0){
-            for (let j = 0; j < op.items.length; j++, oi++, ni++) plan.push({type:'pair', o:oldUnits[oi], n:newUnits[ni]});
-            i++; continue;
-          }
-          // 削除ラン + 隣接する追加ラン を「置換」として突き合わせる
-          let delRun = [], insRun = [], insStart = ni;
-          if (op.op === -1){
-            delRun = oldUnits.slice(oi, oi + op.items.length); oi += op.items.length; i++;
-            if (i < ops.length && ops[i].op === 1){ insStart = ni; insRun = newUnits.slice(ni, ni + ops[i].items.length); ni += ops[i].items.length; i++; }
-          } else {
-            insStart = ni; insRun = newUnits.slice(ni, ni + op.items.length); ni += op.items.length; i++;
-            if (i < ops.length && ops[i].op === -1){ delRun = oldUnits.slice(oi, oi + ops[i].items.length); oi += ops[i].items.length; i++; }
-          }
-          let d = 0, n = 0;
-          while (d < delRun.length && n < insRun.length){
-            if (similar(delRun[d], insRun[n])){ plan.push({type:'pair', o:delRun[d], n:insRun[n]}); d++; n++; }
-            else if (delRun.length - d > insRun.length - n){ plan.push({type:'del', o:delRun[d], idx:insStart + n}); d++; }
-            else { plan.push({type:'ins', n:insRun[n]}); n++; }
-          }
-          for (; d < delRun.length; d++) plan.push({type:'del', o:delRun[d], idx:insStart + n});
-          for (; n < insRun.length; n++) plan.push({type:'ins', n:insRun[n]});
-        }
-      }
-
-      const removed = [];
-      const pairMap = new Map(); // 旧単位 -> 新単位（削除ブロックの挿入位置の基準に使う）
-      for (const p of plan){
-        if (p.type === 'pair'){ pairMap.set(p.o, p.n); if (diffUnitPair(p.o, p.n, tally)) tally.blocks++; }
-        else if (p.type === 'ins'){ markBlock(p.n, 'ins', tally, ownText(p.n).length); tally.blocks++; }
-        else removed.push(p);
-      }
-
-      // ---- 削除ブロックの配置 ----
-      // 移植元は削除された「単位」を1つずつ、線形な単位列で隣接した要素を基準に
-      // 挿入していた。そのため削除されたセクションの見出しやリスト項目が、
-      // 無関係なカード / callout / 表 / チェックリストの中へばらばらに散らばり、
-      // 「消していない箇所が削除扱いで表示される」状態になっていた。
-      //
-      // ここでは
-      //   1. 各削除単位について「配下の単位がすべて削除された最大の祖先」を求め、
-      //      同じコンテナに属するものを 1 つの塊にまとめる（= コンテナ丸ごと削除）
-      //   2. 対応の取れている前後の単位を基準に、旧DOMで数えた階層差ぶんだけ
-      //      新DOM側を持ち上げ、同じ親の兄弟として挿入する
-      //   3. 挿入先が構造上その要素を子に持てない場合（ul の中に h2 等）は
-      //      持てる高さまで さらに持ち上げる
-      // ことで、削除された <section> が元の位置に 1 ブロックとして出るようにする。
-      const oldIndexOf = new Map();
-      oldUnits.forEach((u, i) => oldIndexOf.set(u, i));
-      const removedIdx = removed
-        .map(p => oldIndexOf.get(p.o))
-        .filter(i => i !== undefined)
-        .sort((x, y) => x - y);
-      const removedSet = new Set(removedIdx);
-
-      // el の配下（el 自身も含む）にある旧単位の連続範囲
-      const unitRangeIn = (el) => {
-        let first = -1, last = -1;
-        for (let i = 0; i < oldUnits.length; i++){
-          const u = oldUnits[i];
-          if (u === el || el.contains(u)){ if (first < 0) first = i; last = i; }
-          else if (first >= 0) break; // 単位は文書順なので連続している
-        }
-        return [first, last];
-      };
-      const allUnitsDeleted = (el) => {
-        const [a, b] = unitRangeIn(el);
-        if (a < 0) return false;
-        for (let i = a; i <= b; i++) if (!removedSet.has(i)) return false;
-        return true;
-      };
-      // 「中身がすべて削除された」最大の祖先まで広げる
-      const maximalDeletedContainer = (unit) => {
-        let x = unit, guard = 0;
-        while (x.parentElement && x.parentElement.tagName !== 'BODY'
-               && allUnitsDeleted(x.parentElement) && guard++ < 40) {
-          x = x.parentElement;
-        }
-        return x;
-      };
-
-      const canContain = (p, c) => {
-        if (p === 'UL' || p === 'OL') return c === 'LI';
-        if (p === 'TABLE') return /^(THEAD|TBODY|TFOOT|CAPTION|COLGROUP|TR)$/.test(c);
-        if (p === 'THEAD' || p === 'TBODY' || p === 'TFOOT') return c === 'TR';
-        if (p === 'TR') return c === 'TD' || c === 'TH';
-        if (p === 'DL') return c === 'DT' || c === 'DD';
-        return true;
-      };
-      const fitTarget = (target, cloneTag) => {
-        let t = target, guard = 0;
-        while (t.parentElement && t.parentElement.tagName !== 'BODY'
-               && !canContain(t.parentElement.tagName, cloneTag) && guard++ < 40) {
-          t = t.parentElement;
-        }
-        return t;
-      };
-      // 旧DOMで from から anc の兄弟の高さまで何階層上がるか
-      const levelsToSiblingOf = (from, anc) => {
-        const stop = anc.parentElement;
-        let x = from, lv = 0;
-        while (x && x.parentElement && x.parentElement !== stop
-               && x.parentElement.tagName !== 'BODY' && lv < 40) { x = x.parentElement; lv++; }
-        return (x && x.parentElement === stop) ? lv : 0;
-      };
-      const liftLevels = (el, n) => {
-        let x = el;
-        while (n-- > 0 && x.parentElement && x.parentElement.tagName !== 'BODY') x = x.parentElement;
-        return x;
-      };
-      // 旧DOMの要素 sib に対応する新DOMの要素を求める。sib の中（または sib 自身）に
-      // ある対応済み単位を1つ見つけ、その単位から sib までの階層数ぶん新DOM側を
-      // 持ち上げる。
-      const mapToNew = (sib) => {
-        for (let i = 0; i < oldUnits.length; i++){
-          const u = oldUnits[i];
-          if (u !== sib && !sib.contains(u)) continue;
-          const nu = pairMap.get(u);
-          if (!nu || !nu.parentElement) continue;
-          let lv = 0, x = u;
-          while (x && x !== sib && x.parentElement && lv < 40) { x = x.parentElement; lv++; }
-          if (x !== sib) continue;
-          const t = liftLevels(nu, lv);
-          if (t && t.parentElement) return t;
-        }
-        return null;
-      };
-
-      const placeDeletedBlock = (clone, anc, a, b) => {
-        // まず「旧DOMで同じ親を共有する兄弟」を基準にする。文書順で最も近い対応単位を
-        // 使うと、単位が細かい場合に全く別のサブツリー（例: ヘッダのバッジに対して
-        // 目次の最初のリンク）が基準になり、無関係なコンテナへ挿入されてしまう。
-        // 同じ親の中で位置を決めれば、その取り違えは起きない。
-        const parent = anc.parentElement;
-        if (parent){
-          const sibs = Array.from(parent.children);
-          const at = sibs.indexOf(anc);
-          for (let i = at + 1; i < sibs.length; i++){
-            const t = mapToNew(sibs[i]);
-            if (t){ const f = fitTarget(t, clone.tagName); if (f.parentElement){ f.parentElement.insertBefore(clone, f); return true; } }
-          }
-          for (let i = at - 1; i >= 0; i--){
-            const t = mapToNew(sibs[i]);
-            if (t){ const f = fitTarget(t, clone.tagName); if (f.parentElement){ f.parentElement.insertBefore(clone, f.nextSibling); return true; } }
-          }
-          // 兄弟に手がかりが無い場合は、親そのものの対応先の内側へ入れる
-          const pt = mapToNew(parent);
-          if (pt){ const f = fitTarget(pt, clone.tagName); if (f === pt) { pt.appendChild(clone); return true; } }
-        }
-        // 最後の手段: 文書順で近い対応単位を基準にする（旧来の挙動）
-        for (let i = b + 1; i < oldUnits.length; i++){
-          const nu = pairMap.get(oldUnits[i]);
-          if (!nu || !nu.parentElement) continue;
-          const t = fitTarget(liftLevels(nu, levelsToSiblingOf(oldUnits[i], anc)), clone.tagName);
-          if (t.parentElement){ t.parentElement.insertBefore(clone, t); return true; }
-        }
-        for (let i = a - 1; i >= 0; i--){
-          const nu = pairMap.get(oldUnits[i]);
-          if (!nu || !nu.parentElement) continue;
-          const t = fitTarget(liftLevels(nu, levelsToSiblingOf(oldUnits[i], anc)), clone.tagName);
-          if (t.parentElement){ t.parentElement.insertBefore(clone, t.nextSibling); return true; }
-        }
-        return false;
-      };
-
-      const containers = [];
-      for (const i of removedIdx){
-        const c = maximalDeletedContainer(oldUnits[i]);
-        if (containers.some(prev => prev === c || prev.contains(c))) continue;
-        containers.push(c);
-      }
-      // 削除ブロックは最後に挿入（インライン差分で DOM が動くのを避ける）
-      for (const anc of containers){
-        const [a, b] = unitRangeIn(anc);
-        const clone = newDoc.importNode(anc, true);
-        clone.setAttribute('data-diff-block', 'del');
-        tally.del += anc.textContent.length; tally.blocks++;
-        if (!placeDeletedBlock(clone, anc, a, b)) orphanBin(newDoc).appendChild(clone);
-      }
+      const tally = {add:0, del:0, blocks:0, attrs:0};
+      diffNode(oldDoc.body, newDoc.body, tally, 0);
       return tally;
     }
 
@@ -860,14 +1049,16 @@ del[data-diff="del"]{
 }
 [data-diff-block="ins"]{ background:rgba(46,160,67,.14) !important; }
 [data-diff-block="del"]{ background:rgba(248,81,73,.12) !important; opacity:.75; }
+td[data-diff-pad], th[data-diff-pad]{ background:transparent; }
 a[data-diff-nolink]{ cursor: default; }
+[data-diff-attr]{ outline:1px dashed rgba(88,166,255,.55); outline-offset:1px; }
 #__diff_removed__{ margin-top:2rem; padding:1rem; }
-.diff-only [data-diff-row], .diff-only [data-diff-block]{ outline:1px dashed rgba(195,154,95,.4); outline-offset:2px; }
-.diff-only tr:not([data-diff-row]):not([data-diff-block]),
-.diff-only li:not([data-diff-row]):not([data-diff-block]),
-.diff-only p:not([data-diff-row]):not([data-diff-block]),
-.diff-only pre:not([data-diff-row]):not([data-diff-block]),
-.diff-only blockquote:not([data-diff-row]):not([data-diff-block]){ display:none; }
+.diff-only [data-diff-row], .diff-only [data-diff-block], .diff-only [data-diff-attr]{ outline:1px dashed rgba(195,154,95,.4); outline-offset:2px; }
+.diff-only tr:not([data-diff-row]):not([data-diff-block]):not([data-diff-attr]),
+.diff-only li:not([data-diff-row]):not([data-diff-block]):not([data-diff-attr]),
+.diff-only p:not([data-diff-row]):not([data-diff-block]):not([data-diff-attr]),
+.diff-only pre:not([data-diff-row]):not([data-diff-block]):not([data-diff-attr]),
+.diff-only blockquote:not([data-diff-row]):not([data-diff-block]):not([data-diff-attr]){ display:none; }
 .diff-flash{ animation:diffFlash .8s ease-out; }
 @keyframes diffFlash{ 0%{filter:brightness(1)} 35%{filter:brightness(2.1)} 100%{filter:brightness(1)} }
 @media (prefers-reduced-motion:reduce){ .diff-flash{ animation:none; outline:2px solid #c39a5f } }
