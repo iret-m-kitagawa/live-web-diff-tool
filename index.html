@@ -578,6 +578,11 @@
       const oldText = oldEl ? ownText(oldEl) : '';
       const newText = ownText(newEl);
       if (oldText === newText) return false;
+      // 空白の入り方だけが違う場合は目に見える変化がないので何も出さない。
+      // 入れ子の深さが変わるとインデントだけがずれ、中身が空の ins/del が
+      // ぶら下がっていた。ただし pre / code は空白そのものが意味を持つので除く。
+      const ws = newEl.tagName === 'PRE' || newEl.tagName === 'CODE' || !!newEl.closest('pre');
+      if (!ws && norm(oldText) === norm(newText)) return false;
 
       const oldToks = tokenize(oldText), newToks = tokenize(newText);
       const ops = diffSeq(oldToks, newToks);
@@ -656,6 +661,9 @@
 
       const om = attrMap(oldEl), nm = attrMap(newEl);
       const names = new Set();
+      // タグ自体が変わった場合（h3 -> h2、ul -> ol）も「この要素が変わった」印を出す。
+      // テキストが同じだと他に手掛かりがなく、見出しレベルの昇格が無表示になる。
+      if (oldEl.tagName !== newEl.tagName) names.add('tagName');
       om.forEach((v, k) => { if (nm.get(k) !== v) names.add(k); });
       nm.forEach((v, k) => { if (om.get(k) !== v) names.add(k); });
       if (!names.size) return;
@@ -704,6 +712,13 @@
     function identityText(el){
       const h = el.querySelector('h1,h2,h3,h4,h5,h6,caption,legend,summary,dt,th');
       if (h) return norm(h.textContent);
+      // 自分自身が持つテキストを、子要素より優先する。子から先に見ていたため
+      // <li>データベース設計<ul>外部インターフェース設計</ul></li> の識別子が
+      // 入れ子側の「外部インターフェース設計」になり、旧文書の別項目と一致して
+      // しまって「データベース設計外部インデータベーフェース設計」という
+      // 判読不能な混在になっていた。
+      const own = norm(ownText(el));
+      if (own) return own;
       const first = el.firstElementChild;
       if (first) return norm(first.textContent);
       return norm(el.textContent);
@@ -742,8 +757,21 @@
     // 実例: 表の Classic 行と Pro Plus 行が $ , 0 ユ ー ザ サ ポ ト を共有するだけで
     // 1 組のペアと判定され、行の削除・追加が「変更」に潰れていた。
     // そこで識別テキスト（見出し／キー列）の一致を同じ重みで見る。
+    // 見出しレベルの上げ下げ（h3 -> h2）や箇条書きの種類変更（ul -> ol）は、
+    // 「同じ要素の書式が変わった」だけで別物ではない。タグ名の完全一致を求めると
+    // 必ず非ペアになり、中身が同一のリストが丸ごと削除＋追加として二重に出ていた。
+    const TAG_FAMILY = {
+      H1: 'heading', H2: 'heading', H3: 'heading', H4: 'heading', H5: 'heading', H6: 'heading',
+      UL: 'list', OL: 'list'
+    };
+    function sameTagFamily(a, b){
+      if (a.tagName === b.tagName) return true;
+      const fa = TAG_FAMILY[a.tagName];
+      return !!fa && fa === TAG_FAMILY[b.tagName];
+    }
+
     function nodeSimilarity(a, b){
-      if (a.tagName !== b.tagName) return 0;
+      if (!sameTagFamily(a, b)) return 0;
       const full = tokenOverlap(norm(a.textContent), norm(b.textContent));
       const ia = identityText(a), ib = identityText(b);
       // 識別テキストが取れない（全文と同じ）要素は従来どおり全文だけで判定する
@@ -785,10 +813,11 @@
       padDeletedRow(clone, oldKid.closest('table'), newParent.closest('table'));
       if (!canHold(newParent.tagName, clone.tagName)){
         orphanBin(newParent.ownerDocument).appendChild(clone);
-        return;
+        return null;
       }
       if (beforeNode && beforeNode.parentNode === newParent) newParent.insertBefore(clone, beforeNode);
       else newParent.appendChild(clone);
+      return clone;
     }
 
     // 削除ラン + 追加ラン を「最良一致」で突き合わせる。順送りに比べる方式だと
@@ -808,23 +837,84 @@
       return LONE_PAIR_THRESHOLD;
     }
 
-    function resolveRuns(newParent, delRun, insRun, beforeNode, tally, depth){
-      const pairs = [];
-      for (let i = 0; i < delRun.length; i++){
-        for (let j = 0; j < insRun.length; j++){
-          const sc = nodeSimilarity(delRun[i], insRun[j]);
-          if (sc >= pairThresholdFor(newParent, insRun[j].tagName)) pairs.push({ i: i, j: j, sc: sc });
+    // 1 つの親の下にある「削除ラン + 追加ラン」の組をまとめて解決する。
+    // ラン単位で閉じて処理していたときは、位置が離れた移動を Myers が別々のランへ
+    // 振り分けるせいで、移動しつつ中身も変わった要素が絶対に出会えなかった。
+    // 実例: カードが 2 番目から 3 番目へ動き、同時に本文とバッジも変わったとき、
+    // 削除カードと追加カードが別のランに入り、編集内容が一切見えなくなっていた。
+    function resolveGroups(newParent, groups, tally, depth){
+      const pairedDel = new Map(), usedIns = new Set();
+      const key = (g, k) => g + ':' + k;
+      const settle = (list) => {
+        list.sort((x, y) => y.sc - x.sc);
+        for (const c of list){
+          if (pairedDel.has(key(c.gi, c.a)) || usedIns.has(key(c.gj, c.b))) continue;
+          const oldEl = groups[c.gi].del[c.a], newEl2 = groups[c.gj].ins[c.b];
+          pairedDel.set(key(c.gi, c.a), newEl2); usedIns.add(key(c.gj, c.b));
+          diffNode(oldEl, newEl2, tally, depth + 1);
         }
-      }
-      pairs.sort((x, y) => y.sc - x.sc);
-      const usedDel = new Set(), usedIns = new Set();
-      for (const pr of pairs){
-        if (usedDel.has(pr.i) || usedIns.has(pr.j)) continue;
-        usedDel.add(pr.i); usedIns.add(pr.j);
-        diffNode(delRun[pr.i], insRun[pr.j], tally, depth + 1);
-      }
-      for (let j = 0; j < insRun.length; j++) if (!usedIns.has(j)) markInserted(insRun[j], tally);
-      for (let i = 0; i < delRun.length; i++) if (!usedDel.has(i)) insertDeletedChild(newParent, delRun[i], beforeNode, tally);
+      };
+
+      // 1) まず同じラン内での最良一致。取り違えの起きやすさで閾値を変える。
+      const near = [];
+      groups.forEach((g, gi) => {
+        for (let a = 0; a < g.del.length; a++)
+          for (let b = 0; b < g.ins.length; b++){
+            const sc = nodeSimilarity(g.del[a], g.ins[b]);
+            if (sc >= pairThresholdFor(newParent, g.ins[b].tagName)) near.push({ gi: gi, a: a, gj: gi, b: b, sc: sc });
+          }
+      });
+      settle(near);
+
+      // 2) 次にランをまたいだ「移動して中身も変わった」要素。誤って結び付けると
+      //    別物同士が 1 つに潰れるので、見出しなどの識別テキストが完全に一致する
+      //    ものだけに限る。中身まで同じ場合は対にしない（純粋な移動は削除＋追加の
+      //    ままにしておかないと、動いたこと自体が見えなくなる）。
+      const far = [];
+      groups.forEach((g, gi) => {
+        for (let a = 0; a < g.del.length; a++){
+          if (pairedDel.has(key(gi, a))) continue;
+          const oldEl = g.del[a], idA = identityText(oldEl);
+          if (!idA) continue;
+          groups.forEach((h, gj) => {
+            if (gj === gi) return;
+            for (let b = 0; b < h.ins.length; b++){
+              const el = h.ins[b];
+              if (usedIns.has(key(gj, b))) continue;
+              if (!sameTagFamily(oldEl, el)) continue;
+              if (identityText(el) !== idA) continue;
+              if (childKey(el) === childKey(oldEl)) continue;
+              far.push({ gi: gi, a: a, gj: gj, b: b, sc: nodeSimilarity(oldEl, el) });
+            }
+          });
+        }
+      });
+      settle(far);
+
+      // 3) 残った追加要素を確定し、削除要素を旧文書での隣り合わせを頼りに戻す。
+      //    直前に対応が付いた要素の「新しい相手」の後ろへ置けば元の並び順が保たれる。
+      //    手掛かりがない場合だけ、ラン直後の要素の前に置く。これがないと、
+      //    全行が少しずつ変わった表で削除行だけが末尾へ流れていた。
+      groups.forEach((g, gi) => {
+        for (let b = 0; b < g.ins.length; b++) if (!usedIns.has(key(gi, b))) markInserted(g.ins[b], tally);
+      });
+      groups.forEach((g, gi) => {
+        let cursor = null;
+        for (let a = 0; a < g.del.length; a++){
+          const mate = pairedDel.get(key(gi, a));
+          if (mate){ cursor = mate; continue; }
+          let at = null;
+          if (cursor && cursor.parentNode === newParent) at = cursor.nextSibling;
+          else {
+            for (let k = a + 1; k < g.del.length; k++){
+              const nxt = pairedDel.get(key(gi, k));
+              if (nxt && nxt.parentNode === newParent){ at = nxt; break; }
+            }
+            if (!at && g.before && g.before.parentNode === newParent) at = g.before;
+          }
+          cursor = insertDeletedChild(newParent, g.del[a], at, tally) || cursor;
+        }
+      });
     }
 
     // 表の列対応。列が途中に挿入・削除されると index 位置での突き合わせは全部ずれ、
@@ -844,9 +934,15 @@
       return false;
     }
 
-    // 新表の列 index → 旧表の列 index（対応なしは -1）。新表ごとに1回だけ計算して
+    // ヘッダ行の内容から「統合後の列並び」を作る。要素は { o, n } で、o は旧表の
+    // 列 index、n は新表の列 index（対応しない側は -1）。新表ごとに1回だけ計算して
     // キャッシュする。cellsOf の「印付きセル除外」と噛み合わなくなるのを避けるため、
     // ここでは印を付ける前提の生のセル列を firstElementChild で直接数える。
+    //
+    // 新→旧の写像だけを持っていたときは、なくなった列を表現する手段がなく、
+    // 削除された列が何の印もなく消えていた（行の削除は所定位置に復元されるのに
+    // 列の削除だけ情報が落ちる非対称な状態だった）。統合後の並びを持つことで、
+    // 削除された列も所定の位置に戻せる。
     function columnMap(oldTable, newTable){
       let m = tableColMaps.get(newTable);
       if (m !== undefined) return m;
@@ -860,14 +956,16 @@
           if (c.tagName === 'TD' || c.tagName === 'TH') nk.push(norm(c.textContent));
         const ops = ok.length && nk.length ? diffSeq(ok, nk, 20000) : null;
         if (ops){
-          const map = [];
-          let oi = 0;
+          const cols = [];
+          let oi = 0, ni = 0;
           for (const op of ops){
-            if (op.op === 0){ for (let k = 0; k < op.items.length; k++) map.push(oi++); }
-            else if (op.op === 1){ for (let k = 0; k < op.items.length; k++) map.push(-1); }
-            else { oi += op.items.length; } // op === -1: 旧列が新表になくなった
+            for (let k = 0; k < op.items.length; k++){
+              if (op.op === 0) cols.push({ o: oi++, n: ni++ });
+              else if (op.op === 1) cols.push({ o: -1, n: ni++ });   // 追加された列
+              else cols.push({ o: oi++, n: -1 });                    // なくなった列
+            }
           }
-          if (map.length === nk.length) m = { map: map, oldCols: ok.length, newCols: nk.length };
+          if (oi === ok.length && ni === nk.length) m = { cols: cols, oldCols: ok.length, newCols: nk.length };
         }
       }
       tableColMaps.set(newTable, m);
@@ -888,11 +986,14 @@
       }
       if (cells.length !== info.oldCols) return; // 想定外の桁数なら触らない
       const doc = clone.ownerDocument;
-      for (let j = 0; j < info.map.length; j++){
-        if (info.map[j] >= 0) continue;
-        const pad = doc.createElement(cells[0] && cells[0].tagName === 'TH' ? 'th' : 'td');
+      const tag = cells[0] && cells[0].tagName === 'TH' ? 'th' : 'td';
+      // 統合後の列順に並べ直す。旧行が既に持っている列はそのまま、
+      // 追加された列の位置にだけ空セルを補う。
+      for (let k = 0; k < info.cols.length; k++){
+        if (info.cols[k].o >= 0) continue;
+        const pad = doc.createElement(tag);
         pad.setAttribute('data-diff-pad', '');
-        const at = clone.children[j] || null;
+        const at = clone.children[k] || null;
         if (at) clone.insertBefore(pad, at); else clone.appendChild(pad);
       }
     }
@@ -920,21 +1021,38 @@
       let cm = null;
       if (oldTable && newTable && !hasSpans(oldTr) && !hasSpans(newTr)){
         const info = columnMap(oldTable, newTable);
-        if (info && oc.length === info.oldCols && nc.length === info.newCols) cm = info.map;
+        if (info && oc.length === info.oldCols && nc.length === info.newCols) cm = info;
       }
 
       if (cm){
-        for (let j = 0; j < nc.length; j++){
-          const oi = cm[j];
-          if (oi >= 0 && oi < oc.length){
-            const before = nc[j].outerHTML;
-            diffNode(oc[oi], nc[j], tally, depth + 1);
-            if (nc[j].outerHTML !== before) changed = true;
+        // なくなった列のセルを戻す位置は「次に残っている新しい列」の直前。
+        // 後ろから走査してその要素を控えておく。
+        const anchors = new Array(cm.cols.length);
+        let nextEl = null;
+        for (let k = cm.cols.length - 1; k >= 0; k--){
+          anchors[k] = nextEl;
+          if (cm.cols[k].n >= 0) nextEl = nc[cm.cols[k].n];
+        }
+        for (let k = 0; k < cm.cols.length; k++){
+          const col = cm.cols[k];
+          if (col.o >= 0 && col.n >= 0){
+            const before = nc[col.n].outerHTML;
+            diffNode(oc[col.o], nc[col.n], tally, depth + 1);
+            if (nc[col.n].outerHTML !== before) changed = true;
+          } else if (col.n >= 0){
+            markInserted(nc[col.n], tally); changed = true;   // 新しく増えた列
           } else {
-            markInserted(nc[j], tally); changed = true; // 新しく増えた列
+            // なくなった列。行の削除と同じく、消えたことが分かるように所定位置へ戻す。
+            // 全ての行（ヘッダ含む）に同じ 1 列が増えるので表は長方形のまま保たれる。
+            // insertDeletedChild は行にセルを足すのを禁じているため直接挿入する。
+            const clone = newTr.ownerDocument.importNode(oc[col.o], true);
+            markDeleted(clone, tally);
+            const at = anchors[k];
+            if (at && at.parentNode === newTr) newTr.insertBefore(clone, at);
+            else newTr.appendChild(clone);
+            changed = true;
           }
         }
-        if (oc.length > nc.length) changed = true; // 消えた列は印のみ
       } else {
         // 対応が取れない表（colspan あり、桁数不一致等）は従来どおり位置で突き合わせる
         const n = Math.min(oc.length, nc.length);
@@ -995,6 +1113,8 @@
         return;
       }
 
+      // ラン単位で即決せず、この親の下の全ランを集めてからまとめて解決する
+      const groups = [];
       let oi = 0, ni = 0, i = 0;
       while (i < ops.length){
         const op = ops[i];
@@ -1010,16 +1130,41 @@
           insRun = newKids.slice(ni, ni + op.items.length); ni += op.items.length; i++;
           if (i < ops.length && ops[i].op === -1){ delRun = oldKids.slice(oi, oi + ops[i].items.length); oi += ops[i].items.length; i++; }
         }
-        // 削除分を戻す位置 = 次に残っている新DOM側の子
-        const beforeNode = newKids[ni] || null;
-        resolveRuns(newEl, delRun, insRun, beforeNode, tally, depth);
+        // 削除分を戻す位置の手掛かり = 次に残っている新DOM側の子
+        groups.push({ del: delRun, ins: insRun, before: newKids[ni] || null });
       }
+      if (groups.length) resolveGroups(newEl, groups, tally, depth);
     }
 
     /* ---------- 7. ドキュメント全体 ---------- */
+
+    // 最後の掃除。列対応を通らない経路（丸ごと追加された行など）でも表が長方形で
+    // あることを保証する。桁が揃っていないと、どこが変わったか以前に表が読めなく
+    // なるため、原因側の修正とは別に構造として担保しておく。
+    // colspan / rowspan のある表は列と index が 1:1 でないので触らない。
+    function normalizeTables(doc){
+      const tables = doc.querySelectorAll('table');
+      for (const t of tables){
+        const rows = Array.from(t.querySelectorAll('tr'));
+        if (!rows.length) continue;
+        if (rows.some(hasSpans)) continue;
+        const widths = rows.map(r => r.children.length);
+        const max = Math.max.apply(null, widths);
+        for (let i = 0; i < rows.length; i++){
+          for (let k = widths[i]; k < max; k++){
+            const first = rows[i].firstElementChild;
+            const pad = doc.createElement(first && first.tagName === 'TH' ? 'th' : 'td');
+            pad.setAttribute('data-diff-pad', '');
+            rows[i].appendChild(pad);
+          }
+        }
+      }
+    }
+
     function buildDiff(oldDoc, newDoc){
       const tally = {add:0, del:0, blocks:0, attrs:0};
       diffNode(oldDoc.body, newDoc.body, tally, 0);
+      normalizeTables(newDoc);
       return tally;
     }
 
