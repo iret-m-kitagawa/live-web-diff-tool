@@ -42,17 +42,22 @@ was a real reported bug — and every surviving item's `href="#..."` must still 
 
 ## Colour scheme
 
-Only two hues are used, at every granularity, so a marker's meaning never depends on which part of
-the page it is on:
+Two hues, one strength, no borders — so a word-level insertion and a whole-column insertion are the
+same green, and a marker's meaning never depends on which part of the page it is on:
 
 | | Insertion | Deletion |
 |---|---|---|
-| Word / phrase (`ins` / `del`) | green fill `rgba(26,159,71,.45)` + 1px green border | red fill `rgba(229,50,45,.42)` + 1px red border |
-| Whole element (`data-diff-block`) | green fill `.30` + 2px green outline | red fill `.28` + 2px red outline |
-| Attribute or tag change (`data-diff-attr`) | 2px green outline, **no fill** | — |
+| Word / phrase (`ins` / `del`) | `rgba(26,159,71,.38)` | `rgba(229,50,45,.36)` |
+| Whole element (`data-diff-block`) | `rgba(26,159,71,.38)` | `rgba(229,50,45,.36)` |
+| Attribute or tag change (`data-diff-attr`) | `rgba(26,159,71,.15)` | — |
+
+An attribute or tag change is the same green at a lighter weight: the element is in its new state,
+but it was not added, so it must not read as strongly as a real insertion.
 
 Deleted content is drawn at full opacity. It used to be dimmed to 75% on top of a 12%-alpha tint,
 which on a page with its own pale palette made deletions read as unmarked — or worse, as insertions.
+The block markers previously carried a heavier fill-plus-outline treatment than inline ones, so the
+same edit looked like two different things depending on its size.
 
 ## Invariants checked across the whole document
 
