@@ -1,43 +1,46 @@
 # Diff Test Cases
 
-Two before/after pairs. Each pair is a **single** complete, self-contained, styled Japanese document,
-and every test case is a section inside it with a stable `id`. Diffing a pair once exercises every
-pattern at the same time — cheaper to run than a fixture pair per case, and a stricter test, since a
-bug in one section has to coexist with eighteen others rather than being isolated.
+Three before/after pairs. Each pair is a **single** complete, self-contained, styled Japanese
+document, and every test case is a section inside it with a stable `id`. Diffing a pair once
+exercises every pattern at the same time — cheaper to run than a fixture pair per case, and a
+stricter test, since a bug in one section has to coexist with twenty others rather than being
+isolated.
 
 | Set | Files | Document | Purpose |
 |---|---|---|---|
 | 1 | `all-cases-{before,after}.html` | 資産台帳統合プロジェクト 進捗報告 | The core diff patterns |
-| 2 | `backend-design-{before,after}.html` | 注文管理サービス バックエンド設計書 | The same patterns written in **deliberately different HTML** |
+| 2 | `backend-design-{before,after}.html` | 注文管理サービス バックエンド設計書 | The same patterns in **deliberately different HTML** |
+| 3 | `edge-cases-{before,after}.html` | 社内申請ワークフロー 移行仕様書 | The **idioms and patterns the first two miss** |
 
-Set 2 exists because a diff engine can pass every pattern in one document's idiom and still fall over
-on another's. It differs from set 1 on purpose:
+Sets 2 and 3 exist because a diff engine can pass every pattern in one document's idiom and still
+fall over on another's. Each set is written to share as little as possible with the others:
 
-| | Set 1 | Set 2 |
-|---|---|---|
-| Palette | light | **dark** (are the diff colours legible on a dark page?) |
-| Layout | flex + left sidebar nav (`ul`/`li`/`a`) | grid + **horizontal top nav** (bare `a` children) |
-| Sectioning | `<section>` drawn as cards | `<article>` separated by `<hr>` |
-| Tables | `<thead>` + column headers | **no `<thead>`**, **`th scope="row"`**, **`colspan`**, **`rowspan`** |
-| Other | `dl` / `ul.tree` / `ol.steps` | **`details`/`summary`**, **inline SVG**, **`figure`/`figcaption`**, `abbr[title]`, `data-*` |
+| | Set 1 | Set 2 | Set 3 |
+|---|---|---|---|
+| Palette | light | **dark** | light, serif, print-like |
+| Layout | flex + left sidebar nav (`ul`/`li`/`a`) | grid + **horizontal top nav** | single sheet + boxed index, **`column-count`** prose |
+| Sectioning | `<section>` drawn as cards | `<article>` separated by `<hr>` | `<section>` with a ruled heading |
+| Tables | `<thead>` + column headers | no `<thead>`, `th scope="row"`, `colspan`, `rowspan` | **`colgroup`/`col`**, **multiple `<tbody>`**, **`<tfoot>`**, **a table inside a cell** |
+| Other | `dl` / `ul.tree` / `ol.steps` | `details`/`summary`, inline SVG, `figure`, `abbr[title]`, `data-*` | **forms**, **`time`/`ruby`/`sup`/`sub`/`mark`/`kbd`**, **emoji**, **data: URI images**, **`hidden`**, **HTML comments**, **the document's own `ins`/`del`**, **`dir="rtl"`/`bdi`**, **`display:table`/`display:contents`/`float`** |
 
-Both sets are emitted by a generator ([`generate.py`](generate.py),
-[`generate-backend.py`](generate-backend.py)) from a single source, so the `<style>` block is
-byte-identical within a pair by construction and can never drift:
+All three are emitted by a generator ([`generate.py`](generate.py),
+[`generate-backend.py`](generate-backend.py), [`generate-edge.py`](generate-edge.py)) from a single
+source, so the `<style>` block is byte-identical within a pair by construction and can never drift:
 
 ```
 python3 diff-testcases/generate.py
 python3 diff-testcases/generate-backend.py
+python3 diff-testcases/generate-edge.py
 ```
 
 ## Opening them
 
-[`open-all-cases.html`](open-all-cases.html) and [`open-backend-design.html`](open-backend-design.html)
-are single links that open a pair already loaded the right way round, through a Diff URL with both
-files embedded. Nothing to drag, so there is no pane to get wrong. **Regenerate them whenever the
+[`open-all-cases.html`](open-all-cases.html), [`open-backend-design.html`](open-backend-design.html)
+and [`open-edge-cases.html`](open-edge-cases.html) are single links that open a pair already loaded
+the right way round, through a Diff URL with both files embedded. Nothing to drag, so there is no pane to get wrong. **Regenerate them whenever the
 fixtures change** — the file contents are carried inline in the URL.
 
-Both documents open with a `sec-direction` section that states which file it is, so the render
+All three documents open with a `sec-direction` section that states which file it is, so the render
 describes its own direction: **`BEFORE（旧）` red and `AFTER（新）` green** means the panes are the
 right way round. If it reads the other way, every other section will look inverted too, with
 additions marked red.
@@ -96,6 +99,33 @@ statement about file content stays true either way.
 | `sec-swap` | 小見出しブロックの前後入れ替え | Delete+insert of the moved block. |
 | `sec-legacy-batch` / `sec-webhook` | 節そのものの増減（ナビとセット） | Whole `del` / whole `ins` block, nav gains and loses exactly one item each. |
 
+## Set 3 — 社内申請ワークフロー 移行仕様書
+
+| Section id | Idiom / pattern under test | What a correct rendering shows |
+|---|---|---|
+| `sec-direction` | diff の向きそのもの | `BEFORE` red, `AFTER` green, 第 3 版→第 4 版. |
+| `sec-form` | **フォームの状態**（`input value` / `option selected` / `checkbox checked` / `textarea`） | Each state change carries `data-diff-attr`; the rendered form holds the **after** values. |
+| `sec-table-parts` | **`colgroup`/`col`**, **複数 `<tbody>`**, **`<tfoot>`** | `colgroup` and both `tbody` survive, one row added, the `tfoot` total partially marked. |
+| `sec-table-nested` | **セルの中の表** | The inner table keeps **its own** 2 columns — it must not be padded out to the outer table's width — and gains one marked row. |
+| `sec-col-reorder` | **列の入れ替え**（増減なし） | Shown as delete+insert of the moved column, table still rectangular, the untouched columns unmarked. |
+| `sec-col-rename` | **列名だけの変更**（データ同一） | The table stays **4 columns**, only the header cell is partially marked, and **no data cell is touched**. |
+| `sec-dup-blocks` | 完全に同一のブロックが 3 つ | Exactly one marked deleted; the rest unmarked. |
+| `sec-dup-text` | 同一の段落が 3 つ、真ん中だけ編集 | One inserted and one deleted paragraph. Which of three identical paragraphs was edited is not decidable, so this is the honest rendering. |
+| `sec-inline-semantics` | `time[datetime]` / `ruby` / `sup` / `sub` / `mark` / `kbd` | `datetime` carries `data-diff-attr` **even though the text changed too**; the untouched `kbd` stays unmarked. |
+| `sec-emoji` | **絵文字**（肌色修飾・国旗・ZWJ 連結） | No `U+FFFD` anywhere; untouched emoji survive intact; swapped emoji and words are marked. |
+| `sec-style-attr` | インライン `style` 属性だけ | `TD[style]` marked, zero text-level markers. |
+| `sec-img` | **data: URI の画像** | Two images, one `src` change and one `alt`-only change marked, untouched caption unmarked. |
+| `sec-hidden` | `hidden` 属性の付け外し | `P[hidden]` marked, zero text-level markers. |
+| `sec-comment` | HTML コメントの変更 | The comment text never appears as content and produces no markers. |
+| `sec-authors-insdel` | **文書が元から持つ `ins`/`del`** | The author's own `ins`/`del` survive and stay distinguishable from the tool's markers. |
+| `sec-move-across` | 項目が別のリストへ移る | Deleted in the source list, inserted in the destination list. |
+| `sec-replace-all` | 節の中身を丸ごと差し替え | Whole `p` and `table` delete plus insert, **zero** word-level interleaving. |
+| `sec-deep` | 6 階層の入れ子 | The change at the bottom is visible and the added leaf is marked. |
+| `sec-rtl` | `dir="rtl"` と `bdi` | Direction preserved, `bdi` intact, both edits marked. |
+| `sec-css-layout` | `display:table` / `display:contents` / `float` / `column-count` | All four structures survive and each carries its own edit. |
+| `sec-misc-containers` | `hgroup` と `address` | Both survive; the time and extension changes are marked. |
+| `sec-legacy-approval` / `sec-delegation` | 節そのものの増減（目次とセット） | Whole `del` / whole `ins`, nav gains and loses exactly one item. |
+
 ## Colour scheme
 
 Two hues, one strength, no borders — so a word-level insertion and a whole-column insertion are the
@@ -133,8 +163,10 @@ and opaque so it stays legible on both light and dark pages.
 ```
 all-cases-before.html        all-cases-after.html          set 1
 backend-design-before.html   backend-design-after.html     set 2
-generate.py                  generate-backend.py           emit each pair from one source
-open-all-cases.html          open-backend-design.html      one-click launchers (Diff URL inline)
+edge-cases-before.html       edge-cases-after.html         set 3
+generate.py  generate-backend.py  generate-edge.py         emit each pair from one source
+open-all-cases.html  open-backend-design.html  open-edge-cases.html
+                                                           one-click launchers (Diff URL inline)
 evidence/
   all-cases-{1-before,2-after}.png        reference renders of set 1
   all-cases-diff.png                      set 1 through the tool
@@ -147,8 +179,25 @@ evidence/
   backend-blocks.png                      set 2 close-up: block churn and data-* attribute change
   backend-svg.png                         set 2 close-up: inline SVG and figure
   backend-legend-and-direction.png        set 2 with the legend visible
+  edge-cases-diff.png                     set 3 through the tool
+  edge-legend-and-direction.png           set 3 with the legend visible
   case2-reported-scenarios.png            the originally reported document, after the fixes
 ```
+
+## Known coarseness
+
+These are representations the engine chooses deliberately, not defects:
+
+- A **moved but otherwise unchanged** element renders as delete plus insert. Collapsing it into one
+  element would hide the move, which is usually the point of the edit.
+- A **moved column** does the same, so its data appears twice — once struck, once added.
+- When several **identical** blocks or paragraphs sit together and one of them is edited, which one
+  was edited is not decidable, so the result is one insert plus one delete rather than an in-place
+  edit.
+- A **CSS-only change** produces no markers. The diff is over the DOM, so a rule change with no
+  effect on content has nothing to mark.
+- A document with **no element children at all** (plain text, whitespace) is refused with
+  「HTML として解釈できる要素がありません」.
 
 Reference renders are captured so a rendering problem can be attributed: if a table looks ragged
 through the tool but is uniform in both reference renders, the fault is in the diff, not the fixture.

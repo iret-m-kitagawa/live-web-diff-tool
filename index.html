@@ -982,7 +982,27 @@
               else cols.push({ o: oi++, n: -1 });                    // なくなった列
             }
           }
-          if (oi === ok.length && ni === nk.length) m = { cols: cols, oldCols: ok.length, newCols: nk.length };
+          // なくなった列の並びと、その直後に増えた列の並びが同じ長さなら、
+          // 「その位置の列が差し替わった（列名の変更）」とみなして対にする。
+          // そうしないと、見出しを 1 つ書き換えただけで列が削除＋追加に分かれ、
+          // 中身が同一のデータセルまで 1 行ぶん丸ごと二重に描かれていた。
+          const merged = [];
+          for (let k = 0; k < cols.length; k++){
+            let dEnd = k;
+            while (dEnd < cols.length && cols[dEnd].o >= 0 && cols[dEnd].n < 0) dEnd++;
+            const dLen = dEnd - k;
+            if (dLen > 0){
+              let iEnd = dEnd;
+              while (iEnd < cols.length && cols[iEnd].o < 0 && cols[iEnd].n >= 0) iEnd++;
+              if (iEnd - dEnd === dLen){
+                for (let x = 0; x < dLen; x++) merged.push({ o: cols[k + x].o, n: cols[dEnd + x].n });
+                k = iEnd - 1;
+                continue;
+              }
+            }
+            merged.push(cols[k]);
+          }
+          if (oi === ok.length && ni === nk.length) m = { cols: merged, oldCols: ok.length, newCols: nk.length };
         }
       }
       tableColMaps.set(newTable, m);
@@ -1108,6 +1128,21 @@
       let ownTextEdited = false;
       if (ownText(oldEl).trim() || ownText(newEl).trim()) ownTextEdited = diffOwnText(oldEl, newEl, tally);
 
+      // 1b. インラインの子は下の突き合わせから外すが、属性の変化だけは拾っておく。
+      // 外したままだと、テキストも一緒に変わったリンクや <time> で href や datetime の
+      // 変更が落ちる。並びと種類が一致するときだけ、同じ位置どうしを見る。
+      if (ownTextEdited){
+        const oldInline = [], newInline = [];
+        for (let c = oldEl.firstElementChild; c; c = c.nextElementSibling)
+          if (!isBlockEl(c) && c.tagName !== 'SCRIPT' && c.tagName !== 'STYLE') oldInline.push(c);
+        for (let c = newEl.firstElementChild; c; c = c.nextElementSibling)
+          if (!isBlockEl(c) && c.tagName !== 'SCRIPT' && c.tagName !== 'STYLE'
+              && !c.hasAttribute('data-diff') && !c.hasAttribute('data-diff-block')) newInline.push(c);
+        if (oldInline.length === newInline.length)
+          for (let i = 0; i < oldInline.length; i++)
+            if (oldInline[i].tagName === newInline[i].tagName) diffAttributes(oldInline[i], newInline[i], tally);
+      }
+
       // 2. 表の行はセル単位で位置合わせする（セル数は絶対に変えない）
       if (oldEl.tagName === 'TR' && newEl.tagName === 'TR'){
         diffTableRow(oldEl, newEl, tally, depth);
@@ -1162,7 +1197,9 @@
     function normalizeTables(doc){
       const tables = doc.querySelectorAll('table');
       for (const t of tables){
-        const rows = Array.from(t.querySelectorAll('tr'));
+        // querySelectorAll('tr') は入れ子の表の行まで拾う。それを自分の行だと思って
+        // 桁を揃えると、セルの中に置いた表が外側の桁まで水増しされて壊れる。
+        const rows = Array.from(t.querySelectorAll('tr')).filter(r => r.closest('table') === t);
         if (!rows.length) continue;
         if (rows.some(hasSpans)) continue;
         const widths = rows.map(r => r.children.length);

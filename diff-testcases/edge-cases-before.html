@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>社内申請ワークフロー 移行仕様書</title>
+<style>
+:root{
+  --ink:#1b1b1b; --sub:#6a6a6a; --rule:#d6d2c8; --paper:#faf8f4; --accent:#7a3b2e;
+  --tint:#f2ede4; --ok:#2f6b3a; --warn:#8a6d1f; --bad:#8c2f28;
+}
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--paper); color:var(--ink);
+  font:15px/1.85 "Hiragino Mincho ProN","Yu Mincho","Noto Serif JP",serif;
+}
+.sheet{max-width:940px; margin:0 auto; padding:2.4rem 2.6rem 4rem; background:#fff;
+  border-left:1px solid var(--rule); border-right:1px solid var(--rule); min-height:100vh}
+.dochead{border-bottom:3px double var(--rule); padding-bottom:1rem; margin-bottom:1.2rem}
+.dochead h1{margin:0 0 .3rem; font-size:1.35rem; letter-spacing:.04em}
+.docmeta{font-size:.8rem; color:var(--sub); display:flex; gap:1.4rem; flex-wrap:wrap;
+  font-family:"Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif}
+nav.idx{border:1px solid var(--rule); background:var(--tint); padding:.8rem 1rem; margin:0 0 1.6rem;
+  font-family:"Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif; font-size:.82rem}
+nav.idx b{display:block; margin-bottom:.4rem; color:var(--accent); font-size:.78rem; letter-spacing:.1em}
+nav.idx ol{margin:0; padding-left:1.3rem; columns:2; column-gap:1.6rem}
+nav.idx li{margin:.1rem 0}
+nav.idx a{color:var(--ink); text-decoration:none}
+nav.idx a:hover{text-decoration:underline}
+section{margin:0 0 2rem}
+section > h2{font-size:1.02rem; margin:0 0 .2rem; padding-left:.55rem;
+  border-left:4px solid var(--accent); letter-spacing:.03em}
+.lead{margin:.15rem 0 .9rem .8rem; color:var(--sub); font-size:.8rem;
+  font-family:"Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif}
+p{margin:0 0 .8rem}
+.cols{column-count:2; column-gap:2rem; font-size:.9rem}
+.cols p{margin:0 0 .7rem}
+table{border-collapse:collapse; width:100%; font-size:.84rem; margin:.4rem 0 .6rem;
+  font-family:"Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif}
+th,td{border:1px solid var(--rule); padding:.4rem .6rem; text-align:left; vertical-align:top}
+thead th{background:var(--tint)}
+tfoot td,tfoot th{background:#f7f5f0; font-weight:600}
+table table{margin:.2rem 0; font-size:.94em}
+col.narrow{width:6rem}
+form{border:1px solid var(--rule); padding:.9rem 1.1rem; background:#fdfcfa;
+  font-family:"Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif; font-size:.85rem}
+fieldset{border:1px solid var(--rule); margin:0 0 .8rem; padding:.6rem .8rem}
+legend{padding:0 .4rem; font-size:.8rem; color:var(--accent)}
+label{display:inline-block; min-width:8rem}
+input,select,textarea{font:inherit; padding:.15rem .35rem; border:1px solid var(--rule); background:#fff}
+textarea{width:100%; height:3.4rem}
+.card{border:1px solid var(--rule); padding:.7rem .9rem; margin:.5rem 0; background:#fdfcfa;
+  font-family:"Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif; font-size:.86rem}
+.card h3{margin:0 0 .25rem; font-size:.92rem}
+.card p{margin:0; color:#3d3d3d}
+figure{margin:.5rem 0}
+figure img{border:1px solid var(--rule); background:#fff}
+figcaption{font-size:.78rem; color:var(--sub); margin-top:.25rem}
+.grid-table{display:table; width:100%; border:1px solid var(--rule); font-size:.84rem}
+.grid-row{display:table-row}
+.grid-cell{display:table-cell; border:1px solid var(--rule); padding:.35rem .6rem}
+.pass{display:contents}
+.aside{float:right; width:38%; margin:0 0 .6rem 1rem; padding:.55rem .8rem;
+  border:1px solid var(--rule); background:var(--tint); font-size:.8rem}
+.rtl{direction:rtl; text-align:right; border:1px solid var(--rule); padding:.5rem .8rem; background:#fdfcfa}
+ins{background:#e8f3e8; text-decoration:none; border-bottom:1px solid var(--ok)}
+del{background:#f7e9e8; text-decoration:line-through}
+mark{background:#fdf3c8; padding:0 .15rem}
+kbd{font-family:Menlo,Consolas,monospace; font-size:.85em; border:1px solid var(--rule);
+  border-bottom-width:2px; border-radius:3px; padding:0 .3rem; background:#fbfaf7}
+code{font-family:Menlo,Consolas,monospace; font-size:.88em; background:var(--tint); padding:0 .25rem}
+address{font-style:normal; font-size:.85rem; border-left:3px solid var(--rule); padding-left:.7rem}
+hgroup h3{margin:0; font-size:.98rem}
+hgroup p{margin:.1rem 0 0; color:var(--sub); font-size:.82rem}
+.deep{border-left:1px dotted var(--rule); padding-left:.6rem; margin:.15rem 0}
+ul{margin:.3rem 0; padding-left:1.3rem}
+li{margin:.1rem 0}
+footer{margin-top:2rem; padding-top:.8rem; border-top:1px solid var(--rule);
+  font-size:.78rem; color:var(--sub)}
+</style>
+</head>
+<body>
+  <div class="sheet">
+    <div class="dochead">
+      <h1>社内申請ワークフロー 移行仕様書</h1>
+      <div class="docmeta"><span>文書番号 WF-2026-007</span><span>第 3 版</span><span>2026-07-28</span><span>起案</span></div>
+    </div>
+    <nav class="idx">
+      <b>目次</b>
+      <ol>
+        <li><a href="#sec-form">フォーム</a></li>
+        <li><a href="#sec-table-parts">表の部品</a></li>
+        <li><a href="#sec-col-reorder">列の入れ替え</a></li>
+        <li><a href="#sec-dup-blocks">同一ブロック</a></li>
+        <li><a href="#sec-emoji">絵文字</a></li>
+        <li><a href="#sec-img">画像</a></li>
+        <li><a href="#sec-move-across">項目の移動</a></li>
+        <li><a href="#sec-deep">入れ子</a></li>
+        <li><a href="#sec-rtl">RTL</a></li>
+        <li><a href="#sec-legacy-approval">紙様式による承認</a></li>
+      </ol>
+    </nav>
+    <section id="sec-direction">
+      <h2>diff の向き確認</h2>
+      <p class="lead">BEFORE が赤、AFTER が緑になっていれば左右の入れ方が正しい。</p>
+      <p>この文書は <strong>BEFORE（旧・左ペインに入れる方）</strong> です。</p>
+      <p class="lead">第 3 版 / 2026-07-28 起案</p>
+    </section>
+    <section id="sec-form">
+      <h2>フォームの既定値</h2>
+      <p class="lead">テキストではなく value / selected / checked / textarea の中身が違う。</p>
+      <form>
+        <fieldset>
+          <legend>既定値（旧）</legend>
+          <p><label for="f-deadline">申請期限</label>
+            <input id="f-deadline" name="deadline" value="毎月 20 日"></p>
+          <p><label for="f-route">承認経路</label>
+            <select id="f-route" name="route">
+              <option value="direct" selected>直属上長のみ</option>
+              <option value="dept">部門長まで</option>
+              <option value="exec">役員まで</option>
+            </select></p>
+          <p><label for="f-urgent">緊急扱い</label>
+            <input id="f-urgent" type="checkbox"> 24 時間以内に処理する</p>
+        </fieldset>
+        <p><label for="f-note">備考欄の初期値</label></p>
+        <textarea id="f-note" name="note">添付が必要な場合はファイル名に申請番号を含めること。</textarea>
+      </form>
+    </section>
+    <section id="sec-table-parts">
+      <h2>表：colgroup・複数 tbody・tfoot</h2>
+      <p class="lead">BEFORE は非定型が2行、AFTER は3行。tfoot の合計も違う。colgroup は同じ。</p>
+      <table id="t-parts">
+        <colgroup><col class="narrow"><col><col class="narrow"></colgroup>
+        <thead><tr><th>区分</th><th>申請種別</th><th>件数</th></tr></thead>
+        <tbody>
+          <tr><td>定型</td><td>経費精算</td><td>128</td></tr>
+          <tr><td>定型</td><td>勤怠修正</td><td>96</td></tr>
+        </tbody>
+        <tbody>
+          <tr><td>非定型</td><td>設備購入</td><td>14</td></tr>
+          <tr><td>非定型</td><td>外部委託</td><td>7</td></tr>
+        </tbody>
+        <tfoot><tr><td>合計</td><td>—</td><td>245</td></tr></tfoot>
+      </table>
+    </section>
+    <section id="sec-table-nested">
+      <h2>表：セルの中の入れ子表</h2>
+      <p class="lead">外側の表は同じ。内側の表が BEFORE は2行、AFTER は3行で、担当も1つ違う。</p>
+      <table id="t-nested">
+        <thead><tr><th>申請種別</th><th>承認の内訳</th><th>所要日数</th></tr></thead>
+        <tbody>
+          <tr><td>設備購入</td><td><table><tr><th>段階</th><th>担当</th></tr><tr><td>一次</td><td>課長</td></tr><tr><td>二次</td><td>部長</td></tr></table></td><td>5 営業日</td></tr>
+          <tr><td>外部委託</td><td>課長のみ</td><td>2 営業日</td></tr>
+        </tbody>
+      </table>
+    </section>
+    <section id="sec-col-reorder">
+      <h2>表：列の入れ替え（増減なし）</h2>
+      <p class="lead">BEFORE は「区分・担当」の順、AFTER は「担当・区分」の順。列数は5のまま。</p>
+      <table id="t-reorder">
+        <thead><tr><th>申請番号</th><th>区分</th><th>担当</th><th>状態</th><th>期限</th></tr></thead>
+        <tbody>
+          <tr><td>REQ-1001</td><td>経費</td><td>田中</td><td>承認済</td><td>2026-08-10</td></tr>
+          <tr><td>REQ-1002</td><td>勤怠</td><td>鈴木</td><td>差戻し</td><td>2026-08-12</td></tr>
+          <tr><td>REQ-1003</td><td>設備</td><td>佐藤</td><td>審査中</td><td>2026-08-18</td></tr>
+          <tr><td>REQ-1004</td><td>委託</td><td>高橋</td><td>承認済</td><td>2026-08-20</td></tr>
+        </tbody>
+      </table>
+    </section>
+    <section id="sec-col-rename">
+      <h2>表：列名だけの変更</h2>
+      <p class="lead">BEFORE の「担当」が AFTER では「申請担当者」。データセルは1つも違わない。</p>
+      <table id="t-rename">
+        <thead><tr><th>申請番号</th><th>担当</th><th>起票日</th><th>状態</th></tr></thead>
+        <tbody>
+          <tr><td>REQ-2001</td><td>山田</td><td>2026-07-01</td><td>承認済</td></tr>
+          <tr><td>REQ-2002</td><td>伊藤</td><td>2026-07-04</td><td>承認済</td></tr>
+          <tr><td>REQ-2003</td><td>渡辺</td><td>2026-07-11</td><td>審査中</td></tr>
+          <tr><td>REQ-2004</td><td>中村</td><td>2026-07-19</td><td>差戻し</td></tr>
+        </tbody>
+      </table>
+    </section>
+    <section id="sec-dup-blocks">
+      <h2>同一ブロックが並ぶ</h2>
+      <p class="lead">完全に同じカードが BEFORE は3枚、AFTER は2枚。</p>
+      <div class="card">
+        <h3>共通チェック項目</h3>
+        <p>申請番号・起票日・添付の有無を確認し、不足があれば差し戻す。</p>
+      </div>
+      <div class="card">
+        <h3>共通チェック項目</h3>
+        <p>申請番号・起票日・添付の有無を確認し、不足があれば差し戻す。</p>
+      </div>
+      <div class="card">
+        <h3>共通チェック項目</h3>
+        <p>申請番号・起票日・添付の有無を確認し、不足があれば差し戻す。</p>
+      </div>
+    </section>
+    <section id="sec-dup-text">
+      <h2>同一の段落が繰り返される</h2>
+      <p class="lead">同じ段落が3つ。BEFORE と AFTER で違うのは真ん中の1つだけ。</p>
+      <p>本項目は、申請の内容にかかわらず、すべての経路で同じ手順を適用する。</p>
+      <p>本項目は、申請の内容にかかわらず、すべての経路で同じ手順を適用する。</p>
+      <p>本項目は、申請の内容にかかわらず、すべての経路で同じ手順を適用する。</p>
+    </section>
+    <section id="sec-inline-semantics">
+      <h2>インライン要素（time・ruby・sup・sub・mark・kbd）</h2>
+      <p class="lead">time の datetime と表示、ruby の読み、sup/sub、mark の範囲が違う。kbd は同じ。</p>
+      <p>受付開始は <time datetime="2026-08-01">2026年8月1日</time> とする。
+        <ruby>申請<rt>しんせい</rt></ruby>は所定の様式で行う。</p>
+      <p>手数料は本体価格の 3<sup>rd</sup> 区分に従い、係数 k<sub>1</sub> を用いて算出する。
+        <mark>差戻しの件数</mark>は月次で集計する。</p>
+      <p>画面上では <kbd>Ctrl</kbd> + <kbd>S</kbd> で下書き保存できる。</p>
+    </section>
+    <section id="sec-emoji">
+      <h2>絵文字（肌色修飾・国旗・ZWJ 連結）</h2>
+      <p class="lead">絵文字を含む行で、絵文字1つと語1つが違う。他の絵文字は同じ。</p>
+      <p>進捗の記号は 👍🏽 が承認、👎🏽 が差戻し、🇯🇵 が国内案件を表す。</p>
+      <p>担当グループのアイコンは 👨‍👩‍👧 を用い、期限超過には ⏰ を添える。</p>
+      <p>絵文字を含む行の途中の語だけを差し替える: 対象は 🎯 経費精算 とする。</p>
+    </section>
+    <section id="sec-style-attr">
+      <h2>インライン style 属性だけの変更</h2>
+      <p class="lead">テキストは完全に同一。あるセルの style 属性の有無だけが違う。</p>
+      <table id="t-style">
+        <thead><tr><th>申請番号</th><th>種別</th><th>状態</th></tr></thead>
+        <tbody>
+          <tr><td>REQ-3001</td><td>経費精算</td><td>承認済</td></tr>
+          <tr><td>REQ-3002</td><td>設備購入</td><td>保留</td></tr>
+          <tr><td>REQ-3003</td><td>外部委託</td><td>承認済</td></tr>
+        </tbody>
+      </table>
+    </section>
+    <section id="sec-img">
+      <h2>data: URI の画像（src と alt）</h2>
+      <p class="lead">1枚目は src が違い、2枚目は alt だけが違う。</p>
+      <figure>
+        <img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjAiIGhlaWdodD0iNDgiPjxyZWN0IHdpZHRoPSIxMjAiIGhlaWdodD0iNDgiIGZpbGw9IiM3YTNiMmUiLz48dGV4dCB4PSI2MCIgeT0iMzAiIGZvbnQtc2l6ZT0iMTMiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZpbGw9IiNmZmYiPkZMT1ctQTwvdGV4dD48L3N2Zz4=" alt="標準経路 A" width="120" height="48">
+        <figcaption>標準経路の図</figcaption>
+      </figure>
+      <figure>
+        <img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjAiIGhlaWdodD0iNDgiPjxyZWN0IHdpZHRoPSIxMjAiIGhlaWdodD0iNDgiIGZpbGw9IiMyZjZiM2EiLz48dGV4dCB4PSI2MCIgeT0iMzAiIGZvbnQtc2l6ZT0iMTMiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZpbGw9IiNmZmYiPkZMT1ctQjwvdGV4dD48L3N2Zz4=" alt="例外経路の概略" width="120" height="48">
+        <figcaption>例外経路の図</figcaption>
+      </figure>
+    </section>
+    <section id="sec-hidden">
+      <h2>hidden 属性の付け外し</h2>
+      <p class="lead">テキストは完全に同一。BEFORE は hidden 付き、AFTER は無し。</p>
+      <p class="lead" hidden>この注記は改訂中のため一時的に伏せている。内容が確定するまで参照しないこと。</p>
+    </section>
+    <section id="sec-comment">
+      <h2>HTML コメントの変更</h2>
+      <p class="lead">本文は完全に同一。コメントの文言だけが違う。</p>
+      <!-- TODO: 承認フローの最終形は未確定。第 4 版で差し替える。 -->
+      <p>本節は承認フローの概要を示す。詳細は別紙に定める。</p>
+    </section>
+    <section id="sec-authors-insdel">
+      <h2>文書が元から持つ ins / del</h2>
+      <p class="lead">執筆者が書いた ins/del を含む段落。AFTER では数値が1つと文が1つ違う。</p>
+      <p>第 2 版からの変更点: 承認者は <del>課長</del><ins>部長</ins> とする。
+        申請期限は <del>15 日</del><ins>20 日</ins> に変更した。</p>
+    </section>
+    <section id="sec-move-across">
+      <h2>項目が別のリストへ移る</h2>
+      <p class="lead">「代理申請は同一部門内に限る」が BEFORE では注意事項、AFTER では制限事項にある。</p>
+      <h3>注意事項</h3>
+      <ul>
+        <li>添付は 10MB まで</li>
+        <li>代理申請は同一部門内に限る</li>
+        <li>取消は起票当日のみ</li>
+      </ul>
+      <h3>制限事項</h3>
+      <ul>
+        <li>同時申請は 5 件まで</li>
+        <li>過去分の遡及申請は不可</li>
+      </ul>
+    </section>
+    <section id="sec-replace-all">
+      <h2>節の中身を丸ごと差し替え</h2>
+      <p class="lead">見出し以外は本文も表も BEFORE と AFTER で全く別物。</p>
+      <p>旧システムでは、申請は紙の様式に記入し、押印のうえ総務課へ提出していた。
+        受理後は台帳に転記し、月末にまとめて集計していた。</p>
+      <table id="t-replace"><thead><tr><th>様式番号</th><th>名称</th></tr></thead>
+        <tbody><tr><td>様式1号</td><td>経費精算書</td></tr>
+        <tr><td>様式2号</td><td>勤怠修正届</td></tr></tbody></table>
+    </section>
+    <section id="sec-deep">
+      <h2>6 階層の入れ子</h2>
+      <p class="lead">最下層の語が1つ違い、AFTER には最下層に項目が1つ多い。</p>
+      <div class="deep">
+        <div class="deep">
+          <div class="deep">
+            <div class="deep">
+              <div class="deep">
+                <div class="deep">
+                  <ul>
+                    <li>最下層の判定基準は起票日とする</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+    <section id="sec-rtl">
+      <h2>dir="rtl" と bdi</h2>
+      <p class="lead">アラビア語の数値が1つと、bdi 内の ID が違う。</p>
+      <div class="rtl" dir="rtl" lang="ar">
+        <p>مدة الموافقة القصوى هي 5 أيام عمل.</p>
+      </div>
+      <p>申請 ID は <bdi>REQ-4001-AR</bdi> の形式で採番する。</p>
+    </section>
+    <section id="sec-css-layout">
+      <h2>CSS 由来のレイアウト</h2>
+      <p class="lead">display:table / display:contents / float / column-count の各ブロックで文言が1箇所ずつ違う。</p>
+      <div class="grid-table">
+        <div class="grid-row"><div class="grid-cell">経路</div><div class="grid-cell">課長 → 部長</div></div>
+        <div class="grid-row"><div class="grid-cell">例外</div><div class="grid-cell">役員承認</div></div>
+      </div>
+      <div class="pass"><p>display:contents のラッパを挟んだ段落。旧文面。</p></div>
+      <div class="aside">補足: 旧経路では部長決裁で完了する。</div>
+      <div class="cols">
+        <p>段組みの本文。申請の受付は平日 9 時から 17 時までとする。</p>
+        <p>集計は月末締めとし、翌月 5 営業日以内に確定させる。差戻し分は当月に計上する。</p>
+        <p>保存期間は 7 年とし、期間経過後は年度単位で削除する。</p>
+      </div>
+    </section>
+    <section id="sec-misc-containers">
+      <h2>hgroup と address</h2>
+      <p class="lead">hgroup の副題の時刻と、address の内線番号が違う。</p>
+      <hgroup>
+        <h3>問い合わせ窓口</h3>
+        <p>平日 9:00〜17:00（年末年始を除く）</p>
+      </hgroup>
+      <address>
+        社内申請サポート窓口<br>
+        内線 4120 / workflow-support@example.internal
+      </address>
+    </section>
+    <section id="sec-legacy-approval">
+      <h2>紙様式による承認（廃止）</h2>
+      <p class="lead">BEFORE にだけある節。移行完了後に削除する。</p>
+      <p>紙の様式に押印して総務課へ提出する運用。移行完了をもって廃止する。</p>
+    </section>
+    <footer>社内限定 / 総務課 業務システム担当</footer>
+  </div>
+</body>
+</html>
