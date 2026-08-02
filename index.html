@@ -594,9 +594,14 @@
       // 変化が支配的なら、混ぜずに置換として見せる。
       // ただし親の内容モデル上その要素を兄弟として並べられない場合（表のセルなど）は
       // 使えない。無理に insertBefore すると行のセルが増えて表の桁が崩れる。
+      // 変化の割合は空白を除いて数える。トークナイザは空白の連なりも 1 トークンに
+      // するので、英文のように語間に空白が入る文章では空白がトークンの半分近くを
+      // 占め、しかも必ず一致する。そのぶん変化率が薄まり、まったく無関係な 2 つの
+      // 文章でも閾値を超えられずに語単位で交互混在していた。
+      const meaningful = t => /\S/.test(t);
       let changedToks = 0;
-      for (const op of ops) if (op.op !== 0) changedToks += op.items.length;
-      const totalToks = oldToks.length + newToks.length;
+      for (const op of ops) if (op.op !== 0) for (const t of op.items) if (meaningful(t)) changedToks++;
+      const totalToks = oldToks.filter(meaningful).length + newToks.filter(meaningful).length;
       const parent = newEl.parentNode;
       const canSplit = parent && parent.nodeType === 1
         && canHold(parent.tagName, oldEl ? oldEl.tagName : newEl.tagName);
@@ -688,7 +693,11 @@
     // 挿入位置は「同じ親の子リスト内」で自明に決まるので、配置ヒューリスティック
     // （contextKey / levelsToSiblingOf / liftLevels / canContain /
     //  maximalDeletedContainer / placeDeletedBlock）は不要になり全廃した。
-    const MAX_DIFF_DEPTH = 60;
+    // 再帰の暴走に対する安全網。実際の入れ子の深さに対する制限のつもりではない。
+    // 60 にしていたときは、ラッパ div が 150 段重なった文書（生成された HTML では
+    // 珍しくない）で最深部の変更が 1 つも表示されなかった。同じペアを二度たどらない
+    // ことは visitedPairs が保証しているので、ここは十分に深くしておく。
+    const MAX_DIFF_DEPTH = 500;
 
     // 部分木の同一性キー。全文テキストを使うので「カードはカードと」対応が付く。
     function childKey(el){ return el.tagName + ' ' + norm(el.textContent); }
