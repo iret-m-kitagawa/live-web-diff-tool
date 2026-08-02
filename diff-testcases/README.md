@@ -65,6 +65,10 @@ which on a page with its own pale palette made deletions read as unmarked — or
 The block markers previously carried a heavier fill-plus-outline treatment than inline ones, so the
 same edit looked like two different things depending on its size.
 
+The HTML View output carries a legend in its top-right corner - a red "左 BEFORE で削除" chip and a
+green "右 AFTER で追加" chip - so the meaning of the two colours and the direction of the comparison
+are readable from the render itself, without knowing which file went into which pane.
+
 ## Invariants checked across the whole document
 
 - Every `<table>` is rectangular: all rows in a table have the same cell count.
@@ -78,6 +82,9 @@ same edit looked like two different things depending on its size.
 ```
 all-cases-before.html   all-cases-after.html    the pair under test
 generate.py             emits both files from one source (guarantees identical CSS)
+open-all-cases.html     one link that opens the pair already loaded the right way round
+                        (regenerate it whenever the fixtures change - the Diff URL
+                        carries the file contents inline)
 evidence/
   all-cases-1-before.png   reference render of the before file
   all-cases-2-after.png    reference render of the after file
