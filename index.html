@@ -1262,21 +1262,6 @@ a[data-diff-nolink]{ cursor: default; }
    薄く塗ることで「丸ごと追加された」ものと区別する。 */
 [data-diff-attr]{ background:rgba(26,159,71,.15) !important; }
 #__diff_removed__{ margin-top:2rem; padding:1rem; }
-/* 凡例。貼り付けたページの上に浮かせるので、当たり判定は持たせない。
-   右下に置くのは、上部だと文書自身のヘッダやツールバーと重なるため。
-   色は透過させず不透明にする。半透明にすると、貼り付けたページが明るいか
-   暗いかで文字の読みやすさが変わってしまう。 */
-#__diff_legend__{
-  position:fixed; bottom:12px; right:14px; z-index:2147483647; pointer-events:none;
-  display:flex; gap:6px; font:600 11px/1.6 system-ui,sans-serif; letter-spacing:.02em;
-}
-#__diff_legend__ span{
-  padding:4px 10px; border-radius:999px; color:#fff;
-  box-shadow:0 2px 6px rgba(0,0,0,.35);
-}
-#__diff_legend__ .__diff_legend_del__{ background:#d2352f; }
-#__diff_legend__ .__diff_legend_ins__{ background:#17954a; }
-@media print{ #__diff_legend__{ display:none; } }
 /* 差分のみ表示のときの目印。ブロックと属性は自前の緑/赤の枠を持っているので、
    ここで上書きしないよう data-diff-row（中に文字単位の変更がある要素）だけに絞る。 */
 .diff-only [data-diff-row]:not([data-diff-block]):not([data-diff-attr]){ outline:1px dashed rgba(195,154,95,.55); outline-offset:2px; }
@@ -1757,17 +1742,6 @@ a[data-diff-nolink]{ cursor: default; }
         const styleEl = newDoc.createElement('style');
         styleEl.textContent = DIFF_CSS;
         newDoc.head.appendChild(styleEl);
-
-        // 色の意味と diff の向きを、出力そのものに書いておく。
-        // 貼り付けたページは自前の配色を持っているので、緑と赤だけでは
-        // どちらが追加でどちらが削除か、そもそも左右をどちら向きに比べたのかが
-        // 画面から読み取れない。左右を入れ違えて読み違える事故が実際に起きた。
-        const legend = newDoc.createElement('div');
-        legend.id = '__diff_legend__';
-        legend.setAttribute('aria-hidden', 'true');
-        legend.innerHTML = '<span class="__diff_legend_del__">' + '左 BEFORE で削除</span>'
-          + '<span class="__diff_legend_ins__">' + '右 AFTER で追加</span>';
-        newDoc.body.appendChild(legend);
 
         return '<!DOCTYPE html>\n' + newDoc.documentElement.outerHTML;
       }
