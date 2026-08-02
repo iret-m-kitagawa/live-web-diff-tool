@@ -910,6 +910,14 @@
               const nxt = pairedDel.get(key(gi, k));
               if (nxt && nxt.parentNode === newParent){ at = nxt; break; }
             }
+            // 対応が付いた要素が 1 つも無い場合は、同じ位置に入った追加要素の直前へ置く。
+            // 削除ランと追加ランは同じ並び位置を指しているので、これで前後関係が保たれる。
+            // これが無いと親の末尾へ追記され、<p> の中で <em> だけが文末に飛んでいた。
+            if (!at){
+              for (let k = 0; k < g.ins.length; k++){
+                if (g.ins[k] && g.ins[k].parentNode === newParent){ at = g.ins[k]; break; }
+              }
+            }
             if (!at && g.before && g.before.parentNode === newParent) at = g.before;
           }
           cursor = insertDeletedChild(newParent, g.del[a], at, tally) || cursor;
@@ -1196,23 +1204,32 @@ del[data-diff="del"]{
 }
 [data-diff-block="ins"]{ background:rgba(26,159,71,.38) !important; }
 [data-diff-block="del"]{ background:rgba(229,50,45,.36) !important; }
+/* SVG の中身は background が効かないので、ここだけ枠線で示す。fill を上書きすると
+   図そのものの色を壊してしまうため、輪郭を足すのが一番害が少ない。
+   これが無いと、図形が増減しても画面上は何も変わらなかった。 */
+svg [data-diff-block="ins"]{ outline:2px solid rgba(26,159,71,.95); outline-offset:1px; }
+svg [data-diff-block="del"]{ outline:2px solid rgba(229,50,45,.95); outline-offset:1px; }
+svg [data-diff-attr]{ outline:2px dashed rgba(26,159,71,.8); outline-offset:1px; }
 td[data-diff-pad], th[data-diff-pad]{ background:transparent; }
 a[data-diff-nolink]{ cursor: default; }
 /* 属性やタグだけが変わった要素。新しい状態になったという意味で追加と同じ緑を使い、
    薄く塗ることで「丸ごと追加された」ものと区別する。 */
 [data-diff-attr]{ background:rgba(26,159,71,.15) !important; }
 #__diff_removed__{ margin-top:2rem; padding:1rem; }
-/* 凡例。貼り付けたページの上に浮かせるので、当たり判定は持たせない。 */
+/* 凡例。貼り付けたページの上に浮かせるので、当たり判定は持たせない。
+   右下に置くのは、上部だと文書自身のヘッダやツールバーと重なるため。
+   色は透過させず不透明にする。半透明にすると、貼り付けたページが明るいか
+   暗いかで文字の読みやすさが変わってしまう。 */
 #__diff_legend__{
-  position:fixed; top:10px; right:12px; z-index:2147483647; pointer-events:none;
+  position:fixed; bottom:12px; right:14px; z-index:2147483647; pointer-events:none;
   display:flex; gap:6px; font:600 11px/1.6 system-ui,sans-serif; letter-spacing:.02em;
 }
 #__diff_legend__ span{
-  padding:3px 9px; border-radius:999px; color:#1b1e23;
-  background:#fff; box-shadow:0 1px 4px rgba(0,0,0,.22);
+  padding:4px 10px; border-radius:999px; color:#fff;
+  box-shadow:0 2px 6px rgba(0,0,0,.35);
 }
-#__diff_legend__ .__diff_legend_del__{ background:rgba(229,50,45,.36); }
-#__diff_legend__ .__diff_legend_ins__{ background:rgba(26,159,71,.38); }
+#__diff_legend__ .__diff_legend_del__{ background:#d2352f; }
+#__diff_legend__ .__diff_legend_ins__{ background:#17954a; }
 @media print{ #__diff_legend__{ display:none; } }
 /* 差分のみ表示のときの目印。ブロックと属性は自前の緑/赤の枠を持っているので、
    ここで上書きしないよう data-diff-row（中に文字単位の変更がある要素）だけに絞る。 */
