@@ -17,6 +17,7 @@ python3 diff-testcases/generate.py
 
 | Section id | Pattern exercised | What a correct rendering shows |
 |---|---|---|
+| `sec-direction` | diff の向きそのもの | The before file says it is BEFORE, the after file says it is AFTER, so the render states its own direction: **`BEFORE（旧）` red and `AFTER（新）` green**, version `v1.2`→`v1.3`. If this reads the other way round, the two files were loaded into the wrong panes — every other section will then look inverted too, with additions marked red. |
 | `sec-col-add-tail` | 表：末尾に列を追加（4→5列） | New `備考` header and one new cell per row marked **added**; every row still 5 cells; the four pre-existing columns unmarked. |
 | `sec-col-add-mid` | 表：途中に列を追加（`設置場所` と `数量` の間） | New `管理担当` column marked **added at index 3**; the `数量` column shifts right without being marked — index-based cell pairing would instead pair `数量` with `管理担当` and fuse their values. |
 | `sec-col-del-mid` | 表：途中の列を削除（`取得年度`） | The removed column is put **back in place** marked **deleted**, values intact, so the table renders 5 wide with one struck column. Silently dropping it would make a column deletion invisible. |

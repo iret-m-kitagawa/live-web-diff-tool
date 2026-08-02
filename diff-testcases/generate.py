@@ -472,7 +472,23 @@ NEW_SECTION = section('sec-integration', '外部連携',
                       '        <p>資産台帳は、社内チャットおよび経理システムとの連携に対応する。連携設定は管理者権限を持つ利用者のみが行える。</p>')
 
 
+def sec_direction():
+    # どちら向きに diff を取っているかを、出力そのものから判別できるようにする。
+    # 正しい向き（左=before / 右=after）なら「BEFORE（旧）」が赤、「AFTER（新）」が緑になる。
+    # 逆に見えている場合は、エディタの左右に入れたファイルが入れ替わっている。
+    b = '\n'.join([
+        '        <p>この文書は <strong>BEFORE（旧・左ペインに入れる方）</strong> です。</p>',
+        '        <p>版数 v1.2 / 2026-07-30 時点</p>',
+    ])
+    a = '\n'.join([
+        '        <p>この文書は <strong>AFTER（新・右ペインに入れる方）</strong> です。</p>',
+        '        <p>版数 v1.3 / 2026-08-01 時点</p>',
+    ])
+    return b, a
+
+
 CASES = [
+    ('sec-direction', 'diff の向き確認', 'BEFORE が赤、AFTER が緑になっていれば左右の入れ方が正しい。', sec_direction),
     ('sec-col-add-tail', '表：末尾に列を追加', '最後尾に「備考」列を追加。既存列の値は変えない。', sec_col_add_tail),
     ('sec-col-add-mid', '表：途中に列を追加', '「設置場所」と「数量」の間に「管理担当」列を挿入。', sec_col_add_mid),
     ('sec-col-del-mid', '表：途中の列を削除', '「取得年度」列を削除。前後の列は変えない。', sec_col_del_mid),
