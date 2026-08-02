@@ -1184,21 +1184,35 @@
 
     /* ---------- 8. 差分表示用スタイル ---------- */
     const DIFF_CSS = `
+/* 追加は緑、削除は赤の 2 色だけで通す。文字単位でもブロックでも同じ色相を使い、
+   濃さと枠線の有無で粒度を表す。以前は追加 .14 / 削除 .12 と薄すぎたうえに
+   削除ブロックだけ opacity:.75 でさらに褪せており、貼り付けたページ自体の
+   淡い配色に埋もれて追加と削除を取り違えやすかった。 */
 ins[data-diff="ins"]{
-  background:rgba(46,160,67,.30); color:inherit; text-decoration:none;
-  border-radius:2px; box-shadow:0 0 0 1px rgba(46,160,67,.35);
+  background:rgba(26,159,71,.45); color:inherit; text-decoration:none;
+  border-radius:2px; box-shadow:0 0 0 1px rgba(26,159,71,.95);
 }
 del[data-diff="del"]{
-  background:rgba(248,81,73,.22); color:inherit; text-decoration:none;
-  border-radius:2px; box-shadow:0 0 0 1px rgba(248,81,73,.30); opacity:.9;
+  background:rgba(229,50,45,.42); color:inherit; text-decoration:none;
+  border-radius:2px; box-shadow:0 0 0 1px rgba(229,50,45,.95);
 }
-[data-diff-block="ins"]{ background:rgba(46,160,67,.14) !important; }
-[data-diff-block="del"]{ background:rgba(248,81,73,.12) !important; opacity:.75; }
+[data-diff-block="ins"]{
+  background:rgba(26,159,71,.30) !important;
+  outline:2px solid rgba(26,159,71,.95); outline-offset:-2px;
+}
+[data-diff-block="del"]{
+  background:rgba(229,50,45,.28) !important;
+  outline:2px solid rgba(229,50,45,.95); outline-offset:-2px;
+}
 td[data-diff-pad], th[data-diff-pad]{ background:transparent; }
 a[data-diff-nolink]{ cursor: default; }
-[data-diff-attr]{ outline:1px dashed rgba(88,166,255,.55); outline-offset:1px; }
+/* 属性やタグだけが変わった要素。新しい状態になったという意味で追加と同じ緑を使い、
+   塗りを付けないことで「丸ごと追加された」ものと区別する。 */
+[data-diff-attr]{ outline:2px solid rgba(26,159,71,.95); outline-offset:-2px; }
 #__diff_removed__{ margin-top:2rem; padding:1rem; }
-.diff-only [data-diff-row], .diff-only [data-diff-block], .diff-only [data-diff-attr]{ outline:1px dashed rgba(195,154,95,.4); outline-offset:2px; }
+/* 差分のみ表示のときの目印。ブロックと属性は自前の緑/赤の枠を持っているので、
+   ここで上書きしないよう data-diff-row（中に文字単位の変更がある要素）だけに絞る。 */
+.diff-only [data-diff-row]:not([data-diff-block]):not([data-diff-attr]){ outline:1px dashed rgba(195,154,95,.55); outline-offset:2px; }
 .diff-only tr:not([data-diff-row]):not([data-diff-block]):not([data-diff-attr]),
 .diff-only li:not([data-diff-row]):not([data-diff-block]):not([data-diff-attr]),
 .diff-only p:not([data-diff-row]):not([data-diff-block]):not([data-diff-attr]),

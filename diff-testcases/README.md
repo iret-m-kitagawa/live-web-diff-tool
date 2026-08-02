@@ -24,7 +24,7 @@ python3 diff-testcases/generate.py
 | `sec-row-churn` | 表：行を1本削除・1本追加、金額を6箇所変更 | `Classic` row **deleted at its original 3rd position** (not flushed to the end), `Pro Plus` row **added**; each changed amount marked at value level; the unchanged `$780` unmarked; no cell ever holds three `$`. |
 | `sec-lookalike` | 表：同型の行が5本並ぶ中から1本削除＋別行の1セル変更 | Exactly the `sato.k` login row **deleted**, exactly one other row with exactly one changed cell (`成功`→`失敗`). The other look-alike rows unmarked. |
 | `sec-cards` | カード：1枚削除・1枚追加・2枚入れ替え・1枚は移動しつつ本文も変更 | 5 cards render (4 after + 1 deleted). `通知基盤の移行` **deleted**, `データ基盤のPoC` **added**, `決済APIの連携` shown **once** with its badge/description/date edits visible — it moved *and* changed, which a run-local diff renders as an unrelated delete plus insert. No card holds two `<h4>`. |
-| `sec-card-attr` | カード：`class` だけの変更（テキスト完全同一） | The card carries `data-diff-attr="class"` and a dashed outline; **no** text-level markers. |
+| `sec-card-attr` | カード：`class` だけの変更（テキスト完全同一） | The card carries `data-diff-attr="class"`, drawn as a green outline with **no fill** — the same green as an insertion, since the element is now in its new state, but unfilled so it never reads as "this whole card is new". No text-level markers. |
 | `sec-list-nest` | 入れ子リスト：昇格・降格・`ul`→`ol`・並べ替え・削除 | `顧客レビュー` promoted (old nested `<ul>` deleted whole, new item added a level up), `外部インターフェース設計` demoted (old flat item deleted, new nested `<ul>` added), `実装`'s list marked `data-diff-attr="tagName"` with its three items **not** duplicated, `リリースノート作成` swap shown as delete+insert. No `<li>` mixes two items' text. |
 | `sec-steps` | 手順：2番目のステップを4番目へ移動＋別ステップの本文を書き換え | The moved step stays **delete+insert** (its content is unchanged, so collapsing it would hide the move) with `<h3>` and `<p>` together in one `<li>`; only `暫定対処の実施` carries inline markers. |
 | `sec-glossary` | 用語集：`dt`/`dd` を1組追加・1組削除、定義を1つ書き換え | `SLO` added as a `dt`+`dd` **pair**, `オンコール` deleted as a pair, `エスカレーション` の `dd` に部分的な印のみ. `dl` の子は最後まで `dt`/`dd` の交互のまま。 |
@@ -39,6 +39,20 @@ python3 diff-testcases/generate.py
 The table of contents (`nav.toc`) additionally covers link churn: one item removed, one added, one
 renamed. Every `nav li` must keep the **same computed `display`** — one item alone rendering `inline`
 was a real reported bug — and every surviving item's `href="#..."` must still resolve.
+
+## Colour scheme
+
+Only two hues are used, at every granularity, so a marker's meaning never depends on which part of
+the page it is on:
+
+| | Insertion | Deletion |
+|---|---|---|
+| Word / phrase (`ins` / `del`) | green fill `rgba(26,159,71,.45)` + 1px green border | red fill `rgba(229,50,45,.42)` + 1px red border |
+| Whole element (`data-diff-block`) | green fill `.30` + 2px green outline | red fill `.28` + 2px red outline |
+| Attribute or tag change (`data-diff-attr`) | 2px green outline, **no fill** | — |
+
+Deleted content is drawn at full opacity. It used to be dimmed to 75% on top of a 12%-alpha tint,
+which on a page with its own pale palette made deletions read as unmarked — or worse, as insertions.
 
 ## Invariants checked across the whole document
 
