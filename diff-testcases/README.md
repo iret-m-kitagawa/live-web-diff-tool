@@ -37,6 +37,11 @@ python3 diff-testcases/generate.py
 | `sec-swap` | 小見出しブロックの前後入れ替え | Shown as delete+insert of the moved block. |
 | `sec-legacy-permission` / `sec-integration` | 節そのものの増減（目次項目とセット） | The removed section stays as a whole `del` block, the new one as a whole `ins` block, and the nav gains/loses exactly one item each. |
 
+Each section's lead line states **what each file contains** ("BEFORE は4列。AFTER は末尾に「備考」列が
+増えて5列。") rather than an action ("末尾に列を追加"). An action reads as a claim about the render, so
+when the two files are loaded into the wrong panes the text and the colours appear to contradict each
+other; a statement about file content stays true either way and shows which pane holds which file.
+
 The table of contents (`nav.toc`) additionally covers link churn: one item removed, one added, one
 renamed. Every `nav li` must keep the **same computed `display`** — one item alone rendering `inline`
 was a real reported bug — and every surviving item's `href="#..."` must still resolve.

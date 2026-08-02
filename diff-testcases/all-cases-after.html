@@ -97,7 +97,7 @@ footer{padding:1.2rem 2.5rem;color:var(--muted);font-size:.82rem}
       </section>
       <section id="sec-col-add-tail">
         <h2>表：末尾に列を追加</h2>
-        <p class="lead">最後尾に「備考」列を追加。既存列の値は変えない。</p>
+        <p class="lead">BEFORE は4列。AFTER は末尾に「備考」列が増えて5列。既存列の値は同じ。</p>
         <table id="t-col-add-tail">
         <thead><tr><th>資産番号</th><th>品目</th><th>設置場所</th><th>数量</th><th>備考</th></tr></thead>
         <tbody>
@@ -110,7 +110,7 @@ footer{padding:1.2rem 2.5rem;color:var(--muted);font-size:.82rem}
       </section>
       <section id="sec-col-add-mid">
         <h2>表：途中に列を追加</h2>
-        <p class="lead">「設置場所」と「数量」の間に「管理担当」列を挿入。</p>
+        <p class="lead">BEFORE は4列。AFTER は「設置場所」と「数量」の間に「管理担当」列が増えて5列。</p>
         <table id="t-col-add-mid">
         <thead><tr><th>資産番号</th><th>品目</th><th>設置場所</th><th>管理担当</th><th>数量</th></tr></thead>
         <tbody>
@@ -123,7 +123,7 @@ footer{padding:1.2rem 2.5rem;color:var(--muted);font-size:.82rem}
       </section>
       <section id="sec-col-del-mid">
         <h2>表：途中の列を削除</h2>
-        <p class="lead">「取得年度」列を削除。前後の列は変えない。</p>
+        <p class="lead">BEFORE は5列。AFTER は「取得年度」列が無くなって4列。前後の列は同じ。</p>
         <table id="t-col-del-mid">
         <thead><tr><th>資産番号</th><th>品目</th><th>設置場所</th><th>数量</th></tr></thead>
         <tbody>
@@ -136,7 +136,7 @@ footer{padding:1.2rem 2.5rem;color:var(--muted);font-size:.82rem}
       </section>
       <section id="sec-col-del-tail">
         <h2>表：末尾の列を削除</h2>
-        <p class="lead">「旧管理番号」列を削除。</p>
+        <p class="lead">BEFORE は5列。AFTER は末尾の「旧管理番号」列が無くなって4列。</p>
         <table id="t-col-del-tail">
         <thead><tr><th>資産番号</th><th>品目</th><th>設置場所</th><th>数量</th></tr></thead>
         <tbody>
@@ -149,7 +149,7 @@ footer{padding:1.2rem 2.5rem;color:var(--muted);font-size:.82rem}
       </section>
       <section id="sec-row-churn">
         <h2>表：行の増減と値の変更</h2>
-        <p class="lead">行を1本削除、1本追加し、金額を複数箇所変更。</p>
+        <p class="lead">BEFORE にだけ Classic 行、AFTER にだけ Pro Plus 行。金額も6箇所違う。</p>
         <table id="t-row-churn">
         <thead><tr><th>プラン</th><th>月額</th><th>年額</th><th>上限ユーザー</th><th>サポート</th></tr></thead>
         <tbody>
@@ -162,7 +162,7 @@ footer{padding:1.2rem 2.5rem;color:var(--muted);font-size:.82rem}
       </section>
       <section id="sec-lookalike">
         <h2>表：似た行が並ぶ中での1行削除</h2>
-        <p class="lead">同じ形の行が5本並ぶ中から1本を削除し、別の行のセルを1つ変更。</p>
+        <p class="lead">BEFORE は8行、AFTER は sato.k のログイン行が無くて7行。tanaka.r の設定変更行の結果も違う。</p>
         <table id="t-lookalike">
         <thead><tr><th>ログID</th><th>時刻</th><th>利用者</th><th>操作</th><th>対象</th><th>結果</th></tr></thead>
         <tbody>
@@ -178,7 +178,7 @@ footer{padding:1.2rem 2.5rem;color:var(--muted);font-size:.82rem}
       </section>
       <section id="sec-cards">
         <h2>カード：追加・削除・並べ替え</h2>
-        <p class="lead">同じclassのカードを1枚削除、1枚追加、2枚入れ替え、1枚の本文を微修正。</p>
+        <p class="lead">BEFORE にだけ「通知基盤の移行」、AFTER にだけ「データ基盤のPoC」。「決済APIの連携」は位置も本文も違う。</p>
         <div class="grid">
         <div class="card">
           <div class="head"><h4>認証基盤の刷新</h4><span class="badge ok">順調</span></div>
@@ -204,7 +204,7 @@ footer{padding:1.2rem 2.5rem;color:var(--muted);font-size:.82rem}
       </section>
       <section id="sec-card-attr">
         <h2>カード：classだけの変更</h2>
-        <p class="lead">テキストは完全に同一で、classだけが card から card done に変わる。</p>
+        <p class="lead">テキストは完全に同一。class が BEFORE は card、AFTER は card done。</p>
         <div class="grid">
         <div class="card done">
           <div class="head"><h4>棚卸データの移行</h4><span class="badge ok">順調</span></div>
@@ -215,7 +215,7 @@ footer{padding:1.2rem 2.5rem;color:var(--muted);font-size:.82rem}
       </section>
       <section id="sec-list-nest">
         <h2>入れ子リストの組み替え</h2>
-        <p class="lead">階層の昇格・降格、ul→ol、並べ替え、項目の削除。</p>
+        <p class="lead">BEFORE と AFTER で階層・並び順・ul/ol が違う。BEFORE にだけ「社内レビュー」。</p>
         <ul class="tree">
           <li>要件定義
             <ul>
@@ -253,7 +253,7 @@ footer{padding:1.2rem 2.5rem;color:var(--muted);font-size:.82rem}
       </section>
       <section id="sec-steps">
         <h2>手順の並べ替えと本文書き換え</h2>
-        <p class="lead">2番目のステップを4番目へ移動し、1ステップの説明を書き換える。</p>
+        <p class="lead">「障害対応チームの招集」が BEFORE では2番目、AFTER では4番目。「暫定対処の実施」の説明文も違う。</p>
         <ol class="steps">
           <li>
             <h3>監視アラートの確認</h3>
@@ -283,7 +283,7 @@ footer{padding:1.2rem 2.5rem;color:var(--muted);font-size:.82rem}
       </section>
       <section id="sec-glossary">
         <h2>用語集：用語の増減と定義の書き換え</h2>
-        <p class="lead">dt/dd を1組追加、1組削除し、既存の定義を1つ書き換える。</p>
+        <p class="lead">AFTER にだけ SLO、BEFORE にだけ オンコール。エスカレーションの定義文も違う。</p>
         <dl class="glossary">
           <dt>SLA（サービスレベル合意）</dt>
           <dd>提供者と利用者の間で合意した、可用性や応答時間の水準を定めた契約上の指標。</dd>
@@ -301,7 +301,7 @@ footer{padding:1.2rem 2.5rem;color:var(--muted);font-size:.82rem}
       </section>
       <section id="sec-prose">
         <h2>長文：ごく小さな修正のみ</h2>
-        <p class="lead">6段落のうち3箇所だけを修正。過剰にマークしないことの確認。</p>
+        <p class="lead">6段落のうち BEFORE と AFTER で違うのは3箇所だけ。過剰にマークしないことの確認。</p>
         <p>本プロジェクトは、社内で個別に管理されていた資産情報を単一の台帳へ統合することを目的として、2026年2月に開始した。対象は本社ビルおよび2拠点の什器・OA機器であり、部門ごとに異なっていた管理粒度をそろえる作業から着手した。</p>
         <p>体制は情報システム課3名と総務課2名の計5名で、週次の進捗確認を継続してきた。外部ベンダーへの委託は行わず、既存の社内ツールの組み合わせで完結させる方針とした。</p>
         <p>うまくいった点として、初期段階で棚卸の粒度を合意できたことが大きい。粒度が定まっていたため、拠点ごとの入力作業が並行して進められ、想定より2週間早く一次データがそろった。</p>
@@ -311,14 +311,14 @@ footer{padding:1.2rem 2.5rem;color:var(--muted);font-size:.82rem}
       </section>
       <section id="sec-inline">
         <h2>インライン記法・属性のみの変更</h2>
-        <p class="lead">可視テキストは完全に同一。strong追加、em除去、href変更、class追加のみ。</p>
+        <p class="lead">可視テキストは BEFORE と AFTER で完全に同一。strong / em / href / class だけが違う。</p>
         <p>棚卸台帳の締め日を 毎月末日 から<strong>毎月25日</strong>へ変更しました。
         対象は本社および全拠点です。詳細は <a href="/docs/2026-08/asset-notes">運用メモ</a> を参照してください。</p>
         <p>変更後は <span class="highlight">締め日の翌営業日</span> に自動集計が走ります。集計結果に差異があった場合は情報システム課へ連絡してください。</p>
       </section>
       <section id="sec-code">
         <h2>コードブロックの編集</h2>
-        <p class="lead">1行変更、1行追加、1行削除。インデントが崩れないことの確認。</p>
+        <p class="lead">1行が違い、AFTER にだけある行と BEFORE にだけある行が1本ずつ。インデントが崩れないことの確認。</p>
         <p>集計ジョブの起動スクリプトは <code>asset-batch</code> です。</p>
         <pre><code>#!/usr/bin/env bash
 set -euo pipefail
@@ -336,7 +336,7 @@ echo "done"</code></pre>
       </section>
       <section id="sec-quote">
         <h2>引用文の部分修正</h2>
-        <p class="lead">blockquote 内の数値と語尾を変更。</p>
+        <p class="lead">blockquote の数値と語尾が BEFORE と AFTER で違う。</p>
         <blockquote>
           「私たちは、障害の発生を完全にゼロにすることを目指すのではなく、障害を15分以内に検知し、
           顧客影響を最小化したうえで迅速に復旧することを最優先とする。」
@@ -345,7 +345,7 @@ echo "done"</code></pre>
       </section>
       <section id="sec-hlevel">
         <h2>見出しレベルの昇格</h2>
-        <p class="lead">テキストは同一で h3 が h2 になる。</p>
+        <p class="lead">テキストは同一。「データの流れ」が BEFORE は h3、AFTER は h2。</p>
         <h2>データの流れ</h2>
         <p>各拠点の入力フォームから収集した棚卸データは、夜間バッチで台帳データベースへ取り込まれる。</p>
         <h3>構成要素</h3>
@@ -353,7 +353,7 @@ echo "done"</code></pre>
       </section>
       <section id="sec-swap">
         <h2>小見出しの入れ替え</h2>
-        <p class="lead">2つの小見出しブロックの前後を入れ替える。</p>
+        <p class="lead">2つの小見出しブロックの前後が BEFORE と AFTER で逆。</p>
         <h3>今後の予定</h3>
         <p>9月に本番切り替え、10月に旧台帳の参照停止、11月に減価償却管理との連携検討を予定している。</p>
         <h3>想定されるリスク</h3>
