@@ -121,6 +121,9 @@
     /* Markdown由来の通常の取り消し線 */
     .rich-diff-viewer del:not(.diffdel):not(.diffmod) { color: var(--text-muted); text-decoration: line-through; background-color: transparent; }
 
+    /* ===== HTML View (rich-html-diff engine) ===== */
+    .html-diff-frame { display: none; width: 100%; height: 100%; border: none; background-color: #ffffff; }
+
     /* ===== Markdown View Resizer (左右対称フローティング・ハンドル) ===== */
     .md-resizer {
       position: absolute; top: 0; bottom: 0; width: 12px; cursor: col-resize; z-index: 150;
@@ -233,7 +236,10 @@
     <div class="toolbar-right">
       <button class="btn" id="richDiffBtn" title="Toggle Rich Markdown Diff">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
-        Markdown View
+        <span id="richDiffBtnLabel">Markdown View</span>
+      </button>
+      <button class="btn" id="htmlViewBtn" title="Toggle Rich HTML Diff">
+        HTML View
       </button>
       <button class="btn" id="swapBtn" title="Swap BEFORE and AFTER">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4L4 8l4 4M4 8h16M16 20l4-4-4-4M20 16H4"/></svg>
@@ -258,7 +264,11 @@
   <div class="main-container" id="mainContainer">
     <div id="diffEditor" style="width: 100%; height: 100%;"></div>
     <div id="richDiffViewer" class="rich-diff-viewer markdown-body"></div>
-    
+    <!-- sandbox="allow-scripts allow-popups" is intentional (matches the source rich-html-diff tool):
+         pasted HTML's own <script> tags are allowed to run inside this sandboxed iframe so that
+         content restored from a shared Diff URL behaves exactly as authored, including its JS. -->
+    <iframe id="htmlDiffFrame" class="html-diff-frame" title="HTML 差分プレビュー" sandbox="allow-scripts allow-popups"></iframe>
+
     <div id="mdResizerLeft" class="md-resizer left" data-dir="left"></div>
     <div id="mdResizerRight" class="md-resizer right" data-dir="right"></div>
     
@@ -292,6 +302,980 @@
   </div>
 
   <script>
+    /* =======================================================================
+       Ported from rich-html-diff.html (source of truth, lines 118-418 core
+       engine + 420-443 DIFF_CSS). The diff ALGORITHM itself (tokenize/diffSeq/
+       unitsOf/sig/similar/textNodes/wrapRange/insertDeleted/inlineDiff/
+       diffUnitPair/buildDiff/placeDeleted/orphanBin) is still ported verbatim —
+       do NOT hand-edit those function bodies; re-port from the source file if
+       changes are needed there. CONTROLLER (lines 445-468) is intentionally
+       NOT ported — out of scope for this phase.
+       DIFF_CSS はこのツール向けに以下の意図的な差異あり（他は移植元と一致）:
+       1. TOKEN_RE のフラグを 'g' → 'gu'（該当箇所のコメント参照）。
+       2. del[data-diff="del"] の text-decoration を line-through → none に変更
+          （取り消し線を出さず、色/背景のみで削除箇所を示す）。
+       3. [data-diff-block="del"] * { text-decoration:line-through; } ルールを削除。
+       4. [data-diff-block="ins"/"del"] の box-shadow（変更ブロック左端の色バー）を削除。
+       5. a[data-diff-nolink]{ cursor:default; } を追加
+          （renderHtmlDiffDocument() 側でのフラグメントリンク無害化と対）。
+       ======================================================================= */
+    /* =======================================================================
+       Rich HTML Diff — core
+       レンダリング済みの見た目を保ったまま、テキストの差分だけを ins/del で
+       重ねる。外部依存なし。すべてローカル（ネットワーク送信は一切なし）。
+       ======================================================================= */
+
+    /* ---------- 1. トークナイザ（日本語は 1 文字単位） ---------- */
+    const TOKEN_RE = new RegExp(
+      '[\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff\\uf900-\\ufaff\\uff66-\\uff9f]' + // かな/漢字/半角カナ
+      '|[A-Za-z]+(?:[\'\u2019][A-Za-z]+)*' +                                            // 英単語
+      '|[0-9]+(?:[.,][0-9]+)*' +                                                        // 数値
+      '|\\s+' +                                                                          // 空白
+      '|[^\\s]',                                                                         // その他 1 文字
+      // 移植元からの唯一の意図的な差異: 'g' → 'gu'。
+      // u フラグ無しだと最後の [^\s] が UTF-16 コードユニット単位で一致するため、
+      // 絵文字などのサロゲートペアが 2 トークンに割れ、後段の splitText() が
+      // ペアの途中を切って文字が U+FFFD に破壊される（移植元にも同じ不具合あり）。
+      // u フラグを付けるとコードポイント単位になり解消する。かな/漢字/半角カナ/
+      // 数値/アポストロフィを含む非アストラル文字の分割結果は完全に不変であることを確認済み。
+      'gu');
+
+    function tokenize(s){ return s.match(TOKEN_RE) || []; }
+
+    /* ---------- 2. Myers 差分（トークン列） ---------- */
+    // 返り値: [{op:-1|0|1, items:[...]}, ...]  -1=削除 0=同一 1=追加
+    function diffSeq(a, b, maxD){
+      maxD = maxD || 6000;
+      const N = a.length, M = b.length;
+      if (N === 0 && M === 0) return [];
+      if (N === 0) return [{op:1, items:b.slice()}];
+      if (M === 0) return [{op:-1, items:a.slice()}];
+
+      const MAX = Math.min(N + M, maxD);
+      const off = MAX + 1;
+      let v = new Int32Array(2 * MAX + 3);
+      const trace = [];
+      let found = -1;
+
+      outer:
+      for (let d = 0; d <= MAX; d++){
+        trace.push(v.slice());
+        for (let k = -d; k <= d; k += 2){
+          let x;
+          if (k === -d || (k !== d && v[off + k - 1] < v[off + k + 1])) x = v[off + k + 1];
+          else x = v[off + k - 1] + 1;
+          let y = x - k;
+          while (x < N && y < M && a[x] === b[y]) { x++; y++; }
+          v[off + k] = x;
+          if (x >= N && y >= M){ found = d; break outer; }
+        }
+      }
+      if (found < 0) return null; // 差分が大きすぎる → 呼び出し側でフォールバック
+
+      // バックトラック
+      const rev = [];
+      let x = N, y = M;
+      for (let d = found; d >= 0; d--){
+        const vv = trace[d];
+        const k = x - y;
+        let prevK;
+        if (k === -d || (k !== d && vv[off + k - 1] < vv[off + k + 1])) prevK = k + 1;
+        else prevK = k - 1;
+        const prevX = vv[off + prevK], prevY = prevX - prevK;
+        while (x > prevX && y > prevY){ rev.push([0, a[x - 1]]); x--; y--; }
+        if (d > 0){
+          if (x > prevX) rev.push([-1, a[x - 1]]);
+          else           rev.push([1,  b[y - 1]]);
+          x = prevX; y = prevY;
+        }
+      }
+      rev.reverse();
+
+      const out = [];
+      for (const [op, item] of rev){
+        if (out.length && out[out.length - 1].op === op) out[out.length - 1].items.push(item);
+        else out.push({op, items:[item]});
+      }
+      return out;
+    }
+
+    /* ---------- 3. 構造単位の抽出 ---------- */
+    // 単位 = 「インライン内容を直接持つブロック要素」。
+    //
+    // 移植元は tr,p,li,h1-h6,pre,blockquote,dd,dt,figcaption,caption という
+    // タグのホワイトリストに一致する“葉”だけを単位にしていた。そのため
+    // div / span / a / footer が直接持つテキスト（サイドバー目次のリンク、
+    // ヘッダの日付、カード内の価格など）の変更が一切検出されず、さらに
+    // 削除ブロックがコンテナ境界を越えて無関係なカード・callout・表の中へ
+    // ばらばらに挿入される問題があった。
+    //
+    // ここではブロック要素を単位とし、各単位は「自分自身のインラインテキスト」
+    // （入れ子のブロックはそれ自体が別単位なので除外）だけを対象にする。
+    // これで単位が入れ子で重複せず、上記のテキストも拾える。
+    const BLOCK_TAGS = new Set([
+      'ADDRESS','ARTICLE','ASIDE','BLOCKQUOTE','BODY','CAPTION','DD','DETAILS','DIALOG',
+      'DIV','DL','DT','FIELDSET','FIGCAPTION','FIGURE','FOOTER','FORM','H1','H2','H3',
+      'H4','H5','H6','HEADER','HGROUP','LEGEND','LI','MAIN','NAV','OL','P','PRE',
+      'SECTION','SUMMARY','TABLE','TBODY','TD','TFOOT','TH','THEAD','TR','UL'
+    ]);
+    // 単位の境界は本来タグではなく CSS の display で決まる。BLOCK_TAGS はあくまで
+    // フォールバックで、通常は「両ドキュメントを非表示 iframe に描画して
+    // getComputedStyle で解決した実際の display」で判定する（classifyBlockBoundaries）。
+    //
+    // タグ名だけで判定すると、例えば .toc a{display:block} のように CSS でブロック化
+    // されたリンクをインライン扱いしてしまい、目次全体が 1 単位に潰れて各リンクの
+    // 追加・削除が独立して表現できない。逆に display:inline な div も誤判定になる。
+    // なお flex/grid の子要素は CSS 仕様で display がブロック化されるため、
+    // 計算値を見るだけで「flex アイテムは独立した単位」も自動的に満たされる。
+    //
+    // display:none も境界として扱う。単位にはならず親に混ざる、という状態を避けたい
+    // （非表示テキストが見える単位の差分に混入してしまう）ため。
+    const BLOCKISH_DISPLAY = new Set([
+      'block','flow-root','flex','grid','list-item','table','table-row','table-cell',
+      'table-header-group','table-row-group','table-footer-group','table-caption','none'
+    ]);
+    let boundaryEls = null;    // Set<Element> — 境界と判定された要素
+    let classifiedDocs = null; // Set<Document> — 判定済みのドキュメント
+
+    function classifyBlockBoundaries(doc){
+      const win = doc.defaultView;
+      if (!win) return false;
+      for (const el of doc.querySelectorAll('*')){
+        let d = null;
+        try { d = win.getComputedStyle(el).display; } catch (e) { d = null; }
+        const isB = d ? BLOCKISH_DISPLAY.has(d) : BLOCK_TAGS.has(el.tagName);
+        if (isB) boundaryEls.add(el);
+      }
+      if (doc.body) boundaryEls.add(doc.body);
+      classifiedDocs.add(doc);
+      return true;
+    }
+
+    function isBlockEl(el){
+      if (!el || el.nodeType !== 1) return false;
+      // 判定済みドキュメントの要素はその結果を信じる（未収録＝インライン）
+      if (classifiedDocs && classifiedDocs.has(el.ownerDocument)) return boundaryEls.has(el);
+      return BLOCK_TAGS.has(el.tagName);
+    }
+
+    function norm(s){ return (s || '').replace(/\s+/g, ' ').trim(); }
+    // その要素が直接持つインラインテキスト（入れ子ブロックの中身は含まない）
+    function ownText(el){ return textNodes(el).map(n => n.data).join(''); }
+
+    /* ---------- 4. テキストノード操作 ---------- */
+    function textNodes(root){
+      const out = [];
+      const walk = n => {
+        for (let c = n.firstChild; c; c = c.nextSibling){
+          if (c.nodeType === 3){ if (c.data.length) out.push(c); }
+          else if (c.nodeType === 1){
+            const t = c.tagName;
+            if (t === 'SCRIPT' || t === 'STYLE') continue;
+            if (c.dataset && c.dataset.diff === 'del') continue; // 自分が挿入した del は数えない
+            if (isBlockEl(c)) continue; // 入れ子のブロックはそれ自体が別単位なので含めない
+            walk(c);
+          }
+        }
+      };
+      walk(root);
+      return out;
+    }
+
+    function wrapRange(root, start, end, cls){
+      if (end <= start) return;
+      const nodes = textNodes(root);
+      const targets = [];
+      let acc = 0;
+      for (const n of nodes){
+        const s = acc, e = acc + n.data.length; acc = e;
+        if (e <= start || s >= end) continue;
+        targets.push([n, Math.max(start, s) - s, Math.min(end, e) - s]);
+      }
+      for (let i = targets.length - 1; i >= 0; i--){
+        const [n, from, to] = targets[i];
+        let node = n;
+        if (to < node.data.length) node.splitText(to);
+        if (from > 0) node = node.splitText(from);
+        const w = node.ownerDocument.createElement('ins');
+        w.dataset.diff = cls;
+        node.parentNode.insertBefore(w, node);
+        w.appendChild(node);
+      }
+    }
+
+    function insertDeleted(root, at, text){
+      if (!text) return;
+      const doc = root.ownerDocument;
+      const mk = () => { const d = doc.createElement('del'); d.dataset.diff = 'del'; d.textContent = text; return d; };
+      // 削除テキストは「単位そのものの流れ」に属するので、挿入位置が
+      // インライン要素（<a>/<span>/<code>/<strong> 等）の境界に一致する場合は
+      // その要素の“中”ではなく外側へ出す。ここを素直に n.parentNode へ入れると、
+      // 例えば末尾の項目を削除したときに直前の <a> の内部に <del> が入り、
+      // その <a> の見た目・レイアウト（display:block なら同じ行）を
+      // 引き継いでしまう（削除された内容はその <a> の一部ではないのに）。
+      const hoistAfter = (node) => {
+        let x = node;
+        while (x.parentNode && x.parentNode !== root && x.parentNode.lastChild === x) x = x.parentNode;
+        return x;
+      };
+      const hoistBefore = (node) => {
+        let x = node;
+        while (x.parentNode && x.parentNode !== root && x.parentNode.firstChild === x) x = x.parentNode;
+        return x;
+      };
+      const nodes = textNodes(root);
+      let acc = 0;
+      for (const n of nodes){
+        const s = acc, e = acc + n.data.length; acc = e;
+        if (at <= e){
+          const local = at - s;
+          if (local >= n.data.length){
+            const t = hoistAfter(n);
+            t.parentNode.insertBefore(mk(), t.nextSibling);
+            return;
+          }
+          let node = n;
+          if (local > 0) node = n.splitText(local);
+          const t = hoistBefore(node);
+          t.parentNode.insertBefore(mk(), t);
+          return;
+        }
+      }
+      root.appendChild(mk());
+    }
+
+    /* ---------- 5. 1 コンテナ内のインライン差分 ---------- */
+    // 要素が自分自身で持つインラインテキストの差分。
+    //
+    // 全面的な書き換えの場合はインラインで混ぜない。以前は語単位の差分をそのまま
+    // 差し込んでいたため、文章がまるごと差し替わったときに
+    // 「開発環境 NAT Gatewayバッチ処理の構成変更Spot Instance中断検証テスト」
+    // のような判読不能な交互混在になっていた。変化した割合が高いときは
+    // 「旧テキストのブロック」＋「新テキストのブロック」として並べて見せる。
+    const REPLACE_RATIO = 0.6;
+
+    // 見出しは交互混在の読みにくさが本文より大きく、しかも短いので混ぜても得がない。
+    // 実例: 「CP：JSM / JCPアクセスのテナント単位サービスアカウント化」を
+    // 「CP：顧客ごとのサービスアカウント切り替え」に書き換えた見出しが
+    // 「CP：JSM / JCPアクセス顧客ごとのテナント単位サービスアカウント化切り替え」
+    // という読めない 1 行になっていた。見出しだけは早めに旧／新の並置へ切り替える。
+    const HEADING_REPLACE_RATIO = 0.3;
+    const HEADING_TAGS = new Set(['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'DT', 'CAPTION', 'LEGEND', 'SUMMARY']);
+
+    // 旧要素の見た目を保った削除表示用クローンを作る。ブロックの子要素は
+    // それ自体が別の対応対象なので、クローンからは落とす（二重表示を防ぐ）。
+    function ownTextClone(oldEl, doc){
+      const clone = doc.importNode(oldEl, true);
+      const drop = [];
+      for (let c = clone.firstElementChild; c; c = c.nextElementSibling){
+        if (BLOCK_TAGS.has(c.tagName) || c.tagName === 'SCRIPT' || c.tagName === 'STYLE') drop.push(c);
+      }
+      drop.forEach(c => c.remove());
+      return clone;
+    }
+
+    function diffOwnText(oldEl, newEl, tally){
+      const oldText = oldEl ? ownText(oldEl) : '';
+      const newText = ownText(newEl);
+      if (oldText === newText) return false;
+      // 空白の入り方だけが違う場合は目に見える変化がないので何も出さない。
+      // 入れ子の深さが変わるとインデントだけがずれ、中身が空の ins/del が
+      // ぶら下がっていた。ただし pre / code は空白そのものが意味を持つので除く。
+      const ws = newEl.tagName === 'PRE' || newEl.tagName === 'CODE' || !!newEl.closest('pre');
+      if (!ws && norm(oldText) === norm(newText)) return false;
+
+      const oldToks = tokenize(oldText), newToks = tokenize(newText);
+      const ops = diffSeq(oldToks, newToks);
+      if (!ops){ // 大きすぎる → ブロックごと置換扱い
+        markBlock(newEl, 'ins', tally, newText.length);
+        return true;
+      }
+
+      // 変化が支配的なら、混ぜずに置換として見せる。
+      // ただし親の内容モデル上その要素を兄弟として並べられない場合（表のセルなど）は
+      // 使えない。無理に insertBefore すると行のセルが増えて表の桁が崩れる。
+      // 変化の割合は空白を除いて数える。トークナイザは空白の連なりも 1 トークンに
+      // するので、英文のように語間に空白が入る文章では空白がトークンの半分近くを
+      // 占め、しかも必ず一致する。そのぶん変化率が薄まり、まったく無関係な 2 つの
+      // 文章でも閾値を超えられずに語単位で交互混在していた。
+      const meaningful = t => /\S/.test(t);
+      let changedToks = 0;
+      for (const op of ops) if (op.op !== 0) for (const t of op.items) if (meaningful(t)) changedToks++;
+      const totalToks = oldToks.filter(meaningful).length + newToks.filter(meaningful).length;
+      const parent = newEl.parentNode;
+      const canSplit = parent && parent.nodeType === 1
+        && canHold(parent.tagName, oldEl ? oldEl.tagName : newEl.tagName);
+      const ratio = HEADING_TAGS.has(newEl.tagName) ? HEADING_REPLACE_RATIO : REPLACE_RATIO;
+      if (canSplit && oldToks.length && newToks.length && totalToks > 0
+          && changedToks / totalToks > ratio){
+        const clone = ownTextClone(oldEl, newEl.ownerDocument);
+        clone.setAttribute('data-diff-block', 'del');
+        tally.del += norm(oldText).length; tally.blocks++;
+        parent.insertBefore(clone, newEl);
+        markBlock(newEl, 'ins', tally, newText.length);
+        return true;
+      }
+
+      const edits = [];
+      let pos = 0;
+      for (const op of ops){
+        const text = op.items.join('');
+        if (op.op === 0) pos += text.length;
+        else if (op.op === 1){ edits.push({k:'ins', s:pos, e:pos + text.length}); pos += text.length; tally.add += text.length; }
+        else { edits.push({k:'del', at:pos, text}); tally.del += text.length; }
+      }
+      edits.sort((x, y) => (y.k === 'ins' ? y.s : y.at) - (x.k === 'ins' ? x.s : x.at));
+      for (const ed of edits){
+        if (ed.k === 'ins') wrapRange(newEl, ed.s, ed.e, 'ins');
+        else insertDeleted(newEl, ed.at, ed.text);
+      }
+      if (edits.length){ newEl.setAttribute('data-diff-row', 'changed'); tally.blocks++; }
+      return edits.length > 0;
+    }
+
+    function markBlock(el, kind, tally, chars){
+      el.setAttribute('data-diff-block', kind);
+      if (kind === 'ins') tally.add += chars; else tally.del += chars;
+    }
+
+    // 属性だけが変わった要素を表現する。テキストが同じだと従来は完全一致扱いで
+    // 何も表示されず、class="card" -> class="card recommended" のような
+    // 「見た目や意味は変わったがテキストは同じ」変更が丸ごと消えていた。
+    // 自分たちが付けた診断用属性は比較対象から除く。
+    const DIFF_OWN_ATTRS = new Set([
+      'data-diff', 'data-diff-block', 'data-diff-row', 'data-diff-attr', 'data-diff-nolink', 'data-diff-pad'
+    ]);
+
+    function attrMap(el){
+      const m = new Map();
+      const list = el.attributes;
+      for (let i = 0; i < list.length; i++){
+        const a = list[i];
+        if (DIFF_OWN_ATTRS.has(a.name)) continue;
+        m.set(a.name, a.value);
+      }
+      return m;
+    }
+
+    function diffAttributes(oldEl, newEl, tally){
+      if (!oldEl || !newEl || newEl.nodeType !== 1 || oldEl.nodeType !== 1) return;
+      // body 全体に枠を出すと画面全部が囲まれるので対象外
+      if (newEl.tagName === 'BODY' || newEl.tagName === 'HTML') return;
+      // 要素まるごと追加/削除なら、それだけで伝わるので重ねない
+      if (newEl.hasAttribute('data-diff-block')) return;
+
+      const om = attrMap(oldEl), nm = attrMap(newEl);
+      const names = new Set();
+      // タグ自体が変わった場合（h3 -> h2、ul -> ol）も「この要素が変わった」印を出す。
+      // テキストが同じだと他に手掛かりがなく、見出しレベルの昇格が無表示になる。
+      if (oldEl.tagName !== newEl.tagName) names.add('tagName');
+      om.forEach((v, k) => { if (nm.get(k) !== v) names.add(k); });
+      nm.forEach((v, k) => { if (om.get(k) !== v) names.add(k); });
+      if (!names.size) return;
+
+      // 値は入れない（style や長い URL で表示が崩れるため）。変わった属性名だけ残す。
+      newEl.setAttribute('data-diff-attr', Array.from(names).sort().join(','));
+      tally.attrs = (tally.attrs || 0) + 1;
+    }
+
+    /* ---------- 6. 階層ごとの再帰差分 ---------- */
+    // 以前は DOM を「単位（インラインテキストを持つブロック要素）」の平坦な配列に
+    // 潰して Myers 差分をかけ、その後ヒューリスティックで構造を復元していた。
+    // これが深刻な破損の原因だった。似たコンテナが並ぶ中で 1 つ挿入/削除されると
+    // 平坦な列が 1 つズレ、以降がすべて誤ペアになる（古典的なアラインメント崩壊）。
+    // 実例: before=[card1, cardNAT, cardS3] / after=[card1, cardS3', cardSpot] で
+    // 「2. NAT Gatewayの集約」と「2. S3 ライフサイクルルールの適用」が
+    // 先頭の "2. " や助詞などの共通トークンでペア判定され、1 つのカード枠の中に
+    // 新旧のカード名・本文・旧ヘッダが全部詰め込まれた。表でも削除行のセルが
+    // 新しい行に流れ込み、2,800 と 8,000 が 1 セルに融合した。
+    //
+    // そこで階層ごとに子要素を突き合わせ、一致したペアだけ再帰する方式にする。
+    // 挿入位置は「同じ親の子リスト内」で自明に決まるので、配置ヒューリスティック
+    // （contextKey / levelsToSiblingOf / liftLevels / canContain /
+    //  maximalDeletedContainer / placeDeletedBlock）は不要になり全廃した。
+    // 再帰の暴走に対する安全網。実際の入れ子の深さに対する制限のつもりではない。
+    // 60 にしていたときは、ラッパ div が 150 段重なった文書（生成された HTML では
+    // 珍しくない）で最深部の変更が 1 つも表示されなかった。同じペアを二度たどらない
+    // ことは visitedPairs が保証しているので、ここは十分に深くしておく。
+    const MAX_DIFF_DEPTH = 500;
+
+    // 部分木の同一性キー。全文テキストを使うので「カードはカードと」対応が付く。
+    function childKey(el){ return el.tagName + ' ' + norm(el.textContent); }
+
+    function diffableChildren(el, blockOnly){
+      const out = [];
+      for (let c = el.firstElementChild; c; c = c.nextElementSibling){
+        if (c.tagName === 'SCRIPT' || c.tagName === 'STYLE') continue;
+        // 自分が差分表示のために挿入した要素は対象外
+        if (c.hasAttribute('data-diff') || c.hasAttribute('data-diff-block')) continue;
+        // 親のテキスト差分で既に扱ったインライン要素は対象外（下の説明を参照）
+        if (blockOnly && !isBlockEl(c)) continue;
+        out.push(c);
+      }
+      return out;
+    }
+
+    // 要素の「識別テキスト」。同じレコードが編集されたのか、別のレコードなのかは
+    // 全文の重なりではなく見出しやキー列が一致しているかで決まる。
+    // 表の行なら先頭セル、カードやセクションなら見出しがそれに当たる。
+    function identityText(el){
+      const h = el.querySelector('h1,h2,h3,h4,h5,h6,caption,legend,summary,dt,th');
+      if (h) return norm(h.textContent);
+      // 自分自身が持つテキストを、子要素より優先する。子から先に見ていたため
+      // <li>データベース設計<ul>外部インターフェース設計</ul></li> の識別子が
+      // 入れ子側の「外部インターフェース設計」になり、旧文書の別項目と一致して
+      // しまって「データベース設計外部インデータベーフェース設計」という
+      // 判読不能な混在になっていた。
+      const own = norm(ownText(el));
+      if (own) return own;
+      const first = el.firstElementChild;
+      if (first) return norm(first.textContent);
+      return norm(el.textContent);
+    }
+
+    // トークン袋の重なり率
+    function tokenOverlap(sa, sb){
+      const ta = tokenize(sa), tb = tokenize(sb);
+      if (!ta.length && !tb.length) return 1;
+      if (!ta.length || !tb.length) return 0;
+      const setA = new Set(ta);
+      let hit = 0;
+      for (const t of tb) if (setA.has(t)) hit++;
+      return hit / Math.max(ta.length, tb.length);
+    }
+
+    // 識別テキスト専用の重なり率。ハイフンなどの区切り記号だけのトークンは
+    // 識別情報を持たないため比較から除く。記号を残したまま比較すると、
+    // 表の "mail-01" 行と "app-02" 行のように先頭セルが別レコードを指して
+    // いても記号 "-" を共有するだけで重なりが生じてしまう（実測 1/3 ≈ .33）。
+    // 行テンプレートの共通語（サーバー/vCPU/GB 等）で全文側の重なりも高いと、
+    // 合算が閾値 0.4 をわずかに超えて「変更」に潰れてしまっていた。
+    function identityOverlap(sa, sb){
+      const isMeaningful = t => /[\p{L}\p{N}]/u.test(t);
+      const ta = tokenize(sa).filter(isMeaningful), tb = tokenize(sb).filter(isMeaningful);
+      if (!ta.length && !tb.length) return 1;
+      if (!ta.length || !tb.length) return 0;
+      const setA = new Set(ta);
+      let hit = 0;
+      for (const t of tb) if (setA.has(t)) hit++;
+      return hit / Math.max(ta.length, tb.length);
+    }
+
+    // 置換ペアの候補スコア。全文だけで見ると、日本語は文字単位でトークン化される
+    // ため「別のレコード」同士でも共通文字が大量に出て閾値を超えてしまう。
+    // 実例: 表の Classic 行と Pro Plus 行が $ , 0 ユ ー ザ サ ポ ト を共有するだけで
+    // 1 組のペアと判定され、行の削除・追加が「変更」に潰れていた。
+    // そこで識別テキスト（見出し／キー列）の一致を同じ重みで見る。
+    // 見出しレベルの上げ下げ（h3 -> h2）や箇条書きの種類変更（ul -> ol）は、
+    // 「同じ要素の書式が変わった」だけで別物ではない。タグ名の完全一致を求めると
+    // 必ず非ペアになり、中身が同一のリストが丸ごと削除＋追加として二重に出ていた。
+    const TAG_FAMILY = {
+      H1: 'heading', H2: 'heading', H3: 'heading', H4: 'heading', H5: 'heading', H6: 'heading',
+      UL: 'list', OL: 'list'
+    };
+    function sameTagFamily(a, b){
+      if (a.tagName === b.tagName) return true;
+      const fa = TAG_FAMILY[a.tagName];
+      return !!fa && fa === TAG_FAMILY[b.tagName];
+    }
+
+    function nodeSimilarity(a, b){
+      if (!sameTagFamily(a, b)) return 0;
+      const full = tokenOverlap(norm(a.textContent), norm(b.textContent));
+      const ia = identityText(a), ib = identityText(b);
+      // 識別テキストが取れない（全文と同じ）要素は従来どおり全文だけで判定する
+      if (!ia && !ib) return full;
+      if (ia === norm(a.textContent) && ib === norm(b.textContent)) return full;
+      return 0.5 * identityOverlap(ia, ib) + 0.5 * full;
+    }
+    const PAIR_THRESHOLD = 0.4;
+
+    function markInserted(el, tally){
+      el.setAttribute('data-diff-block', 'ins');
+      tally.add += norm(el.textContent).length; tally.blocks++;
+    }
+    function markDeleted(el, tally){
+      el.setAttribute('data-diff-block', 'del');
+      tally.del += norm(el.textContent).length; tally.blocks++;
+    }
+
+    // 親が構造上その子を持てるか（持てない場合だけ orphanBin へ退避する）
+    const CHILD_RULES = {
+      UL: /^LI$/, OL: /^LI$/, DL: /^(DT|DD)$/,
+      TABLE: /^(THEAD|TBODY|TFOOT|CAPTION|COLGROUP|TR)$/,
+      THEAD: /^TR$/, TBODY: /^TR$/, TFOOT: /^TR$/, TR: /^(TD|TH)$/
+    };
+    function canHold(parentTag, childTag){
+      // 行にセルを足すのは HTML としては妥当でも表の桁が崩れるので禁止する。
+      // 実際にこれで削除セルが新しい行へ流れ込み、ヘッダ 6 列の表に 8 セルの行が
+      // できていた（$2,800 と $8,000 が 1 セルに融合した件と同じ壊れ方）。
+      if (parentTag === 'TR') return false;
+      const r = CHILD_RULES[parentTag];
+      return r ? r.test(childTag) : true;
+    }
+
+    // 削除された子要素を、新DOMの同じ親の中の相当位置へ戻す
+    function insertDeletedChild(newParent, oldKid, beforeNode, tally){
+      const clone = newParent.ownerDocument.importNode(oldKid, true);
+      markDeleted(clone, tally);
+      // oldKid は旧文書側の要素なので closest('table') は旧表を返す
+      padDeletedRow(clone, oldKid.closest('table'), newParent.closest('table'));
+      if (!canHold(newParent.tagName, clone.tagName)){
+        orphanBin(newParent.ownerDocument).appendChild(clone);
+        return null;
+      }
+      if (beforeNode && beforeNode.parentNode === newParent) newParent.insertBefore(clone, beforeNode);
+      else newParent.appendChild(clone);
+      return clone;
+    }
+
+    // 削除ラン + 追加ラン を「最良一致」で突き合わせる。順送りに比べる方式だと
+    // 1 つズレたときに全部が誤ペアになるため、スコア最大の組から確定していく。
+    // ペア成立に必要なスコアは「取り違えの起きやすさ」で決める。
+    // 同じタグの兄弟が複数並ぶ場所（表の行、カード、リスト項目）は取り違えると
+    // 別レコード同士が 1 つに潰れるので厳しく見る。一方、兄弟の中でそのタグが
+    // 唯一の要素（ヘッダ、フッタ、単独のセクションなど）は取り違えようがないので
+    // 緩める。これを一律 PAIR_THRESHOLD にしていたため、見出しを書き換えただけの
+    // <header> が丸ごと削除＋追加として二重表示されていた。
+    const LONE_PAIR_THRESHOLD = 0.1;
+    function pairThresholdFor(newParent, tag){
+      let n = 0;
+      for (let c = newParent.firstElementChild; c; c = c.nextElementSibling){
+        if (c.tagName === tag && ++n > 1) return PAIR_THRESHOLD;
+      }
+      return LONE_PAIR_THRESHOLD;
+    }
+
+    // 1 つの親の下にある「削除ラン + 追加ラン」の組をまとめて解決する。
+    // ラン単位で閉じて処理していたときは、位置が離れた移動を Myers が別々のランへ
+    // 振り分けるせいで、移動しつつ中身も変わった要素が絶対に出会えなかった。
+    // 実例: カードが 2 番目から 3 番目へ動き、同時に本文とバッジも変わったとき、
+    // 削除カードと追加カードが別のランに入り、編集内容が一切見えなくなっていた。
+    function resolveGroups(newParent, groups, tally, depth){
+      const pairedDel = new Map(), usedIns = new Set();
+      const key = (g, k) => g + ':' + k;
+      const settle = (list) => {
+        list.sort((x, y) => y.sc - x.sc);
+        for (const c of list){
+          if (pairedDel.has(key(c.gi, c.a)) || usedIns.has(key(c.gj, c.b))) continue;
+          const oldEl = groups[c.gi].del[c.a], newEl2 = groups[c.gj].ins[c.b];
+          pairedDel.set(key(c.gi, c.a), newEl2); usedIns.add(key(c.gj, c.b));
+          diffNode(oldEl, newEl2, tally, depth + 1);
+        }
+      };
+
+      // 1) まず同じラン内での最良一致。取り違えの起きやすさで閾値を変える。
+      const near = [];
+      groups.forEach((g, gi) => {
+        for (let a = 0; a < g.del.length; a++)
+          for (let b = 0; b < g.ins.length; b++){
+            const sc = nodeSimilarity(g.del[a], g.ins[b]);
+            if (sc >= pairThresholdFor(newParent, g.ins[b].tagName)) near.push({ gi: gi, a: a, gj: gi, b: b, sc: sc });
+          }
+      });
+      settle(near);
+
+      // 2) 次にランをまたいだ「移動して中身も変わった」要素。誤って結び付けると
+      //    別物同士が 1 つに潰れるので、見出しなどの識別テキストが完全に一致する
+      //    ものだけに限る。中身まで同じ場合は対にしない（純粋な移動は削除＋追加の
+      //    ままにしておかないと、動いたこと自体が見えなくなる）。
+      const far = [];
+      groups.forEach((g, gi) => {
+        for (let a = 0; a < g.del.length; a++){
+          if (pairedDel.has(key(gi, a))) continue;
+          const oldEl = g.del[a], idA = identityText(oldEl);
+          if (!idA) continue;
+          groups.forEach((h, gj) => {
+            if (gj === gi) return;
+            for (let b = 0; b < h.ins.length; b++){
+              const el = h.ins[b];
+              if (usedIns.has(key(gj, b))) continue;
+              if (!sameTagFamily(oldEl, el)) continue;
+              if (identityText(el) !== idA) continue;
+              if (childKey(el) === childKey(oldEl)) continue;
+              far.push({ gi: gi, a: a, gj: gj, b: b, sc: nodeSimilarity(oldEl, el) });
+            }
+          });
+        }
+      });
+      settle(far);
+
+      // 3) 残った追加要素を確定し、削除要素を旧文書での隣り合わせを頼りに戻す。
+      //    直前に対応が付いた要素の「新しい相手」の後ろへ置けば元の並び順が保たれる。
+      //    手掛かりがない場合だけ、ラン直後の要素の前に置く。これがないと、
+      //    全行が少しずつ変わった表で削除行だけが末尾へ流れていた。
+      groups.forEach((g, gi) => {
+        for (let b = 0; b < g.ins.length; b++) if (!usedIns.has(key(gi, b))) markInserted(g.ins[b], tally);
+      });
+      groups.forEach((g, gi) => {
+        let cursor = null;
+        for (let a = 0; a < g.del.length; a++){
+          const mate = pairedDel.get(key(gi, a));
+          if (mate){ cursor = mate; continue; }
+          let at = null;
+          if (cursor && cursor.parentNode === newParent) at = cursor.nextSibling;
+          else {
+            for (let k = a + 1; k < g.del.length; k++){
+              const nxt = pairedDel.get(key(gi, k));
+              if (nxt && nxt.parentNode === newParent){ at = nxt; break; }
+            }
+            // 対応が付いた要素が 1 つも無い場合は、同じ位置に入った追加要素の直前へ置く。
+            // 削除ランと追加ランは同じ並び位置を指しているので、これで前後関係が保たれる。
+            // これが無いと親の末尾へ追記され、<p> の中で <em> だけが文末に飛んでいた。
+            if (!at){
+              for (let k = 0; k < g.ins.length; k++){
+                if (g.ins[k] && g.ins[k].parentNode === newParent){ at = g.ins[k]; break; }
+              }
+            }
+            if (!at && g.before && g.before.parentNode === newParent) at = g.before;
+          }
+          cursor = insertDeletedChild(newParent, g.del[a], at, tally) || cursor;
+        }
+      });
+    }
+
+    // 表の列対応。列が途中に挿入・削除されると index 位置での突き合わせは全部ずれ、
+    // 無関係な列同士が比較されてしまう（例: 旧「ステータス」列が新「担当者」列に
+    // 対応してしまい「山田稼働中」のような値の融合が起きる）。そこで先頭行（ヘッダ）
+    // のセル内容で列を対応付け、その対応を全ての行に使い回す。
+    const tableColMaps = new WeakMap();
+
+    // colspan / rowspan がある表は index と列が 1:1 対応しないため対応付けを諦める
+    function hasSpans(tr){
+      for (let c = tr.firstElementChild; c; c = c.nextElementSibling){
+        if (c.tagName !== 'TD' && c.tagName !== 'TH') continue;
+        const cs = parseInt(c.getAttribute('colspan') || '1', 10);
+        const rs = parseInt(c.getAttribute('rowspan') || '1', 10);
+        if (cs > 1 || rs > 1) return true;
+      }
+      return false;
+    }
+
+    // ヘッダ行の内容から「統合後の列並び」を作る。要素は { o, n } で、o は旧表の
+    // 列 index、n は新表の列 index（対応しない側は -1）。新表ごとに1回だけ計算して
+    // キャッシュする。cellsOf の「印付きセル除外」と噛み合わなくなるのを避けるため、
+    // ここでは印を付ける前提の生のセル列を firstElementChild で直接数える。
+    //
+    // 新→旧の写像だけを持っていたときは、なくなった列を表現する手段がなく、
+    // 削除された列が何の印もなく消えていた（行の削除は所定位置に復元されるのに
+    // 列の削除だけ情報が落ちる非対称な状態だった）。統合後の並びを持つことで、
+    // 削除された列も所定の位置に戻せる。
+    function columnMap(oldTable, newTable){
+      let m = tableColMaps.get(newTable);
+      if (m !== undefined) return m;
+      m = null;
+      const oldHead = oldTable.querySelector('tr'), newHead = newTable.querySelector('tr');
+      if (oldHead && newHead && !hasSpans(oldHead) && !hasSpans(newHead)){
+        const ok = [], nk = [];
+        for (let c = oldHead.firstElementChild; c; c = c.nextElementSibling)
+          if (c.tagName === 'TD' || c.tagName === 'TH') ok.push(norm(c.textContent));
+        for (let c = newHead.firstElementChild; c; c = c.nextElementSibling)
+          if (c.tagName === 'TD' || c.tagName === 'TH') nk.push(norm(c.textContent));
+        const ops = ok.length && nk.length ? diffSeq(ok, nk, 20000) : null;
+        if (ops){
+          const cols = [];
+          let oi = 0, ni = 0;
+          for (const op of ops){
+            for (let k = 0; k < op.items.length; k++){
+              if (op.op === 0) cols.push({ o: oi++, n: ni++ });
+              else if (op.op === 1) cols.push({ o: -1, n: ni++ });   // 追加された列
+              else cols.push({ o: oi++, n: -1 });                    // なくなった列
+            }
+          }
+          // なくなった列の並びと、その直後に増えた列の並びが同じ長さなら、
+          // 「その位置の列が差し替わった（列名の変更）」とみなして対にする。
+          // そうしないと、見出しを 1 つ書き換えただけで列が削除＋追加に分かれ、
+          // 中身が同一のデータセルまで 1 行ぶん丸ごと二重に描かれていた。
+          const merged = [];
+          for (let k = 0; k < cols.length; k++){
+            let dEnd = k;
+            while (dEnd < cols.length && cols[dEnd].o >= 0 && cols[dEnd].n < 0) dEnd++;
+            const dLen = dEnd - k;
+            if (dLen > 0){
+              let iEnd = dEnd;
+              while (iEnd < cols.length && cols[iEnd].o < 0 && cols[iEnd].n >= 0) iEnd++;
+              if (iEnd - dEnd === dLen){
+                for (let x = 0; x < dLen; x++) merged.push({ o: cols[k + x].o, n: cols[dEnd + x].n });
+                k = iEnd - 1;
+                continue;
+              }
+            }
+            merged.push(cols[k]);
+          }
+          if (oi === ok.length && ni === nk.length) m = { cols: merged, oldCols: ok.length, newCols: nk.length };
+        }
+      }
+      tableColMaps.set(newTable, m);
+      return m;
+    }
+
+    // 旧文書と新文書で列数が違う場合、削除行をそのまま戻すと桁が崩れる。
+    // 実例: 旧 5 列・新 6 列（「担当者」列が追加）で mail-01 行を戻すと、
+    // 行末のステータスセルが新しい「担当者」列の位置にずれ込み、表全体の桁が
+    // 1 列分ずれて見える。新しく増えた列の位置に空セルを補って揃える。
+    function padDeletedRow(clone, oldTable, newTable){
+      if (clone.tagName !== 'TR' || !oldTable || !newTable) return;
+      const info = columnMap(oldTable, newTable);
+      if (!info) return;
+      const cells = [];
+      for (let c = clone.firstElementChild; c; c = c.nextElementSibling){
+        if (c.tagName === 'TD' || c.tagName === 'TH') cells.push(c);
+      }
+      if (cells.length !== info.oldCols) return; // 想定外の桁数なら触らない
+      const doc = clone.ownerDocument;
+      const tag = cells[0] && cells[0].tagName === 'TH' ? 'th' : 'td';
+      // 統合後の列順に並べ直す。旧行が既に持っている列はそのまま、
+      // 追加された列の位置にだけ空セルを補う。
+      for (let k = 0; k < info.cols.length; k++){
+        if (info.cols[k].o >= 0) continue;
+        const pad = doc.createElement(tag);
+        pad.setAttribute('data-diff-pad', '');
+        const at = clone.children[k] || null;
+        if (at) clone.insertBefore(pad, at); else clone.appendChild(pad);
+      }
+    }
+
+    // 表の行はできる限りヘッダ由来の列対応で突き合わせる。セルを増減させると桁が
+    // ずれて表が壊れるため、行のセル数は一切変更しない。列対応が使えない場合
+    // （colspan がある、行の桁数がヘッダと食い違う等）は、従来どおり位置で
+    // 突き合わせる。列が増えた分は新しいセルを追加としてマークし、減った分は
+    // 行に印を付けるだけ。
+    function cellsOf(tr){
+      const out = [];
+      for (let c = tr.firstElementChild; c; c = c.nextElementSibling){
+        if (c.tagName !== 'TD' && c.tagName !== 'TH') continue;
+        if (c.hasAttribute('data-diff') || c.hasAttribute('data-diff-block')) continue;
+        out.push(c);
+      }
+      return out;
+    }
+    function diffTableRow(oldTr, newTr, tally, depth){
+      const oc = cellsOf(oldTr), nc = cellsOf(newTr);
+      let changed = false;
+
+      // ヘッダから得た列対応が使えて、両行の桁数がヘッダと一致していれば列で対応付ける
+      const oldTable = oldTr.closest('table'), newTable = newTr.closest('table');
+      let cm = null;
+      if (oldTable && newTable && !hasSpans(oldTr) && !hasSpans(newTr)){
+        const info = columnMap(oldTable, newTable);
+        if (info && oc.length === info.oldCols && nc.length === info.newCols) cm = info;
+      }
+
+      if (cm){
+        // なくなった列のセルを戻す位置は「次に残っている新しい列」の直前。
+        // 後ろから走査してその要素を控えておく。
+        const anchors = new Array(cm.cols.length);
+        let nextEl = null;
+        for (let k = cm.cols.length - 1; k >= 0; k--){
+          anchors[k] = nextEl;
+          if (cm.cols[k].n >= 0) nextEl = nc[cm.cols[k].n];
+        }
+        for (let k = 0; k < cm.cols.length; k++){
+          const col = cm.cols[k];
+          if (col.o >= 0 && col.n >= 0){
+            const before = nc[col.n].outerHTML;
+            diffNode(oc[col.o], nc[col.n], tally, depth + 1);
+            if (nc[col.n].outerHTML !== before) changed = true;
+          } else if (col.n >= 0){
+            markInserted(nc[col.n], tally); changed = true;   // 新しく増えた列
+          } else {
+            // なくなった列。行の削除と同じく、消えたことが分かるように所定位置へ戻す。
+            // 全ての行（ヘッダ含む）に同じ 1 列が増えるので表は長方形のまま保たれる。
+            // insertDeletedChild は行にセルを足すのを禁じているため直接挿入する。
+            const clone = newTr.ownerDocument.importNode(oc[col.o], true);
+            markDeleted(clone, tally);
+            const at = anchors[k];
+            if (at && at.parentNode === newTr) newTr.insertBefore(clone, at);
+            else newTr.appendChild(clone);
+            changed = true;
+          }
+        }
+      } else {
+        // 対応が取れない表（colspan あり、桁数不一致等）は従来どおり位置で突き合わせる
+        const n = Math.min(oc.length, nc.length);
+        for (let i = 0; i < n; i++){
+          const before = nc[i].outerHTML;
+          diffNode(oc[i], nc[i], tally, depth + 1);
+          if (nc[i].outerHTML !== before) changed = true;
+        }
+        for (let i = n; i < nc.length; i++){ markInserted(nc[i], tally); changed = true; }
+        if (oc.length > nc.length) changed = true; // 減った列は印のみ（セルは消さない）
+      }
+
+      if (changed) newTr.setAttribute('data-diff-row', 'changed');
+    }
+
+    const visitedPairs = new WeakMap();
+
+    function diffNode(oldEl, newEl, tally, depth){
+      depth = depth || 0;
+      if (depth > MAX_DIFF_DEPTH) return;
+      let seen = visitedPairs.get(oldEl);
+      if (!seen){ seen = new WeakSet(); visitedPairs.set(oldEl, seen); }
+      if (seen.has(newEl)) return;
+      seen.add(newEl);
+
+      // 0. 属性の変化（テキストが同じでも意味や見た目が変わるため先に見る）
+      diffAttributes(oldEl, newEl, tally);
+
+      // 1. この要素自身が直接持つインラインテキスト
+      // ownText は入れ子のブロックで止まるだけで、インラインの子孫（span など）の
+      // テキストは含む。そのためここで差分を付けたあとに同じ子要素をもう一度
+      // 要素として突き合わせると、1 つの変更が二重に描かれる。実際に
+      // <td><span class="badge">故障中</span></td> が
+      // <del>故障中</del> ＋ ins のバッジ ＋ del のバッジ の 3 つになっていた。
+      // テキスト差分を付けた場合は、インラインの子は下の突き合わせから外す。
+      let ownTextEdited = false;
+      if (ownText(oldEl).trim() || ownText(newEl).trim()) ownTextEdited = diffOwnText(oldEl, newEl, tally);
+
+      // 1b. インラインの子は下の突き合わせから外すが、属性の変化だけは拾っておく。
+      // 外したままだと、テキストも一緒に変わったリンクや <time> で href や datetime の
+      // 変更が落ちる。並びと種類が一致するときだけ、同じ位置どうしを見る。
+      if (ownTextEdited){
+        const oldInline = [], newInline = [];
+        for (let c = oldEl.firstElementChild; c; c = c.nextElementSibling)
+          if (!isBlockEl(c) && c.tagName !== 'SCRIPT' && c.tagName !== 'STYLE') oldInline.push(c);
+        for (let c = newEl.firstElementChild; c; c = c.nextElementSibling)
+          if (!isBlockEl(c) && c.tagName !== 'SCRIPT' && c.tagName !== 'STYLE'
+              && !c.hasAttribute('data-diff') && !c.hasAttribute('data-diff-block')) newInline.push(c);
+        if (oldInline.length === newInline.length)
+          for (let i = 0; i < oldInline.length; i++)
+            if (oldInline[i].tagName === newInline[i].tagName) diffAttributes(oldInline[i], newInline[i], tally);
+      }
+
+      // 2. 表の行はセル単位で位置合わせする（セル数は絶対に変えない）
+      if (oldEl.tagName === 'TR' && newEl.tagName === 'TR'){
+        diffTableRow(oldEl, newEl, tally, depth);
+        return;
+      }
+
+      // 3. それ以外は子要素列を突き合わせる
+      const oldKids = diffableChildren(oldEl, ownTextEdited);
+      const newKids = diffableChildren(newEl, ownTextEdited);
+      if (!oldKids.length && !newKids.length) return;
+      if (!oldKids.length){ for (const k of newKids) markInserted(k, tally); return; }
+      if (!newKids.length){ for (const k of oldKids) insertDeletedChild(newEl, k, null, tally); return; }
+
+      const ops = diffSeq(oldKids.map(childKey), newKids.map(childKey), 20000);
+      if (!ops){ // 大きすぎる場合は位置合わせで妥協
+        const m = Math.min(oldKids.length, newKids.length);
+        for (let i = 0; i < m; i++) diffNode(oldKids[i], newKids[i], tally, depth + 1);
+        for (let i = m; i < newKids.length; i++) markInserted(newKids[i], tally);
+        for (let i = m; i < oldKids.length; i++) insertDeletedChild(newEl, oldKids[i], null, tally);
+        return;
+      }
+
+      // ラン単位で即決せず、この親の下の全ランを集めてからまとめて解決する
+      const groups = [];
+      let oi = 0, ni = 0, i = 0;
+      while (i < ops.length){
+        const op = ops[i];
+        if (op.op === 0){
+          for (let k = 0; k < op.items.length; k++, oi++, ni++) diffNode(oldKids[oi], newKids[ni], tally, depth + 1);
+          i++; continue;
+        }
+        let delRun = [], insRun = [];
+        if (op.op === -1){
+          delRun = oldKids.slice(oi, oi + op.items.length); oi += op.items.length; i++;
+          if (i < ops.length && ops[i].op === 1){ insRun = newKids.slice(ni, ni + ops[i].items.length); ni += ops[i].items.length; i++; }
+        } else {
+          insRun = newKids.slice(ni, ni + op.items.length); ni += op.items.length; i++;
+          if (i < ops.length && ops[i].op === -1){ delRun = oldKids.slice(oi, oi + ops[i].items.length); oi += ops[i].items.length; i++; }
+        }
+        // 削除分を戻す位置の手掛かり = 次に残っている新DOM側の子
+        groups.push({ del: delRun, ins: insRun, before: newKids[ni] || null });
+      }
+      if (groups.length) resolveGroups(newEl, groups, tally, depth);
+    }
+
+    /* ---------- 7. ドキュメント全体 ---------- */
+
+    // 最後の掃除。列対応を通らない経路（丸ごと追加された行など）でも表が長方形で
+    // あることを保証する。桁が揃っていないと、どこが変わったか以前に表が読めなく
+    // なるため、原因側の修正とは別に構造として担保しておく。
+    // colspan / rowspan のある表は列と index が 1:1 でないので触らない。
+    function normalizeTables(doc){
+      const tables = doc.querySelectorAll('table');
+      for (const t of tables){
+        // querySelectorAll('tr') は入れ子の表の行まで拾う。それを自分の行だと思って
+        // 桁を揃えると、セルの中に置いた表が外側の桁まで水増しされて壊れる。
+        const rows = Array.from(t.querySelectorAll('tr')).filter(r => r.closest('table') === t);
+        if (!rows.length) continue;
+        if (rows.some(hasSpans)) continue;
+        const widths = rows.map(r => r.children.length);
+        const max = Math.max.apply(null, widths);
+        for (let i = 0; i < rows.length; i++){
+          for (let k = widths[i]; k < max; k++){
+            const first = rows[i].firstElementChild;
+            const pad = doc.createElement(first && first.tagName === 'TH' ? 'th' : 'td');
+            pad.setAttribute('data-diff-pad', '');
+            rows[i].appendChild(pad);
+          }
+        }
+      }
+    }
+
+    function buildDiff(oldDoc, newDoc){
+      const tally = {add:0, del:0, blocks:0, attrs:0};
+      diffNode(oldDoc.body, newDoc.body, tally, 0);
+      normalizeTables(newDoc);
+      return tally;
+    }
+
+    function orphanBin(doc){
+      let bin = doc.getElementById('__diff_removed__');
+      if (!bin){
+        bin = doc.createElement('div');
+        bin.id = '__diff_removed__';
+        bin.setAttribute('data-diff-block', 'del');
+        const h = doc.createElement('p');
+        h.textContent = '── 新版で削除され、挿入位置を特定できなかったブロック ──';
+        bin.appendChild(h);
+        doc.body.appendChild(bin);
+      }
+      return bin;
+    }
+
+    /* ---------- 8. 差分表示用スタイル ---------- */
+    const DIFF_CSS = `
+/* 追加は緑、削除は赤の 2 色だけで通す。文字単位でもブロックでも同じ色相を使い、
+   濃さと枠線の有無で粒度を表す。以前は追加 .14 / 削除 .12 と薄すぎたうえに
+   削除ブロックだけ opacity:.75 でさらに褪せており、貼り付けたページ自体の
+   淡い配色に埋もれて追加と削除を取り違えやすかった。 */
+ins[data-diff="ins"]{
+  background:rgba(26,159,71,.38); color:inherit; text-decoration:none; border-radius:2px;
+}
+del[data-diff="del"]{
+  background:rgba(229,50,45,.36); color:inherit; text-decoration:none; border-radius:2px;
+}
+[data-diff-block="ins"]{ background:rgba(26,159,71,.38) !important; }
+[data-diff-block="del"]{ background:rgba(229,50,45,.36) !important; }
+/* SVG の中身は background が効かないので、ここだけ枠線で示す。fill を上書きすると
+   図そのものの色を壊してしまうため、輪郭を足すのが一番害が少ない。
+   これが無いと、図形が増減しても画面上は何も変わらなかった。 */
+svg [data-diff-block="ins"]{ outline:2px solid rgba(26,159,71,.95); outline-offset:1px; }
+svg [data-diff-block="del"]{ outline:2px solid rgba(229,50,45,.95); outline-offset:1px; }
+svg [data-diff-attr]{ outline:2px dashed rgba(26,159,71,.8); outline-offset:1px; }
+td[data-diff-pad], th[data-diff-pad]{ background:transparent; }
+a[data-diff-nolink]{ cursor: default; }
+/* 属性やタグだけが変わった要素。新しい状態になったという意味で追加と同じ緑を使い、
+   薄く塗ることで「丸ごと追加された」ものと区別する。 */
+[data-diff-attr]{ background:rgba(26,159,71,.15) !important; }
+#__diff_removed__{ margin-top:2rem; padding:1rem; }
+/* 差分のみ表示のときの目印。ブロックと属性は自前の緑/赤の枠を持っているので、
+   ここで上書きしないよう data-diff-row（中に文字単位の変更がある要素）だけに絞る。 */
+.diff-only [data-diff-row]:not([data-diff-block]):not([data-diff-attr]){ outline:1px dashed rgba(195,154,95,.55); outline-offset:2px; }
+.diff-only tr:not([data-diff-row]):not([data-diff-block]):not([data-diff-attr]),
+.diff-only li:not([data-diff-row]):not([data-diff-block]):not([data-diff-attr]),
+.diff-only p:not([data-diff-row]):not([data-diff-block]):not([data-diff-attr]),
+.diff-only pre:not([data-diff-row]):not([data-diff-block]):not([data-diff-attr]),
+.diff-only blockquote:not([data-diff-row]):not([data-diff-block]):not([data-diff-attr]){ display:none; }
+.diff-flash{ animation:diffFlash .8s ease-out; }
+@keyframes diffFlash{ 0%{filter:brightness(1)} 35%{filter:brightness(2.1)} 100%{filter:brightness(1)} }
+@media (prefers-reduced-motion:reduce){ .diff-flash{ animation:none; outline:2px solid #c39a5f } }
+`;
+    /* ===================== end ported rich-html-diff engine ===================== */
+
     const THEMES = {
       'vs-dark': {
         css: { '--bg-main': '#1e1e1e', '--bg-panel': '#252526', '--border-color': '#3c3c3c', '--text-main': '#cccccc', '--text-muted': '#858585' },
@@ -332,7 +1316,8 @@
     let beforeFocused = false;
     let afterFocused = false;
     let isInlineView = false;
-    let isRichDiffView = false; 
+    let isRichDiffView = false;
+    let richViewMode = null; // 'markdown' | 'html' | null — どちらの Rich View が開いているか（未オープン時は null）
 
     const showToast = (msg) => {
       const t = document.getElementById('toast');
@@ -351,7 +1336,8 @@
           b: beforeModel.getValue(),
           a: afterModel.getValue(),
           l: document.getElementById('langSelect').value,
-          m: isRichDiffView
+          m: isRichDiffView,
+          vm: richViewMode
         }));
       } catch (e) {}
     }
@@ -380,9 +1366,12 @@
           monaco.editor.setModelLanguage(afterModel, d.l);
         }
         if (d.m) {
+          // vm が無い古いペイロードは、復元後の言語が html なら 'html'、それ以外は 'markdown' とみなす。
+          const mode = d.vm || (d.l === 'html' ? 'html' : 'markdown');
           setTimeout(() => {
-            const btn = document.getElementById('richDiffBtn');
-            if (btn && !isRichDiffView) btn.click();
+            if (isRichDiffView) return;
+            const btn = document.getElementById(mode === 'html' ? 'htmlViewBtn' : 'richDiffBtn');
+            if (btn) btn.click();
           }, 150);
         }
       } catch (e) {}
@@ -636,10 +1625,12 @@
         saveAutoSave();
       });
 
-      // ========== 👁️ Markdown View 機能 ==========
+      // ========== 👁️ Markdown View / HTML View 機能 ==========
       const richDiffBtn = document.getElementById('richDiffBtn');
+      const htmlViewBtn = document.getElementById('htmlViewBtn');
       const diffEditorContainer = document.getElementById('diffEditor');
       const richDiffViewer = document.getElementById('richDiffViewer');
+      const htmlDiffFrame = document.getElementById('htmlDiffFrame');
       const changeActionsContainer = document.getElementById('changeActions');
       const jumpControls = document.querySelector('.jump-controls');
 
@@ -648,18 +1639,22 @@
         diffEditorContainer.style.position = '';
         diffEditorContainer.style.left = '';
         diffEditorContainer.style.visibility = '';
-        
+
         richDiffViewer.style.display = 'none';
-        
+        htmlDiffFrame.style.display = 'none';
+        htmlDiffFrame.removeAttribute('srcdoc');
+
         if (typeof mdResizers !== 'undefined') {
           mdResizers.forEach(r => r.style.display = 'none');
         }
-        
+
         changeActionsContainer.style.display = 'block';
         if (jumpControls) jumpControls.style.display = isInlineView ? 'none' : 'flex';
         richDiffBtn.classList.remove('active');
+        htmlViewBtn.classList.remove('active');
         isRichDiffView = false;
-        
+        richViewMode = null;
+
         // 念のためレイアウト再計算
         if (typeof diffEditor !== 'undefined' && diffEditor) {
           diffEditor.layout();
@@ -669,42 +1664,180 @@
         saveAutoSave();
       };
 
-      richDiffBtn.addEventListener('click', () => {
-        if (!isRichDiffView) {
-          try {
-            const bText = beforeModel.getValue();
-            const aText = afterModel.getValue();
-            
-            const bHtml = marked.parse(bText);
-            const aHtml = marked.parse(aText);
-            
-            if (typeof HtmlDiff === 'undefined') throw new Error("HtmlDiff library is missing");
-            const diffedHtml = HtmlDiff.execute(bHtml, aHtml);
+      // 貼り付けた HTML の生 BEFORE/AFTER テキストに対して、ported された
+      // rich-html-diff エンジン (buildDiff / DIFF_CSS ほか) を実行し、
+      // htmlDiffFrame の srcdoc として結果ドキュメントを組み立てる。
+      // 計測用の隠し iframe に HTML を描画して、CSS が解決された document を得る。
+      // sandbox は 'allow-same-origin' のみ: 親から contentDocument /
+      // getComputedStyle を読む必要がある一方、貼り付けたページのスクリプトは
+      // この計測用フレームでは絶対に実行させない（実行するのは表示用フレームだけ）。
+      // sandbox="" にすると不透明オリジンになり contentDocument が読めなくなる。
+      function stageDocument(html) {
+        return new Promise((resolve, reject) => {
+          const f = document.createElement('iframe');
+          f.setAttribute('sandbox', 'allow-same-origin');
+          f.setAttribute('aria-hidden', 'true');
+          f.setAttribute('tabindex', '-1');
+          f.style.cssText = 'position:absolute;left:-99999px;top:0;width:1200px;height:800px;border:0;visibility:hidden;';
+          // srcdoc は DOM 挿入より前に設定する。挿入してから設定すると、挿入時の
+          // about:blank ロードで load イベントが先に発火し、中身が空のドキュメントを
+          // つかんでしまう（実際にそれで出力が 1.3KB に欠落した）。
+          f.srcdoc = html;
 
-            if (typeof DOMPurify === 'undefined') throw new Error("DOMPurify library is missing");
-            richDiffViewer.innerHTML = DOMPurify.sanitize(diffedHtml);
-            
-            // Monacoエディタを display: none で隠さず、絶対配置で画面外へ退避させる
-            diffEditorContainer.style.position = 'absolute';
-            diffEditorContainer.style.left = '-9999px';
-            diffEditorContainer.style.visibility = 'hidden';
-            
-            changeActionsContainer.style.display = 'none';
-            if (jumpControls) jumpControls.style.display = 'none';
-            richDiffViewer.style.display = 'block';
-            mdResizers.forEach(r => r.style.display = 'flex');
-            
-            richDiffBtn.classList.add('active');
-            isRichDiffView = true;
-            saveAutoSave();
-          } catch (error) {
-            console.error("Markdown View Render Error:", error);
-            restoreMonacoView();
-            showToast('⚠️ Markdown Viewの生成に失敗しました');
-          }
-        } else {
-          restoreMonacoView();
+          const wantsContent = !!(html && html.trim());
+          const deadline = Date.now() + 8000;
+          const ready = () => {
+            const doc = f.contentDocument;
+            if (!doc || doc.readyState !== 'complete' || !doc.body) return false;
+            // 中身があるはずなのに空なら、まだ about:blank 段階と判断して待つ
+            return !wantsContent || doc.body.children.length > 0 || !!doc.body.textContent.trim();
+          };
+          const poll = () => {
+            if (ready()) { resolve({ frame: f, doc: f.contentDocument }); return; }
+            if (!f.contentDocument) { removeStage(f); reject(new Error('staged document is not readable')); return; }
+            if (Date.now() > deadline) { removeStage(f); reject(new Error('staging timed out')); return; }
+            setTimeout(poll, 16);
+          };
+          document.body.appendChild(f);
+          poll();
+        });
+      }
+      function removeStage(f) { if (f && f.parentNode) f.parentNode.removeChild(f); }
+
+      async function renderHtmlDiffDocument(bText, aText) {
+        let oldStage = null, newStage = null;
+        try {
+          oldStage = await stageDocument(bText);
+          newStage = await stageDocument(aText);
+          const oldDoc = oldStage.doc, newDoc = newStage.doc;
+
+          boundaryEls = new Set();
+          classifiedDocs = new Set();
+          classifyBlockBoundaries(oldDoc);
+          classifyBlockBoundaries(newDoc);
+
+          return buildHtmlDiffOutput(oldDoc, newDoc);
+        } finally {
+          boundaryEls = null;
+          classifiedDocs = null;
+          removeStage(oldStage && oldStage.frame);
+          removeStage(newStage && newStage.frame);
         }
+      }
+
+      function buildHtmlDiffOutput(oldDoc, newDoc) {
+        buildDiff(oldDoc, newDoc);
+
+        // about:srcdoc ドキュメントは親ページ（このツール自身）の base URL を継承するため、
+        // href="#section" のようなフラグメントのみのリンクをクリックすると
+        // <このツールの URL>#section に解決されてしまい、iframe がツール自身を丸ごと
+        // 読み込んで差分表示が壊れる（実機で確認済み）。srcdoc はそのまま使い続けたいので、
+        // フラグメントのみのリンクは href を外して data-diff-nolink に退避し無害化する。
+        // 絶対 URL の外部リンクなどはそのまま残し、従来どおり新しいタブで開けるようにする。
+        newDoc.querySelectorAll('a[href]').forEach(a => {
+          const h = a.getAttribute('href');
+          if (h && h.trim().charAt(0) === '#') { a.setAttribute('data-diff-nolink', h); a.removeAttribute('href'); }
+        });
+
+        const styleEl = newDoc.createElement('style');
+        styleEl.textContent = DIFF_CSS;
+        newDoc.head.appendChild(styleEl);
+
+        return '<!DOCTYPE html>\n' + newDoc.documentElement.outerHTML;
+      }
+
+      // ---- Markdown View を開く (marked.parse → HtmlDiff.execute → DOMPurify.sanitize は不変) ----
+      function openMarkdownView() {
+        try {
+          const bText = beforeModel.getValue();
+          const aText = afterModel.getValue();
+
+          const bHtml = marked.parse(bText);
+          const aHtml = marked.parse(aText);
+
+          if (typeof HtmlDiff === 'undefined') throw new Error("HtmlDiff library is missing");
+          const diffedHtml = HtmlDiff.execute(bHtml, aHtml);
+
+          if (typeof DOMPurify === 'undefined') throw new Error("DOMPurify library is missing");
+          richDiffViewer.innerHTML = DOMPurify.sanitize(diffedHtml);
+
+          // Monacoエディタを display: none で隠さず、絶対配置で画面外へ退避させる
+          diffEditorContainer.style.position = 'absolute';
+          diffEditorContainer.style.left = '-9999px';
+          diffEditorContainer.style.visibility = 'hidden';
+
+          changeActionsContainer.style.display = 'none';
+          if (jumpControls) jumpControls.style.display = 'none';
+          htmlDiffFrame.style.display = 'none';
+          htmlDiffFrame.removeAttribute('srcdoc');
+          richDiffViewer.style.display = 'block';
+          mdResizers.forEach(r => r.style.display = 'flex');
+
+          richDiffBtn.classList.add('active');
+          htmlViewBtn.classList.remove('active');
+          isRichDiffView = true;
+          richViewMode = 'markdown';
+          saveAutoSave();
+        } catch (error) {
+          console.error("Markdown View Render Error:", error);
+          restoreMonacoView();
+          showToast('⚠️ Markdown Viewの生成に失敗しました');
+        }
+      }
+
+      // ---- HTML View を開く (ported rich-html-diff engine) ----
+      let htmlRenderSeq = 0;
+      async function openHtmlView() {
+        const bText = beforeModel.getValue();
+        const aText = afterModel.getValue();
+
+        // サニティチェック: AFTER テキストが要素を一切含まない（HTML として解釈できる
+        // ものが何もない）場合だけは View を開かず Monaco 表示のままにする。断片的・
+        // 崩れた HTML はブラウザが自動補正するのでそのまま許容する。
+        const sanityDoc = new DOMParser().parseFromString(aText, 'text/html');
+        if (!sanityDoc.body || sanityDoc.body.children.length === 0) {
+          showToast('⚠️ HTML として解釈できる要素がありません');
+          return;
+        }
+
+        try {
+          // 描画待ちが入るため非同期。連続クリック時は最後の要求だけを反映する。
+          const seq = ++htmlRenderSeq;
+          const docHtml = await renderHtmlDiffDocument(bText, aText);
+          if (seq !== htmlRenderSeq) return;
+          htmlDiffFrame.srcdoc = docHtml;
+
+          // Monacoエディタを display: none で隠さず、絶対配置で画面外へ退避させる
+          diffEditorContainer.style.position = 'absolute';
+          diffEditorContainer.style.left = '-9999px';
+          diffEditorContainer.style.visibility = 'hidden';
+
+          changeActionsContainer.style.display = 'none';
+          if (jumpControls) jumpControls.style.display = 'none';
+          richDiffViewer.style.display = 'none';
+          mdResizers.forEach(r => r.style.display = 'none');
+          htmlDiffFrame.style.display = 'block';
+
+          htmlViewBtn.classList.add('active');
+          richDiffBtn.classList.remove('active');
+          isRichDiffView = true;
+          richViewMode = 'html';
+          saveAutoSave();
+        } catch (error) {
+          console.error("HTML View Render Error:", error);
+          restoreMonacoView();
+          showToast('⚠️ HTML Viewの生成に失敗しました');
+        }
+      }
+
+      richDiffBtn.addEventListener('click', () => {
+        if (isRichDiffView && richViewMode === 'markdown') { restoreMonacoView(); return; }
+        openMarkdownView();
+      });
+
+      htmlViewBtn.addEventListener('click', () => {
+        if (isRichDiffView && richViewMode === 'html') { restoreMonacoView(); return; }
+        openHtmlView();
       });
       // ==============================================================
 
@@ -789,11 +1922,12 @@
       btn.style.pointerEvents = 'none';
 
       const lang = document.getElementById('langSelect').value;
-      const data = JSON.stringify({ 
-        b: beforeModel.getValue(), 
-        a: afterModel.getValue(), 
-        l: lang, 
-        m: isRichDiffView 
+      const data = JSON.stringify({
+        b: beforeModel.getValue(),
+        a: afterModel.getValue(),
+        l: lang,
+        m: isRichDiffView,
+        vm: richViewMode
       });
 
       LZMA.compress(data, 9, function(result, error) {
@@ -847,11 +1981,14 @@
                 document.getElementById('langSelect').value = d.l;
                 monaco.editor.setModelLanguage(beforeModel, d.l); monaco.editor.setModelLanguage(afterModel, d.l);
               }
-              
+
               if (d.m) {
+                // vm が無い古いペイロードは、復元後の言語が html なら 'html'、それ以外は 'markdown' とみなす。
+                const mode = d.vm || (d.l === 'html' ? 'html' : 'markdown');
                 setTimeout(() => {
-                  const btn = document.getElementById('richDiffBtn');
-                  if (btn && !isRichDiffView) btn.click();
+                  if (isRichDiffView) return;
+                  const btn = document.getElementById(mode === 'html' ? 'htmlViewBtn' : 'richDiffBtn');
+                  if (btn) btn.click();
                 }, 150);
               }
             } catch (e) {}
