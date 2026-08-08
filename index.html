@@ -316,8 +316,14 @@
           （取り消し線を出さず、色/背景のみで削除箇所を示す）。
        3. [data-diff-block="del"] * { text-decoration:line-through; } ルールを削除。
        4. [data-diff-block="ins"/"del"] の box-shadow（変更ブロック左端の色バー）を削除。
-       5. a[data-diff-nolink]{ cursor:default; } を追加
-          （renderHtmlDiffDocument() 側でのフラグメントリンク無害化と対）。
+       5. a[data-diff-nolink]{ cursor:pointer; } を追加
+          （renderHtmlDiffDocument() 側でのフラグメントリンク無害化と対。href は
+          外したままだが ANCHOR_SCRIPT でクリックを拾ってスクロールさせるため、
+          見た目もクリック可能に戻している）。
+       6. マーカー色を DIFF_CSS という固定値ではなく buildDiffCss(base) の
+          関数呼び出しに変更。半透明色のままだと祖先要素の背景と合成されて
+          文書ごとに実効色がばらつくため、buildHtmlDiffOutput() が
+          resolveDiffBase() で求めた地の色の上に焼き込んだ不透明色を都度使う。
        ======================================================================= */
     /* =======================================================================
        Rich HTML Diff — core
@@ -560,6 +566,7 @@
     // 「CP：JSM / JCPアクセス顧客ごとのテナント単位サービスアカウント化切り替え」
     // という読めない 1 行になっていた。見出しだけは早めに旧／新の並置へ切り替える。
     const HEADING_REPLACE_RATIO = 0.3;
+    const CELL_REPLACE_RATIO = 0.2;
     const HEADING_TAGS = new Set(['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'DT', 'CAPTION', 'LEGEND', 'SUMMARY']);
 
     // 旧要素の見た目を保った削除表示用クローンを作る。ブロックの子要素は
@@ -605,6 +612,25 @@
       const parent = newEl.parentNode;
       const canSplit = parent && parent.nodeType === 1
         && canHold(parent.tagName, oldEl ? oldEl.tagName : newEl.tagName);
+      // 表のセルは短い値であることが多く、文字単位で混ぜると読めなくなる。
+      // 「60%以内」→「50%以内」が "6050%以内"、「$980」→「$1,180」が "$9801,180" の
+      // ように、旧値と新値が地続きの 1 語に見えてしまっていた。セルの中に旧値と
+      // 新値を並べて置き、色で読み分けられるようにする。兄弟セルを増やすと行の桁が
+      // 崩れるので、置き換えは必ずセルの内側で完結させる。
+      // 閾値を低くできるのは、セルはトークン数が少なく、少しの変更でも変化率が
+      // 大きく出るため。長い文が入ったセルは従来どおり文字単位で混ぜる。
+      const plainCell = (newEl.tagName === 'TD' || newEl.tagName === 'TH')
+        && !newEl.firstElementChild && oldEl && !oldEl.firstElementChild;
+      if (plainCell && oldToks.length && newToks.length && totalToks > 0
+          && changedToks / totalToks > CELL_REPLACE_RATIO){
+        const doc = newEl.ownerDocument;
+        const d = doc.createElement('del'); d.dataset.diff = 'del'; d.textContent = oldText;
+        const i = doc.createElement('ins'); i.dataset.diff = 'ins'; i.textContent = newText;
+        newEl.textContent = '';
+        newEl.appendChild(d); newEl.appendChild(i);
+        tally.del += oldText.length; tally.add += newText.length; tally.blocks++;
+        return true;
+      }
       const ratio = HEADING_TAGS.has(newEl.tagName) ? HEADING_REPLACE_RATIO : REPLACE_RATIO;
       if (canSplit && oldToks.length && newToks.length && totalToks > 0
           && changedToks / totalToks > ratio){
@@ -643,7 +669,8 @@
     // 「見た目や意味は変わったがテキストは同じ」変更が丸ごと消えていた。
     // 自分たちが付けた診断用属性は比較対象から除く。
     const DIFF_OWN_ATTRS = new Set([
-      'data-diff', 'data-diff-block', 'data-diff-row', 'data-diff-attr', 'data-diff-nolink', 'data-diff-pad'
+      'data-diff', 'data-diff-block', 'data-diff-row', 'data-diff-attr', 'data-diff-nolink', 'data-diff-pad',
+      'data-diff-old-id'
     ]);
 
     function attrMap(el){
@@ -769,9 +796,15 @@
     // 見出しレベルの上げ下げ（h3 -> h2）や箇条書きの種類変更（ul -> ol）は、
     // 「同じ要素の書式が変わった」だけで別物ではない。タグ名の完全一致を求めると
     // 必ず非ペアになり、中身が同一のリストが丸ごと削除＋追加として二重に出ていた。
+    // 太字・斜体は要素としては別物だが、文書の差分としては「同じ語句の書式が
+    // 変わった」でしかない。別扱いのままだと、見える文字がまったく同じなのに
+    // 同じ語句が赤と緑で 2 回出ていた（<i> -> <em>、<b> -> <strong> など）。
+    // <ins> / <del> は自分たちが印付けに使う要素なので、族には加えない。
     const TAG_FAMILY = {
       H1: 'heading', H2: 'heading', H3: 'heading', H4: 'heading', H5: 'heading', H6: 'heading',
-      UL: 'list', OL: 'list'
+      UL: 'list', OL: 'list',
+      B: 'bold', STRONG: 'bold',
+      I: 'italic', EM: 'italic'
     };
     function sameTagFamily(a, b){
       if (a.tagName === b.tagName) return true;
@@ -779,8 +812,46 @@
       return !!fa && fa === TAG_FAMILY[b.tagName];
     }
 
+    // 表の行は、列が増減していると「消えた列の値」と「増えた列の値」が全文比較に
+    // 混ざり、識別テキスト（最初のセル）も先頭に列が入るだけでずれるため、
+    // 中身の変わっていない行まで別物に見えてしまう。実測では、先頭に列を 1 本
+    // 足すだけで行が丸ごと削除＋追加に割れていた。
+    // 両方の表に残っている列だけを突き合わせて判断する。
+    function rowPairTexts(oldTr, newTr){
+      if (hasSpans(oldTr) || hasSpans(newTr)) return null;
+      const oldTable = oldTr.closest('table'), newTable = newTr.closest('table');
+      if (!oldTable || !newTable) return null;
+      const cm = columnMap(oldTable, newTable);
+      if (!cm) return null;
+      // 印を付ける前の生のセル列。cellsOf は印付きセルを除くので使わない。
+      const raw = tr => {
+        const out = [];
+        for (let c = tr.firstElementChild; c; c = c.nextElementSibling)
+          if (c.tagName === 'TD' || c.tagName === 'TH') out.push(c);
+        return out;
+      };
+      const ca = raw(oldTr), cb = raw(newTr);
+      const ta = [], tb = [];
+      for (const col of cm.cols){
+        if (col.o < 0 || col.n < 0) continue;
+        if (!ca[col.o] || !cb[col.n]) continue;
+        ta.push(norm(ca[col.o].textContent));
+        tb.push(norm(cb[col.n].textContent));
+      }
+      if (!ta.length) return null;
+      return { ia: ta[0], ib: tb[0], fa: ta.join(' '), fb: tb.join(' ') };
+    }
+
     function nodeSimilarity(a, b){
       if (!sameTagFamily(a, b)) return 0;
+      // 表の行どうしは、両方の表に残っている列だけで識別テキストと全文重なりを
+      // 数える。列が増減していない表では残る列＝全列になるので、下の一般ロジック
+      // とほぼ同じ計算になり、既存の挙動（似た行の中から正しい 1 行を選ぶ、値が
+      // 総取り換えされた行は対にしない等）はそのまま保たれる。
+      if (a.tagName === 'TR' && b.tagName === 'TR'){
+        const r = rowPairTexts(a, b);
+        if (r) return 0.5 * identityOverlap(r.ia, r.ib) + 0.5 * tokenOverlap(r.fa, r.fb);
+      }
       const full = tokenOverlap(norm(a.textContent), norm(b.textContent));
       const ia = identityText(a), ib = identityText(b);
       // 識別テキストが取れない（全文と同じ）要素は従来どおり全文だけで判定する
@@ -814,8 +885,63 @@
       return r ? r.test(childTag) : true;
     }
 
-    // 削除された子要素を、新DOMの同じ親の中の相当位置へ戻す
+    // newParent の子孫から、その文字列をまるごと含むテキストノードを探す。
+    // 「囲んでいた要素が外れただけ」の判定に使うので、既に印の付いた要素
+    // （削除済みの複製など）の中は対象外にする。1 つに絞れないときは
+    // 位置を特定できないとみなし、呼び出し側で複製の抑止だけ行う。
+    function findUnwrapTarget(newParent, needle){
+      const hits = [];
+      const walk = node => {
+        for (let c = node.firstChild; c; c = c.nextSibling){
+          if (c.nodeType === 3){ if (c.data.indexOf(needle) >= 0) hits.push(c); }
+          else if (c.nodeType === 1){
+            if (c.hasAttribute('data-diff') || c.hasAttribute('data-diff-block')) continue;
+            walk(c);
+          }
+        }
+      };
+      walk(newParent);
+      return hits.length === 1 ? hits[0] : null;
+    }
+
+    // 見つけたテキストノードから語句だけを splitText で切り出し、書式が変わった
+    // 印を付ける。手順は wrapRange と同じで、後ろを先に切ってから前を切ることで
+    // 途中の splitText によるオフセットのずれを避けている。
+    function markUnwrapped(hitText, needle){
+      const idx = hitText.data.indexOf(needle);
+      let node = hitText;
+      if (idx + needle.length < node.data.length) node.splitText(idx + needle.length);
+      if (idx > 0) node = node.splitText(idx);
+      const span = node.ownerDocument.createElement('span');
+      span.setAttribute('data-diff-attr', 'tagName');
+      node.parentNode.insertBefore(span, node);
+      span.appendChild(node);
+    }
+
+    // 削除された子要素を、新DOMの同じ親の中の相当位置へ戻す。
+    // resolveGroups の 3) と、diffNode で子要素の対応相手が新側に 1 つも無い
+    // ケースの両方がここを通る一本道になっている。
     function insertDeletedChild(newParent, oldKid, beforeNode, tally){
+      // 中身が消えたのではなく、囲んでいた要素だけが外れて地の文に戻っただけの
+      // 可能性を見る。<strong>重要な指摘の一文</strong> の <strong> が外れて
+      // 地の文になっただけなのに、この語句は子要素どうしの対応づけでは相手が
+      // 見つからず削除扱いになり、しかも置き場所も無いので段落の末尾に赤で
+      // 複製されていた。文言はちゃんと残っているのに「削除された」と見えるのは
+      // 紛らわしいだけでなく事実と食い違うため、判定は保守的に次の条件だけで行う:
+      // インライン要素で、子要素を持たず（純粋にテキストを包むだけ）、
+      // その文字列をまるごと含むテキストノードが新側に一意に見つかること。
+      if (!isBlockEl(oldKid) && !oldKid.firstElementChild){
+        const needle = norm(oldKid.textContent);
+        if (needle){
+          const hit = findUnwrapTarget(newParent, needle);
+          if (hit) markUnwrapped(hit, needle);
+          // 一意に特定できないときも、消えていない語句を削除の複製として見せる
+          // ことだけは避ける。何も表示されないより、誤って「削除された」と
+          // 見せないことを優先し、変わったことだけを親に残す。
+          else newParent.setAttribute('data-diff-row', 'changed');
+          return null; // 消えていないため tally.del は加算しない
+        }
+      }
       const clone = newParent.ownerDocument.importNode(oldKid, true);
       markDeleted(clone, tally);
       // oldKid は旧文書側の要素なので closest('table') は旧表を返す
@@ -1237,30 +1363,146 @@
     }
 
     /* ---------- 8. 差分表示用スタイル ---------- */
-    const DIFF_CSS = `
+    // マーカーは半透明のまま重ねると、実際に画面に出る色がその要素の背後にある
+    // 「貼り付けた文書自身の背景色」との合成結果になり、白地では狙った赤でも
+    // 淡い黄地ではサーモン、暗いコードブロックの上では茶色…と文書の中で色が
+    // 割れてしまう（同じ del が場所によって 3〜6 色に見えるという報告の原因）。
+    // 文書の「地の色」を 1 つ決め、その上に重ねた結果を不透明色として焼き込むことで、
+    // 文書のどこに置かれても同じ色になるようにする。
+    function resolveDiffBase(doc){
+      const win = doc.defaultView;
+      const parse = css => {
+        const m = /rgba?\(([^)]+)\)/.exec(css || '');
+        if (!m) return null;
+        const p = m[1].split(',').map(parseFloat);
+        const a = p.length > 3 ? p[3] : 1;
+        return a > 0 ? { r: p[0], g: p[1], b: p[2], a } : null;
+      };
+      let bg = null, text = null;
+      if (win){
+        for (const el of [doc.body, doc.documentElement]){
+          if (!el) continue;
+          let cs = null;
+          try { cs = win.getComputedStyle(el); } catch (e) { cs = null; }
+          if (!cs) continue;
+          if (!bg){ const c = parse(cs.backgroundColor); if (c && c.a === 1) bg = c; }
+          if (!text) text = parse(cs.color);
+        }
+      }
+      if (!text) text = { r: 17, g: 17, b: 17, a: 1 };
+      // 背景が画像やグラデーションだと単色として取り出せない。その場合は文字色の
+      // 明るさから、白い紙か黒い紙かだけを決める。
+      if (!bg){
+        const lum = 0.299 * text.r + 0.587 * text.g + 0.114 * text.b;
+        bg = lum > 140 ? { r: 26, g: 26, b: 26, a: 1 } : { r: 255, g: 255, b: 255, a: 1 };
+      }
+      return { bg, text };
+    }
+
+    // 半透明色 (r,g,b,a) を地の色の上に重ねた結果を #rrggbb で返す。
+    function flattenOver(r, g, b, a, base){
+      const ch = (f, k) => Math.round(a * f + (1 - a) * k);
+      return '#' + [ch(r, base.r), ch(g, base.g), ch(b, base.b)]
+        .map(v => Math.max(0, Math.min(255, v)).toString(16).padStart(2, '0')).join('');
+    }
+
+    // フラグメントリンクは buildHtmlDiffOutput() 側で href を外してあるので、
+    // そのままではどこにも飛べない。クリックを拾って自分でスクロールさせることで、
+    // srcdoc の base URL 問題を避けたまま目次や「ページ先頭へ」を使えるようにする。
+    // 表示用 iframe は sandbox="allow-scripts allow-popups" なので実行できる。
+    // 併せて、id を譲った削除ブロックが相手と一緒に出入りするようにする（後半参照）。
+    const ANCHOR_SCRIPT = `(function(){
+  function findTarget(raw){
+    var id = String(raw || '').replace(/^#/, '');
+    if (!id) return null;                     // href="#" は先頭へ
+    var dec = id;
+    try { dec = decodeURIComponent(id); } catch (e) {}
+    return document.getElementById(id) || document.getElementById(dec)
+        || document.getElementsByName(dec)[0] || document.getElementsByName(id)[0] || null;
+  }
+  document.addEventListener('click', function(e){
+    var el = e.target;
+    if (!el || !el.closest) return;
+    var a = el.closest('a[data-diff-nolink]');
+    if (!a) return;
+    e.preventDefault();
+    var raw = a.getAttribute('data-diff-nolink') || '';
+    var t = findTarget(raw);
+    if (!t){
+      if (raw === '#' || raw === '') window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+    t.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    t.classList.add('diff-flash');
+    setTimeout(function(){ t.classList.remove('diff-flash'); }, 900);
+  }, true);
+
+  // 削除ブロックのうち、id を新しい側に譲ったもの（data-diff-old-id）は、
+  // 貼り付けた文書自身のタブ切り替えから見えなくなる。タブを切り替える
+  // スクリプトは getElementById で「生き残った方」だけを表に出すため、
+  // 消えた方の内容が隠れたままになり、隠しパネルの差分が読めない。
+  // 相手の表示状態をそのまま真似させて、対で出入りするようにする。
+  var twins = [];
+  Array.prototype.forEach.call(document.querySelectorAll('[data-diff-old-id]'), function(dead){
+    var live = document.getElementById(dead.getAttribute('data-diff-old-id'));
+    if (live && live !== dead) twins.push([live, dead]);
+  });
+  if (twins.length){
+    // 値が変わるときだけ書き込む。同じ値でも書けば属性変更として観測され、
+    // MutationObserver が自分の書き込みで再び起動して止まらなくなる。
+    var sync = function(){
+      for (var i = 0; i < twins.length; i++){
+        var live = twins[i][0], dead = twins[i][1];
+        var shown = getComputedStyle(live).display !== 'none';
+        var want = shown ? (getComputedStyle(live).display || 'block') : 'none';
+        if (dead.style.display !== want) dead.style.display = want;
+      }
+    };
+    sync();
+    if (window.MutationObserver){
+      new MutationObserver(sync).observe(document.documentElement, {
+        attributes: true, subtree: true, attributeFilter: ['hidden', 'class', 'style']
+      });
+    }
+  }
+})();`;
+
+    // 地の色 base を受け取り、その上にマーカー色を焼き込んだ CSS を組み立てる。
+    // 濃さ（アルファ）は元の値のまま合成するので、白い文書での見た目は変わらない。
+    function buildDiffCss(base){
+      const INS = flattenOver(26, 159, 71, .38, base.bg);
+      const DEL = flattenOver(229, 50, 45, .36, base.bg);
+      const ATTR = flattenOver(26, 159, 71, .15, base.bg);
+      const TEXT = `rgb(${base.text.r},${base.text.g},${base.text.b})`;
+      return `
 /* 追加は緑、削除は赤の 2 色だけで通す。文字単位でもブロックでも同じ色相を使い、
    濃さと枠線の有無で粒度を表す。以前は追加 .14 / 削除 .12 と薄すぎたうえに
    削除ブロックだけ opacity:.75 でさらに褪せており、貼り付けたページ自体の
-   淡い配色に埋もれて追加と削除を取り違えやすかった。 */
+   淡い配色に埋もれて追加と削除を取り違えやすかった。
+   ここで使う INS/DEL/ATTR は resolveDiffBase() で求めた地の色の上に焼き込んだ
+   不透明色。文字色 TEXT もマーカーを付けた要素自身にだけ当てる。子孫には
+   強制しないので、自前の色を持たない子孫は継承して読める色になり、
+   シンタックスハイライトの span のような自前の色を持つ子孫はそのまま残る。 */
 ins[data-diff="ins"]{
-  background:rgba(26,159,71,.38); color:inherit; text-decoration:none; border-radius:2px;
+  background:${INS} !important; color:${TEXT} !important; text-decoration:none; border-radius:2px;
 }
 del[data-diff="del"]{
-  background:rgba(229,50,45,.36); color:inherit; text-decoration:none; border-radius:2px;
+  background:${DEL} !important; color:${TEXT} !important; text-decoration:none; border-radius:2px;
 }
-[data-diff-block="ins"]{ background:rgba(26,159,71,.38) !important; }
-[data-diff-block="del"]{ background:rgba(229,50,45,.36) !important; }
+[data-diff-block="ins"]{ background:${INS} !important; color:${TEXT} !important; }
+[data-diff-block="del"]{ background:${DEL} !important; color:${TEXT} !important; }
 /* SVG の中身は background が効かないので、ここだけ枠線で示す。fill を上書きすると
    図そのものの色を壊してしまうため、輪郭を足すのが一番害が少ない。
-   これが無いと、図形が増減しても画面上は何も変わらなかった。 */
-svg [data-diff-block="ins"]{ outline:2px solid rgba(26,159,71,.95); outline-offset:1px; }
-svg [data-diff-block="del"]{ outline:2px solid rgba(229,50,45,.95); outline-offset:1px; }
-svg [data-diff-attr]{ outline:2px dashed rgba(26,159,71,.8); outline-offset:1px; }
+   これが無いと、図形が増減しても画面上は何も変わらなかった。枠線はもともと
+   ほぼ不透明（.95/.8）だったので、合成せずそのまま単色にする。 */
+svg [data-diff-block="ins"]{ outline:2px solid rgb(26,159,71); outline-offset:1px; }
+svg [data-diff-block="del"]{ outline:2px solid rgb(229,50,45); outline-offset:1px; }
+svg [data-diff-attr]{ outline:2px dashed rgb(26,159,71); outline-offset:1px; }
 td[data-diff-pad], th[data-diff-pad]{ background:transparent; }
-a[data-diff-nolink]{ cursor: default; }
+a[data-diff-nolink]{ cursor: pointer; }
 /* 属性やタグだけが変わった要素。新しい状態になったという意味で追加と同じ緑を使い、
    薄く塗ることで「丸ごと追加された」ものと区別する。 */
-[data-diff-attr]{ background:rgba(26,159,71,.15) !important; }
+[data-diff-attr]{ background:${ATTR} !important; color:${TEXT} !important; }
 #__diff_removed__{ margin-top:2rem; padding:1rem; }
 /* 差分のみ表示のときの目印。ブロックと属性は自前の緑/赤の枠を持っているので、
    ここで上書きしないよう data-diff-row（中に文字単位の変更がある要素）だけに絞る。 */
@@ -1274,6 +1516,7 @@ a[data-diff-nolink]{ cursor: default; }
 @keyframes diffFlash{ 0%{filter:brightness(1)} 35%{filter:brightness(2.1)} 100%{filter:brightness(1)} }
 @media (prefers-reduced-motion:reduce){ .diff-flash{ animation:none; outline:2px solid #c39a5f } }
 `;
+    }
     /* ===================== end ported rich-html-diff engine ===================== */
 
     const THEMES = {
@@ -1728,6 +1971,31 @@ a[data-diff-nolink]{ cursor: default; }
       function buildHtmlDiffOutput(oldDoc, newDoc) {
         buildDiff(oldDoc, newDoc);
 
+        // 削除ブロックは古い DOM の複製なので id ごと持ち込む。新しい側に同じ id が
+        // 残っていると重複し、getElementById は文書順で先にある削除側を返してしまう
+        // （削除ブロックは対の直前に置かれる）。アンカーリンクも、貼り付けた文書自身の
+        // スクリプトも消えた方を掴むことになるので、生き残っている方を正として
+        // 削除側の id は data-diff-old-id に退避する。丸ごと削除された節（新しい側に
+        // 同じ id が無い）の id はそのまま残す ── そこへのリンクは削除ブロックに
+        // 飛ぶのが正しいので触らない。
+        const dead = el => !!el.closest('[data-diff-block="del"], #__diff_removed__');
+        const byId = new Map();
+        newDoc.querySelectorAll('[id]').forEach(el => {
+          const k = el.getAttribute('id');
+          if (!k) return;
+          if (!byId.has(k)) byId.set(k, []);
+          byId.get(k).push(el);
+        });
+        byId.forEach(list => {
+          if (list.length < 2) return;
+          const keep = list.find(el => !dead(el)) || list[0];
+          list.forEach(el => {
+            if (el === keep) return;
+            el.setAttribute('data-diff-old-id', el.getAttribute('id'));
+            el.removeAttribute('id');
+          });
+        });
+
         // about:srcdoc ドキュメントは親ページ（このツール自身）の base URL を継承するため、
         // href="#section" のようなフラグメントのみのリンクをクリックすると
         // <このツールの URL>#section に解決されてしまい、iframe がツール自身を丸ごと
@@ -1739,11 +2007,29 @@ a[data-diff-nolink]{ cursor: default; }
           if (h && h.trim().charAt(0) === '#') { a.setAttribute('data-diff-nolink', h); a.removeAttribute('href'); }
         });
 
+        // マーカー色は文書の地の色に焼き込んだ不透明色にする（DIFF_CSS 定義側のコメント参照）。
+        // ステージング用 iframe（sandbox="allow-same-origin"）はこの時点でまだ生きているので
+        // getComputedStyle が使える。
         const styleEl = newDoc.createElement('style');
-        styleEl.textContent = DIFF_CSS;
+        styleEl.textContent = buildDiffCss(resolveDiffBase(newDoc));
         newDoc.head.appendChild(styleEl);
 
-        return '<!DOCTYPE html>\n' + newDoc.documentElement.outerHTML;
+        // フラグメントリンクは href を外してあるだけでは押せないので、クリックを
+        // 拾ってスクロールさせる小さなスクリプトを埋め込む。表示用 iframe は
+        // sandbox="allow-scripts allow-popups" なので実行できるが、newDoc は
+        // まだ計測用のサンドボックス iframe（allow-scripts なし）に接続されたまま。
+        // ここへ <script> を appendChild すると、その場で実行を試みて sandbox に
+        // 止められコンソールにエラーが残ってしまう（最終的な見た目には影響しないが
+        // 無駄なエラーログになる）。要素は DOM に繋がずに outerHTML だけ文字列として
+        // 取り出し、シリアライズ済みの HTML に対して body の閉じタグの直前へ差し込む。
+        const navScript = newDoc.createElement('script');
+        navScript.textContent = ANCHOR_SCRIPT;
+
+        const html = '<!DOCTYPE html>\n' + newDoc.documentElement.outerHTML;
+        const bodyClose = '</' + 'body>';
+        const idx = html.lastIndexOf(bodyClose);
+        return idx < 0 ? html + navScript.outerHTML
+          : html.slice(0, idx) + navScript.outerHTML + html.slice(idx);
       }
 
       // ---- Markdown View を開く (marked.parse → HtmlDiff.execute → DOMPurify.sanitize は不変) ----
