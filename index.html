@@ -224,6 +224,8 @@
         <option value="java">Java</option>
         <option value="sql">SQL</option>
       </select>
+      <!-- サーバ読み込み（?token=）でファイルが複数あるときだけ script 側が表示する切り替え -->
+      <select id="fileSelect" class="theme-select" style="margin-left: 8px; display: none;" title="表示するファイルを切り替え"></select>
       <select id="fontSizeSelect" class="theme-select" style="margin-left: 8px;">
         <option value="11">11px</option>
         <option value="12">12px</option>
@@ -2189,7 +2191,19 @@ a[data-diff-nolink]{ cursor: pointer; }
       }
       setTimeout(() => { setupEditorDrop(diffOrig, beforeModel); setupEditorDrop(diffMod, afterModel); }, 100);
       loadFromUrl();
-      if (!window.location.hash) restoreAutoSave();
+      // ?token= があるとき（CLI がローカルに立てたサーバから開いたとき）は loadFromServer() が
+      // 中身を流し込むので、自動復元はしない（サーバから来た内容が上書きされてしまう）。
+      // ?token= が無いときの挙動は従来のまま一切変えない。
+      if (new URLSearchParams(window.location.search).get('token')) {
+        loadFromServer();
+        // Copy Diff URL は「いま見ているページの URL + 中身」を組み立てる。
+        // CLI 経由のページはその場限りのポートで動いていて、サーバが終われば
+        // リンク先が消える。渡した相手が開けない URL を配れてしまうので隠す。
+        const share = document.getElementById('shareBtn');
+        if (share) share.style.display = 'none';
+      } else if (!window.location.hash) {
+        restoreAutoSave();
+      }
       setTimeout(updatePlaceholders, 150);
     });
 
@@ -2287,6 +2301,97 @@ a[data-diff-nolink]{ cursor: pointer; }
 
     // URLハッシュ変更検知
     window.addEventListener('hashchange', loadFromUrl);
+
+    // ===== サーバからの読み込み (?token=) =====
+    // richdiff CLI がローカルに立てたサーバから中身を受け取る経路。ハッシュ復元
+    // （loadFromUrl）と同じ「起動時に外から流し込む」役割だが、入力元が
+    // location.hash ではなく ?token=、取得先が /payload.json、そして
+    // ファイルを複数持てて #fileSelect で切り替えられる点が違う。
+    let serverFiles = null;   // ?token= 経由で取得した payload.files。非サーバ利用時は null のまま
+
+    // ファイル 1 件分を Monaco / langSelect / Rich View へ反映する。
+    // 初回の読み込みと #fileSelect での切り替えの、どちらからも呼ぶ。
+    function applyServerFile(file) {
+      if (!file || !beforeModel || !afterModel) return;
+
+      // Rich View（Markdown/HTML）が開いていたら、切り替え先の view が何であれ
+      // 一旦 Monaco の生テキスト表示に戻す。開いたまま中身だけ差し替えると、
+      // 古い View がそのまま残って新しい内容を反映しない。
+      if (isRichDiffView) {
+        const activeBtn = document.getElementById(richViewMode === 'html' ? 'htmlViewBtn' : 'richDiffBtn');
+        if (activeBtn) activeBtn.click();
+      }
+
+      beforeModel.setValue(file.before || '');
+      afterModel.setValue(file.after || '');
+
+      const lang = file.lang || (file.view === 'html' ? 'html' : file.view === 'markdown' ? 'markdown' : 'plaintext');
+      // Monaco が扱える言語は langSelect に並べてある選択肢より多い。載っていない
+      // 言語が来ると select の値が空になり、ツールバーの言語欄が無表示になるので、
+      // その場で選択肢を足してから選ぶ。
+      const langSelect = document.getElementById('langSelect');
+      if (!Array.from(langSelect.options).some(o => o.value === lang)) {
+        const opt = document.createElement('option');
+        opt.value = lang; opt.textContent = lang;
+        langSelect.appendChild(opt);
+      }
+      langSelect.value = lang;
+      monaco.editor.setModelLanguage(beforeModel, lang);
+      monaco.editor.setModelLanguage(afterModel, lang);
+
+      if (file.view === 'html' || file.view === 'markdown') {
+        // 既存のハッシュ復元と同じく isRichDiffView を見て二重に押さない。
+        setTimeout(() => {
+          if (isRichDiffView) return;
+          const btn = document.getElementById(file.view === 'html' ? 'htmlViewBtn' : 'richDiffBtn');
+          if (btn) btn.click();
+        }, 150);
+      }
+      // view が 'text' のときはどちらのボタンも押さず、Monaco の生テキスト表示のままにする。
+    }
+
+    function loadFromServer() {
+      const token = new URLSearchParams(window.location.search).get('token');
+      if (!token) return;
+
+      // 相対パスのみ。CLI が返す /payload.json をそのまま叩く（絶対 URL は使わない）。
+      fetch('/payload.json?token=' + encodeURIComponent(token))
+        .then((res) => {
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          return res.json();
+        })
+        .then((payload) => {
+          const files = payload && payload.files;
+          if (!Array.isArray(files) || files.length === 0) throw new Error('payload.files が空です');
+
+          serverFiles = files;
+          applyServerFile(files[0]);
+
+          // ファイルが複数あるときだけツールバーに切り替え用の select を出す。
+          const fileSelect = document.getElementById('fileSelect');
+          if (fileSelect && files.length > 1) {
+            fileSelect.innerHTML = '';
+            files.forEach((f, i) => {
+              const opt = document.createElement('option');
+              opt.value = String(i);
+              opt.textContent = f.label || ('file ' + (i + 1));
+              fileSelect.appendChild(opt);
+            });
+            fileSelect.value = '0';
+            fileSelect.style.display = '';
+            fileSelect.addEventListener('change', (e) => {
+              const idx = parseInt(e.target.value, 10);
+              if (!serverFiles || !serverFiles[idx]) return;
+              applyServerFile(serverFiles[idx]);
+            });
+          }
+        })
+        .catch((err) => {
+          // 失敗してもツールは空のまま使える状態で残す。トーストで知らせるだけ。
+          console.error('Server Load Error:', err);
+          showToast('⚠️ サーバからの読み込みに失敗しました');
+        });
+    }
   </script>
 </body>
 </html>
