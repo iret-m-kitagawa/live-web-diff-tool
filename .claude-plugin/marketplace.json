@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "live-web-diff-tool",
+  "owner": {
+    "name": "iret-m-kitagawa",
+    "url": "https://github.com/iret-m-kitagawa"
+  },
+  "plugins": [
+    {
+      "name": "richdiff",
+      "source": "./plugin",
+      "description": "md / html の文書の変更内容を、タグを含まない見た目のままブラウザで見せる"
+    }
+  ]
+}
