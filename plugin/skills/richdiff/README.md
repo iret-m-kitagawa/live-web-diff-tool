@@ -29,61 +29,73 @@ md / html 以外の拡張子を与えた場合も、テキスト表示として�
 
 ## インストール（Claude Code）
 
-### どこで実行するか
-
-いずれも **Claude Code のセッション内で実行するスラッシュコマンド**である。
-シェルのコマンドではない。任意のプロジェクトのセッションから実行してよい。
+環境を問わず、**ターミナルから次の 2 コマンド**で導入する。
 
 ```
-/plugin marketplace add iret-m-kitagawa/live-web-diff-tool
-/plugin install richdiff@live-web-diff-tool
+claude plugin marketplace add iret-m-kitagawa/live-web-diff-tool
+claude plugin install richdiff@live-web-diff-tool --scope user
 ```
 
 1 行目でカタログを登録し、2 行目でインストールする。本リポジトリは公開されているため、
 認証および事前の配布物を必要としない。
 
-シェルから実行する場合は `claude plugin install` を使用する。こちらは対話画面を伴わず、
-既定で User スコープに導入される（`--scope` で変更できる）。
-
 ### どこまで影響するか
 
-`/plugin install` の実行時に、以下のいずれのスコープで導入するかを選択する。
+`--scope` で影響範囲を指定する。省略した場合は `user` となる。
 
-| スコープ | 影響範囲 | 設定の保存先 |
+| 指定 | 影響範囲 | 設定の保存先 |
 |---|---|---|
-| **User** | そのユーザーの全プロジェクト | `~/.claude/plugins/` |
-| **Project** | そのリポジトリを利用する全員 | `<repo>/.claude/settings.json` |
-| **Local** | そのユーザーの、そのリポジトリのみ | `<repo>/.claude/settings.local.json` |
+| `--scope user` | そのユーザーの全プロジェクト | `~/.claude/plugins/` |
+| `--scope project` | そのリポジトリを利用する全員 | `<repo>/.claude/settings.json` |
+| `--scope local` | そのユーザーの、そのリポジトリのみ | `<repo>/.claude/settings.local.json` |
 
-richdiff は特定のリポジトリに依存しないため、**通常は User スコープを選択する。**
+richdiff は特定のリポジトリに依存しないため、**通常は `user` を指定する。**
 これにより、どのプロジェクトで作業していても利用できる。
 
-`/plugin marketplace add` によるカタログの登録も、既定ではユーザー単位である。
+カタログの登録も、既定ではユーザー単位である。
 
 ### インストール後
 
-インストールの結果として、その場で有効になる場合と、`/reload-plugins` の実行または
-セッションの再起動が必要な場合がある。いずれになるかはインストール時のメッセージに表示される。
+シェルから導入した場合、**実行中のセッションには反映されない。**
 
-有効化されたのち、利用者が「diff を見せて」等の依頼を行った際に `richdiff` スキルが使用される。
+ターミナルの CLI では `/reload-plugins` で反映できる。一方、**VS Code / Cursor の
+拡張ではこのコマンドが存在しない。** 代わりに案内される `/reload-skills` は、
+プラグイン由来のスキルを拾わない（実行しても `no changes` となる）。
+
+拡張を使っている場合は、**ウィンドウを再読み込みする**（コマンドパレットの
+Developer: Reload Window）。アプリケーション自体を終了する必要はなく、
+会話も引き継がれる。
+
+反映されたかどうかは、スキルの一覧に `richdiff:richdiff` が現れるかで判断できる。
+プラグイン由来のスキルは `プラグイン名:スキル名` の形で並ぶ。
+
+有効になったのち、利用者が「diff を見せて」等の依頼を行った際に `richdiff` スキルが使用される。
+
+### セッション内から導入する場合
+
+ターミナルで `claude` を対話的に起動している場合に限り、`/plugin` で対話パネルを開き、
+インストール内容やコンテキスト消費量を確認しながら導入することもできる。
+
+ただし **VS Code / Cursor の拡張の中では `/plugin` は使用できない**
+（`/plugin isn't available in this environment.` と表示される）。環境によって手順を
+変えたくない場合は、前述のシェル版を用いること。
 
 ### 管理
 
 | コマンド | 内容 |
 |---|---|
-| `/plugin list` | インストール済みプラグインの一覧 |
-| `/plugin update` | 全プラグインを最新版に更新 |
-| `/plugin disable richdiff` | 一時的に無効化（アンインストールはしない） |
-| `/plugin uninstall richdiff` | アンインストール |
-| `/plugin marketplace update live-web-diff-tool` | カタログを最新化 |
+| `claude plugin list` | インストール済みプラグインの一覧 |
+| `claude plugin update richdiff@live-web-diff-tool` | 最新版に更新（適用には再起動が必要） |
+| `claude plugin disable richdiff@live-web-diff-tool` | 一時的に無効化（アンインストールはしない） |
+| `claude plugin uninstall richdiff@live-web-diff-tool` | アンインストール |
+| `claude plugin marketplace update live-web-diff-tool` | カタログを最新化 |
 
-更新は、リポジトリへの push 後に `/plugin update` を実行する。再インストールは不要である。
+更新は、リポジトリへの push 後に `claude plugin update` を実行する。再インストールは不要である。
 
 **本マーケットプレイスの自動更新は、既定で無効である。** 自動更新が既定で有効なのは
-公式のマーケットプレイスのみであり、それ以外のものは各利用者が明示的に有効化する必要がある。
-手動で更新しない運用とする場合は、`/plugin` の **Marketplaces** タブから
-`live-web-diff-tool` を選び、**Enable auto-update** を設定すること。有効化した場合、
-セッション開始後に自動で更新され、更新があったときは `/reload-plugins` の実行を促される。
+公式のマーケットプレイスのみであり、それ以外は各利用者が明示的に有効化する必要がある。
+有効化は `/plugin` の **Marketplaces** タブからのみ行えるため、`/plugin` を開けない
+環境では、上記の `claude plugin update` による手動更新となる。
 
 ## Cursor のエージェントを使用する場合
 
@@ -170,6 +182,14 @@ node <展開先>/bin/richdiff.mjs --proposed docs/spec.md=/tmp/spec.new.md --no-
 node <展開先>/bin/richdiff.mjs --version
 ```
 
-`build.mjs` は配布物の生成時に `bin/richdiff.mjs` 内の `VERSION` 定数を参照する。
-`plugin.json` の `version` との同期は自動化されていないため、リリース時に
-両者が一致していることを目視で確認すること。
+`plugin.json` の `version` と `bin/richdiff.mjs` の `VERSION` 定数は、
+別々に保持している。リリース時は次のコマンドで整合を確認する。
+
+```
+claude plugin validate plugin                 # plugin.json の検証
+claude plugin validate .                      # marketplace.json の検証
+claude plugin tag plugin                      # 版数の一致を確認して git タグを作成
+```
+
+また、リポジトリ直下の `index.html` と `web/index.html` の複製は
+`node plugin/build.mjs` で更新する。

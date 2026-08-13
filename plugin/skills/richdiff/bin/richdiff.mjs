@@ -244,7 +244,20 @@ function readFileOrEmpty(p) {
 function buildFromProposed(opts) {
   return opts.proposedPairs.map(({ path: targetPath, newFile }) => {
     // 対象ファイルへの書き込みは一切しない。読むだけ。
-    const before = readFileOrEmpty(targetPath);
+    //
+    // 見つからない場合は「これから作るファイル」とみなして変更前を空にする。
+    // ただし黙って空にしてはいけない。パスを打ち間違えただけ、あるいは相対パスの
+    // 基準となるカレントディレクトリが想定と違っただけのときに、「ファイル全体が
+    // 新規追加された」という事実と異なる差分がそのまま表示されてしまうため。
+    let before = '';
+    if (fs.existsSync(targetPath)) {
+      before = fs.readFileSync(targetPath, 'utf8');
+    } else {
+      process.stderr.write(
+        `注意: ${targetPath} が見つかりません。新規作成とみなし、変更前を空として表示します。\n` +
+        `      相対パスは実行時のカレントディレクトリ（${process.cwd()}）から解決されます。\n`
+      );
+    }
     const after = fs.readFileSync(newFile, 'utf8');
     return { label: targetPath, before, after };
   });

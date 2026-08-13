@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "richdiff",
   "displayName": "richdiff",
-  "description": "md / html の文書の変更内容を、タグを含まない見た目のままブラウザで見せる（live-web-diff-tool を CLI から呼ぶ）",
+  "description": "変更内容をブラウザで確認するためのツール",
   "version": "0.1.0",
   "author": {
     "name": "iret-m-kitagawa",
@@ -10,5 +10,10 @@
   },
   "homepage": "https://github.com/iret-m-kitagawa/live-web-diff-tool",
   "repository": "https://github.com/iret-m-kitagawa/live-web-diff-tool",
-  "keywords": ["diff", "markdown", "html", "review"]
+  "keywords": [
+    "diff",
+    "markdown",
+    "html",
+    "review"
+  ]
 }
