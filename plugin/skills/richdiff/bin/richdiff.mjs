@@ -14,8 +14,9 @@ import { randomUUID } from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-// build.mjs がここだけを見てバージョンを差し替える。--version の出力もここが元。
-const VERSION = '0.1.0';
+// --version の出力はここが元。plugin.json の version と手で揃える
+// （claude plugin tag が両者の一致を検証してくれる）。
+const VERSION = '1.0.0';
 
 // Node の下限。18 を下回ったら動かさない。
 // 18 と 20 はサポート切れなので --help / README では 22 以上を勧めるが、
@@ -143,7 +144,7 @@ export function parseArgs(argv) {
     serverTimeoutSec: 1800,
     help: false,
     version: false,
-    // 担当 1 待ちのブラウザ本体を待たずにサーバだけ動かす内部モード
+    // 親から切り離してサーバだけを動かすための内部モード。利用者は指定しない。
     internalServe: false,
     payloadFile: null,
     token: null,
