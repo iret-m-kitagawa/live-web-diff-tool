@@ -192,16 +192,23 @@
     /* ===== HTML View (rich-html-diff engine) ===== */
     .html-diff-frame { display: none; width: 100%; height: 100%; border: none; background-color: #ffffff; }
 
-    /* HTML View の左右表示。Markdown View の .md-split-pane と同じ考え方だが、
-       iframe は他の要素を子として持てないので #htmlDiffFrame を中に入れ直す
-       ことができない。かわりに別枠の器 (#htmlSplitContainer) を用意し、
+    /* HTML View の左右表示。Markdown View の .md-split-pane と同じ「高さを揃える」
+       方式だが、iframe は他の要素を子として持てないので #htmlDiffFrame を中に
+       入れ直すことができない。かわりに別枠の器 (#htmlSplitContainer) を用意し、
        その中に「変更前」「変更後」それぞれ専用の iframe を並べる。
        1列表示に戻したときは #htmlDiffFrame 側を、左右表示のときはこちらを
        表示する（JS 側の renderHtmlView が切り替える。表示の入れ替えだけで、
-       差分の再計算はしない）。スクロール同期はしない（列ごとに高さが違っても
-       それぞれ独立にスクロールさせる。仕様どおり）。 */
-    .html-split-container { display: none; width: 100%; height: 100%; }
-    .html-split-container.visible { display: flex; }
+       差分の再計算はしない）。
+
+       スクロール領域は #htmlSplitContainer 側の 1 つだけに持たせ、iframe 自身は
+       スクロールしない（align-items: flex-start にする理由・高さを JS 側で
+       直接指定する理由は、上の .rich-diff-viewer.split-mode のコメントと全く
+       同じ。iframe の中は allow-same-origin を付けていないため親から直接
+       触れないので、対応するブロックの高さ突き合わせと余白挿入は注入スクリプト
+       と親側の postMessage のやり取りで行う。詳細は ANCHOR_SCRIPT 側のコメントを
+       参照）。 */
+    .html-split-container { display: none; width: 100%; height: 100%; overflow-y: auto; }
+    .html-split-container.visible { display: flex; align-items: flex-start; }
     .html-split-frame { flex: 1 1 50%; min-width: 0; height: 100%; border: none; background-color: #ffffff; }
     .html-split-divider { flex: 0 0 1px; background-color: var(--border-color); }
 
@@ -365,7 +372,7 @@
          ページのスクリプトから親ページ = このツール自身へアクセスできてしまう）。 -->
     <div id="htmlSplitContainer" class="html-split-container">
       <iframe id="htmlDiffFrameLeft" class="html-split-frame" title="HTML 差分プレビュー（変更前）" sandbox="allow-scripts allow-popups"></iframe>
-      <div class="html-split-divider"></div>
+      <div id="htmlSplitDivider" class="html-split-divider"></div>
       <iframe id="htmlDiffFrameRight" class="html-split-frame" title="HTML 差分プレビュー（変更後）" sandbox="allow-scripts allow-popups"></iframe>
     </div>
 
@@ -1565,6 +1572,256 @@
       });
     }
   }
+
+  // ---- 左右表示の高さ揃え（HTML View） ----
+  // sandbox に allow-same-origin を付けていないため、親はこの文書の中を直接
+  // 読み書きできない。ここでは「測って親に伝える」「親に言われたとおり余白を
+  // 入れる」の役だけを引き受け、両側を突き合わせて指示を出すのは親側
+  // （renderHtmlView まわり）に任せる。1列表示 (#htmlDiffFrame) にも同じ
+  // スクリプトが挿し込まれるが、親から指示が来ないかぎり何もしない
+  // （待ち受けるだけで副作用は無い）。
+  var ALIGN_ATTR = 'data-align-spacer';
+
+  function clearAlignSpacers(){
+    var list = document.querySelectorAll('[' + ALIGN_ATTR + ']');
+    for (var i = 0; i < list.length; i++){ list[i].parentNode.removeChild(list[i]); }
+  }
+
+  // 対応表は「流れ」ごとに分かれている（data-sync-flow）。横に並ぶ器
+  // （grid・flex の行・表の行など）は器自身が親の流れの 1 ブロックになり、
+  // その中の子はそれぞれ独立した流れとして番号を振り直されている（親側
+  // collectHtmlSyncUnits のコメント参照）。ここでは「1 段階ぶん」
+  // （data-sync-depth が一致する要素）だけを対象に、流れごとに集計する。
+  //
+  // 各ブロックが占めている縦方向の量は、「このブロックの上端から、同じ
+  // 流れの次のブロックの上端まで」の距離で測る。ブロック自身の高さ＋自分の
+  // 上下マージンを足し合わせる方式（Markdown View 側の blockExtent）は、
+  // 隣どうしのマージン相殺（margin collapsing）を二重に数えてしまうことが
+  // ある。Markdown View は自前の .md-split-pane を flex-direction: column に
+  // して相殺そのものを止めているが、ここは貼り付けたページ自身のレイアウトを
+  // 一切変えられない（見た目を保つのがこの View の目的なので、対応関係を
+  // 取るためだけに body の表示方式を変えるわけにはいかない）。「実際に
+  // 描画された位置の差」で測れば、相殺が起きていてもそのまま正しく効く。
+  //
+  // 流れの終端（最後のブロックが占める分の下端）は、最上位の流れ
+  // （flow="0"、body 直下）なら文書全体の高さ、それ以外ならその流れを生んだ
+  // 器自身（[data-sync-flow-root]）の下端を使う。器の外へはみ出して次の
+  // 兄弟まで食い込むと、器自身の高さを見誤ってしまう。
+  function measureLevelBlocks(level){
+    var nodes = document.querySelectorAll('[data-sync-depth="' + level + '"]');
+    var byFlow = {};
+    for (var i = 0; i < nodes.length; i++){
+      var el = nodes[i];
+      var flow = el.getAttribute('data-sync-flow');
+      var idx = Number(el.getAttribute('data-sync-index'));
+      if (!byFlow[flow]) byFlow[flow] = [];
+      byFlow[flow].push({ index: idx, top: el.getBoundingClientRect().top });
+    }
+    var blocks = {};
+    for (var flow in byFlow){
+      var items = byFlow[flow];
+      items.sort(function(a, b){ return a.top - b.top; });
+      var boundary;
+      if (flow === '0'){
+        boundary = document.documentElement.scrollHeight;
+      } else {
+        var root = document.querySelector('[data-sync-flow-root="' + flow + '"]');
+        boundary = root ? root.getBoundingClientRect().bottom : items[items.length - 1].top;
+      }
+      var flowBlocks = {};
+      for (var j = 0; j < items.length; j++){
+        var next = (j + 1 < items.length) ? items[j + 1].top : boundary;
+        flowBlocks[items[j].index] = Math.max(0, next - items[j].top);
+      }
+      blocks[flow] = flowBlocks;
+    }
+    return blocks;
+  }
+
+  // afterEl が「親の最後の子」である間は祖先をたどり、その連鎖の一番外側を
+  // 返す。素朴に afterEl の真後ろへ余白を差し込むと、afterEl（や途中の祖先）
+  // の下マージンが本来は外側の兄弟まで素通り（margin collapsing の
+  // collapse-through）していたはずなのに、余白という実体がその場に割り込む
+  // ことでその素通りが断ち切られ、素通りするはずだった分がそのまま実際の
+  // 隙間として上乗せされてしまう（実測で確認済み: ul,li の下マージンが
+  // section の下マージンへ素通りしていた箇所に、その内側で余白を差し込んだ
+  // ところ、狙った分より約10px 余分に開いた）。boundary（この流れの器）より
+  // 外へは出ない。
+  function climbLastChildChain(el, boundary){
+    var cur = el;
+    while (cur !== boundary && cur.parentNode && cur.parentNode !== boundary
+      && cur.parentNode.lastElementChild === cur){
+      cur = cur.parentNode;
+    }
+    return cur;
+  }
+  // 先頭（対応するブロックがまだ 1 つも無い状態）に差し込むときの対称版。
+  // boundary の最初の子から、「親の最初の子」である間だけ祖先をたどる。
+  function climbFirstChildChain(el, boundary){
+    var cur = el;
+    while (cur !== boundary && cur.parentNode && cur.parentNode !== boundary
+      && cur.parentNode.firstElementChild === cur){
+      cur = cur.parentNode;
+    }
+    return cur;
+  }
+
+  function insertSpacerAfter(afterEl, height, boundary){
+    var spacer = document.createElement('div');
+    spacer.setAttribute(ALIGN_ATTR, '');
+    // 地の色のままにして見えないようにする（Markdown View の
+    // [data-align-spacer] と同じ扱い）。
+    spacer.style.cssText = 'height:' + height + 'px;background-color:transparent;';
+    if (afterEl && afterEl.parentNode){
+      var target = boundary ? climbLastChildChain(afterEl, boundary) : afterEl;
+      target.parentNode.insertBefore(spacer, target.nextSibling);
+    } else if (boundary){
+      // 流れの先頭。boundary の最初の子が「親の最初の子」である間たどった
+      // 一番外側の直前に差し込む（対称の考え方。既存の最初の子が無ければ
+      // boundary 自身の先頭でよい）。
+      var head = boundary.firstElementChild;
+      var insertBefore = head ? climbFirstChildChain(head, boundary) : null;
+      boundary.insertBefore(spacer, insertBefore || boundary.firstChild);
+    } else if (document.body){
+      document.body.insertBefore(spacer, document.body.firstChild);
+    }
+    return spacer;
+  }
+
+  // ある流れの先頭（対応するブロックがまだ 1 つも見つかっていない）に余白を
+  // 差し込むときの置き場所と、「この流れが自分の側にそもそも存在するか」の
+  // 判定を兼ねる。流れを生んだ器（カードなど）がまるごと片側にしか無い場合、
+  // [data-sync-flow-root] はそちら側では見つからない ── その場合は null を
+  // 返し、呼び出し側はその流れを丸ごと諦める。器自身の高さの差は、その器を
+  // 含む親の流れの処理でまとめて吸収されるので、ここで無理に子を 1 つずつ
+  // 埋めようとすると、器の外（document.body の先頭など）へ迷子の余白を
+  // 大量に生んでしまう。
+  function flowContainer(flow){
+    if (flow === '0') return document.body;
+    return document.querySelector('[data-sync-flow-root="' + flow + '"]') || null;
+  }
+
+  // 親から届いた「相手側の、この段階（level）に属するブロックが占めている
+  // 高さ」（まだ 1 度も余白を入れていない、まっさらな状態での値）をもとに、
+  // 自分の側へ余白を入れる。流れごとに独立して処理する ── 別の流れの対応表
+  // を混ぜて数えると番号が衝突する（各流れは 0 から数え直している）。
+  function applyLevelAlign(level, counterpartByFlow){
+    var mineByFlow = measureLevelBlocks(level);
+    var flows = {}, f;
+    for (f in mineByFlow) flows[f] = true;
+    for (f in counterpartByFlow) flows[f] = true;
+
+    for (var flow in flows){
+      // その流れの器（境界）。余白を差し込む位置を「親の最後（最初）の子」の
+      // 連鎖の外側まで持ち上げてよい範囲を、この器の中に留める（climbLastChildChain
+      // /climbFirstChildChain 側のコメント参照）。
+      var boundary = flowContainer(flow);
+      if (!boundary) continue; // この流れは自分の側に存在しない
+
+      var mine = mineByFlow[flow] || {};
+      var counterpart = counterpartByFlow[flow] || {};
+      var maxIndex = -1, k;
+      for (k in mine){ if (Number(k) > maxIndex) maxIndex = Number(k); }
+      for (k in counterpart){ if (Number(k) > maxIndex) maxIndex = Number(k); }
+
+      var cursor = null; // 直前まで処理した要素（本物、または直前に入れた余白）
+      for (var idx = 0; idx <= maxIndex; idx++){
+        var el = document.querySelector('[data-sync-flow="' + flow + '"][data-sync-index="' + idx + '"]');
+        var otherH = counterpart[idx];
+        if (el){
+          if (otherH !== undefined){
+            var diff = otherH - mine[idx];
+            if (diff > 1) insertSpacerAfter(el, diff, boundary);
+          }
+          cursor = el;
+        } else if (otherH !== undefined){
+          // 自分の側に無い（相手にしか無いブロック）: 同じ位置に相手の高さぶんの余白を入れる
+          cursor = insertSpacerAfter(cursor, otherH, boundary);
+        }
+        // どちらにも無い場合（ins/del だけで構成されていたブロックが両方から
+        // 消えた場合）は、埋めるものが無いので何もしない。
+      }
+    }
+  }
+
+  function postToParent(msg){
+    msg.__htmlAlign = true;
+    // targetOrigin は '*' 固定。この文書自身が allow-same-origin 無しの
+    // 不透明オリジンなので、親の実オリジンを指定しても届かない
+    // （相手が opaque origin だと厳密一致が絶対に成立しないため）。
+    parent.postMessage(msg, '*');
+  }
+
+  // 読み込みが遅れる画像（画面外にあるうちは取得しない loading="lazy" など）は、
+  // この文書の外からは気づけない。読み込み中の <img> にだけ一度きりの
+  // load/error 監視を付け、届いたら親へ知らせる。親はこれを合図に、両方の
+  // iframe へ改めて測り直しを指示する。
+  function watchImagesForRealign(){
+    var imgs = document.querySelectorAll('img');
+    for (var i = 0; i < imgs.length; i++){
+      (function(img){
+        if (img.complete) return;
+        var notify = function(){ postToParent({ type: 'settled' }); };
+        img.addEventListener('load', notify, { once: true });
+        img.addEventListener('error', notify, { once: true });
+      })(imgs[i]);
+    }
+  }
+
+  // 揃え終えたあとの答え合わせ用。各ブロックが実際にどこに来たかを返す。
+  function collectTops(){
+    var out = {}, nodes = document.querySelectorAll('[data-sync-index]');
+    for (var i = 0; i < nodes.length; i++){
+      var el = nodes[i];
+      out[el.getAttribute('data-sync-flow') + ':' + el.getAttribute('data-sync-index')]
+        = el.getBoundingClientRect().top + (window.scrollY || 0);
+    }
+    return out;
+  }
+
+  // 事前の測定値だけでは高さをぴったり合わせきれない。余白を差し込むと、
+  // それまで相殺されていた上下のマージンが復活して、入れた量より余計に伸びる
+  // ことがあるため（相殺の有無は貼り付けられた文書の CSS しだいで、
+  // 入れてみるまで分からない）。実際に来た位置を突き合わせて、足りない側に
+  // その差だけ足す。親が数回まわして寄せていく。
+  function applyCorrections(list){
+    for (var i = 0; i < list.length; i++){
+      var c = list[i];
+      var el = document.querySelector('[data-sync-flow="' + c.flow + '"][data-sync-index="' + c.index + '"]');
+      if (!el || !el.parentNode) continue;
+      var sp = document.createElement('div');
+      sp.setAttribute('data-align-spacer', 'fix');
+      sp.style.cssText = 'margin:0;padding:0;border:0;background:transparent;height:' + c.delta + 'px';
+      el.parentNode.insertBefore(sp, el);
+    }
+  }
+
+  window.addEventListener('message', function(e){
+    // 親からの指示だけを受け付ける。素性の知れない window からのメッセージは
+    // 無視する（親側も同じ考え方で、送信元 window を見て判定している）。
+    if (e.source !== window.parent) return;
+    var data = e.data;
+    if (!data || data.__htmlAlign !== true) return;
+    if (data.type === 'remeasure'){
+      // サイクルの最初の段階（親側が一番深い流れから送ってくる）でだけ、
+      // それまでの余白を洗い流す。段階が進むたびに毎回洗い流すと、既に
+      // 揃え終えた深い流れの余白まで消えてしまい、浅い流れの器の高さを
+      // 測り違える。
+      if (data.first) clearAlignSpacers();
+      postToParent({ type: 'measured', seq: data.seq, level: data.level,
+        total: document.documentElement.scrollHeight, blocks: measureLevelBlocks(data.level) });
+    } else if (data.type === 'apply'){
+      applyLevelAlign(data.level, data.counterpart || {});
+      postToParent({ type: 'aligned', seq: data.seq, level: data.level, total: document.documentElement.scrollHeight });
+    } else if (data.type === 'positions'){
+      postToParent({ type: 'positions', seq: data.seq, tops: collectTops() });
+    } else if (data.type === 'correct'){
+      applyCorrections(data.list || []);
+      postToParent({ type: 'corrected', seq: data.seq, total: document.documentElement.scrollHeight });
+    }
+  });
+
+  watchImagesForRealign();
 })();`;
 
     // 地の色 base を受け取り、その上にマーカー色を焼き込んだ CSS を組み立てる。
@@ -1644,6 +1901,12 @@ a[data-diff-nolink]{ cursor: pointer; }
     // おく（require コールバック側が中身を差し込む。読み込み前にテーマが変わる
     // ことは無いので null チェックだけで十分）。
     let mdRealignHook = null;
+    // HTML View 左右表示の高さ揃え（scheduleHtmlRealign）も同じ理由で後から
+    // 差し込む。iframe の中身自体はこのツールのテーマ/文字サイズを継承しない
+    // （別文書なので CSS 変数も渡らない）ので実際に揃え直しが要ることは無いはずだが、
+    // 将来そうでなくなっても取りこぼさないよう、Markdown View と同じ場所で
+    // 同じように揃え直しを起こしておく。
+    let htmlRealignHook = null;
 
     function applyTheme(t) {
       if(!THEMES[t]) return;
@@ -1654,6 +1917,7 @@ a[data-diff-nolink]{ cursor: pointer; }
       localStorage.setItem('diffToolTheme', t);
       if (window.monaco) monaco.editor.setTheme(THEMES[t].monaco);
       if (mdRealignHook) mdRealignHook();
+      if (htmlRealignHook) htmlRealignHook();
     }
     
     document.getElementById('themeSelect').addEventListener('change', (e) => applyTheme(e.target.value));
@@ -1843,6 +2107,7 @@ a[data-diff-nolink]{ cursor: pointer; }
         // ウィンドウ幅の変化と違って ResizeObserver では拾えない（#richDiffViewer
         // 自体の幅は変わらないため）ので、ここで明示的に測り直す。
         scheduleMdRealign();
+        if (htmlRealignHook) htmlRealignHook();
       });
 
       function updateLineNumberWidth(editor) {
@@ -1993,8 +2258,236 @@ a[data-diff-nolink]{ cursor: pointer; }
       const htmlSplitContainer = document.getElementById('htmlSplitContainer');
       const htmlDiffFrameLeft = document.getElementById('htmlDiffFrameLeft');
       const htmlDiffFrameRight = document.getElementById('htmlDiffFrameRight');
+      const htmlSplitDivider = document.getElementById('htmlSplitDivider');
       const changeActionsContainer = document.getElementById('changeActions');
       const jumpControls = document.querySelector('.jump-controls');
+
+      // ---- HTML View 左右ペインの高さ揃え ----
+      // Markdown View の alignSplitPanes と考え方は同じ（対応するブロックの
+      // 高さを揃えて、1 つのスクロール領域に 2 列を収める）。違うのは、iframe
+      // に allow-same-origin を付けていないため、親からは中を直接測ることも
+      // 余白を差し込むこともできない点。かわりに、各 iframe に注入している
+      // ANCHOR_SCRIPT へ「測って親に伝える／親に言われたとおり余白を入れる」
+      // 役を持たせ（定義は ANCHOR_SCRIPT 側）、ここではその両側から届いた数字を
+      // 突き合わせて指示を出すだけに徹する。
+      let htmlSplitActive = false;   // 左右表示中か。false の間はこの節が
+                                      // すべて素通りする（mdSplitLeftPane が
+                                      // null のときの realignMdSplit と同じ扱い）。
+      let htmlAlignSeq = 0;           // 世代番号。古い返信を無視するために使う
+      let htmlAlignMeasured = null;   // { left, right } 両方届いたら次の段階へ
+      let htmlAlignTotals = null;     // { left, right } 両方届いたら高さを確定する
+      let htmlRealignQueued = false;
+      let htmlLastAlignWidth = 0;
+      let htmlSyncMaxDepth = 0;       // 今の対応表にある「流れ」の最大の深さ（openHtmlView で設定）
+      let htmlAlignLevel = 0;         // 今のサイクルで処理中の深さ（htmlSyncMaxDepth → 0 の順）
+      // 段階ごとの処理が終わったあとの答え合わせ。事前の測定値だけでは
+      // 合わせきれない（余白を入れるとマージンの相殺が壊れて、入れた量より
+      // 余計に伸びることがある）ので、実際に来た位置を突き合わせて数回寄せる。
+      let htmlAlignPositions = null;  // { left, right } 両方届いたら差を計算する
+      let htmlAlignRound = 0;         // 答え合わせの回数
+      const HTML_ALIGN_MAX_ROUNDS = 3;
+      const HTML_ALIGN_TOLERANCE = 2; // これ以下のずれは詰めない（詰めても揺れるだけ）
+
+      // サンドボックス化した iframe の中へ postMessage で指示を送る。
+      // targetOrigin は '*' 固定（相手が allow-same-origin 無しの不透明オリジン
+      // なので、実オリジンを指定しても厳密一致が成立せず届かない）。
+      function postToHtmlFrame(frame, msg) {
+        if (!frame.contentWindow) return;
+        msg.__htmlAlign = true;
+        frame.contentWindow.postMessage(msg, '*');
+      }
+
+      // 両方の iframe に「入っている余白を消してから測り直して送れ」と指示し、
+      // 一番深い流れから順に揃えていくサイクルを開始する。幅が変わった/
+      // テーマが変わった/文字サイズが変わった/画像の遅延読み込みがあった、
+      // など「揃え直しが要る場面」はすべてここへ合流させる。世代番号を
+      // 進めておくことで、古い世代への返信（前のサイクルの途中でまた別の
+      // トリガーが起きた場合など）を安全に無視できる。
+      function requestHtmlRealign() {
+        if (!htmlSplitActive) return;
+        htmlAlignSeq += 1;
+        htmlAlignLevel = htmlSyncMaxDepth;
+        htmlAlignMeasured = { left: null, right: null };
+        htmlAlignTotals = null;
+        htmlAlignPositions = null;
+        htmlAlignRound = 0;
+        postToHtmlFrame(htmlDiffFrameLeft, { type: 'remeasure', seq: htmlAlignSeq, level: htmlAlignLevel, first: true });
+        postToHtmlFrame(htmlDiffFrameRight, { type: 'remeasure', seq: htmlAlignSeq, level: htmlAlignLevel, first: true });
+      }
+
+      // 1 段階ぶん（今の htmlAlignLevel）だけを測り直す。深い流れの器の高さは
+      // その中の流れに余白を入れた結果で変わるため、1 段階処理し終えるたびに
+      // 呼び直し、浅い流れへ進む（横に並べる器は親の流れの単位でもあり、中に
+      // 別の流れも抱えているので、順番を逆にすると器の高さを測ったあとで
+      // 中身が伸びて、補った量が合わなくなる ── 深い流れから先に処理する
+      // 理由はここにある）。余白は消さない（data.first を立てない）。
+      function requestHtmlRealignLevel() {
+        htmlAlignMeasured = { left: null, right: null };
+        htmlAlignTotals = null;
+        postToHtmlFrame(htmlDiffFrameLeft, { type: 'remeasure', seq: htmlAlignSeq, level: htmlAlignLevel });
+        postToHtmlFrame(htmlDiffFrameRight, { type: 'remeasure', seq: htmlAlignSeq, level: htmlAlignLevel });
+      }
+
+      // 短時間に何度も発火するイベント（左右の iframe が相次いで load するなど）
+      // を 1 フレームにまとめてから揃え直す。Markdown View の scheduleMdRealign
+      // と同じ考え方。
+      function scheduleHtmlRealign() {
+        if (!htmlSplitActive) return;
+        if (htmlRealignQueued) return;
+        htmlRealignQueued = true;
+        requestAnimationFrame(() => { htmlRealignQueued = false; requestHtmlRealign(); });
+      }
+      // テーマ / 文字サイズの変更ハンドラ（このスクリプトより前で定義済み）から
+      // 揃え直しを起こせるよう橋渡しする（Markdown View の mdRealignHook と同じ
+      // 仕組み）。
+      htmlRealignHook = scheduleHtmlRealign;
+
+      // 器の幅が変わると、貼り付けたページ自身の折り返しが変わり、高さも変わる。
+      // #htmlSplitContainer 自体の幅を ResizeObserver で監視して揃え直す
+      // （1列表示中は htmlSplitActive が false なので scheduleHtmlRealign 側で
+      // 素通りする）。
+      if (typeof ResizeObserver !== 'undefined') {
+        new ResizeObserver(() => {
+          if (!htmlSplitActive) return;
+          if (htmlSplitContainer.clientWidth === htmlLastAlignWidth) return;
+          scheduleHtmlRealign();
+        }).observe(htmlSplitContainer);
+      }
+
+      // 左右表示を離れるとき（1列に戻る / Monaco に戻る）に呼ぶ。余計な購読は
+      // 残っていない（イベントリスナーはこの 2 つの iframe 要素に固定で
+      // 付けているだけで、srcdoc を外せば中のスクリプトごと消える）が、
+      // 状態と iframe の高さ指定は明示的に元へ戻しておく。
+      function resetHtmlAlignState() {
+        htmlSplitActive = false;
+        htmlAlignSeq += 1; // 進行中のサイクルの返信をすべて無効化する
+        htmlAlignMeasured = null;
+        htmlAlignTotals = null;
+        htmlAlignLevel = 0;
+        htmlRealignQueued = false;
+        htmlLastAlignWidth = 0;
+        htmlDiffFrameLeft.style.height = '';
+        htmlDiffFrameRight.style.height = '';
+        htmlSplitDivider.style.height = '';
+      }
+
+      // 届くメッセージの origin はサンドボックスの都合で "null" になるため、
+      // origin では正当性を判定できない。event.source が自分が作った 2 つの
+      // iframe の contentWindow のどちらかであることだけを見て判定し、
+      // それ以外（素性の知れない window）は無視する。
+      window.addEventListener('message', (e) => {
+        const side = e.source === htmlDiffFrameLeft.contentWindow ? 'left'
+          : e.source === htmlDiffFrameRight.contentWindow ? 'right' : null;
+        if (!side) return;
+        const data = e.data;
+        if (!data || data.__htmlAlign !== true) return;
+        if (!htmlSplitActive) return;
+
+        if (data.type === 'settled') {
+          // 画像の遅延読み込みなど、iframe の中で自発的に高さが変わったという
+          // 知らせ。世代を進めて両方から測り直す。
+          scheduleHtmlRealign();
+          return;
+        }
+        if (data.seq !== htmlAlignSeq) return; // 前の世代への返信は無視する
+        // 段階（深さ）の照合は、段階ごとのやり取りにだけ効かせる。答え合わせの
+        // やり取り（positions / corrected）は段階に属さないので、ここで弾くと
+        // 返信がすべて捨てられる。
+        if ((data.type === 'measured' || data.type === 'aligned')
+          && data.level !== htmlAlignLevel) return;
+
+        if (data.type === 'measured') {
+          if (!htmlAlignMeasured) return;
+          htmlAlignMeasured[side] = { total: data.total, blocks: data.blocks || {} };
+          if (htmlAlignMeasured.left && htmlAlignMeasured.right) {
+            // 両方の測定値が揃った。互いの相手の値をそのまま渡し、実際に
+            // どこへ余白を入れるかの判断は各 iframe 側（applyLevelAlign）に任せる。
+            const leftBlocks = htmlAlignMeasured.left.blocks;
+            const rightBlocks = htmlAlignMeasured.right.blocks;
+            htmlAlignTotals = { left: null, right: null };
+            postToHtmlFrame(htmlDiffFrameLeft, { type: 'apply', seq: htmlAlignSeq, level: htmlAlignLevel, counterpart: rightBlocks });
+            postToHtmlFrame(htmlDiffFrameRight, { type: 'apply', seq: htmlAlignSeq, level: htmlAlignLevel, counterpart: leftBlocks });
+          }
+        } else if (data.type === 'aligned') {
+          if (!htmlAlignTotals) return;
+          htmlAlignTotals[side] = data.total;
+          if (htmlAlignTotals.left != null && htmlAlignTotals.right != null) {
+            if (htmlAlignLevel > 0) {
+              // まだ浅い流れが残っている。今の段階で入れた余白ぶん器が伸びた
+              // かもしれないので、1 つ浅い段階を測り直しからやり直す。
+              htmlAlignLevel -= 1;
+              requestHtmlRealignLevel();
+            } else {
+              // 最上位の流れまで終わった。ここから答え合わせに入る。
+              requestHtmlPositions();
+            }
+          }
+        } else if (data.type === 'positions') {
+          console.log('DBG positions from ' + side, !!htmlAlignPositions);
+          if (!htmlAlignPositions) return;
+          htmlAlignPositions[side] = data.tops || {};
+          if (htmlAlignPositions.left && htmlAlignPositions.right) {
+            const L = htmlAlignPositions.left, R = htmlAlignPositions.right;
+            // 両方に居るブロックだけを、左の位置の順（＝文書の順）に見ていく。
+            const keys = Object.keys(L).filter(k => R[k] !== undefined)
+              .sort((a, b) => L[a] - L[b]);
+            // 手前に足した余白のぶん、以降は下へずれる。足した量を持ち回って
+            // 「いま見えている差」から引く。流れをまたいでも、次の回で測り直す
+            // ので取りこぼしは寄せられる。
+            let shiftL = 0, shiftR = 0, worst = 0;
+            const fixL = [], fixR = [];
+            for (const k of keys) {
+              const d = (L[k] + shiftL) - (R[k] + shiftR);
+              if (Math.abs(d) > worst) worst = Math.abs(d);
+              if (Math.abs(d) <= HTML_ALIGN_TOLERANCE) continue;
+              const [flow, index] = k.split(':');
+              if (d > 0) { fixR.push({ flow, index, delta: Math.round(d) }); shiftR += d; }
+              else { fixL.push({ flow, index, delta: Math.round(-d) }); shiftL += -d; }
+            }
+            htmlAlignPositions = null;
+            if (worst <= HTML_ALIGN_TOLERANCE || htmlAlignRound >= HTML_ALIGN_MAX_ROUNDS) {
+              finalizeHtmlAlign();
+            } else {
+              htmlAlignRound += 1;
+              htmlAlignTotals = { left: null, right: null };
+              postToHtmlFrame(htmlDiffFrameLeft, { type: 'correct', seq: htmlAlignSeq, list: fixL });
+              postToHtmlFrame(htmlDiffFrameRight, { type: 'correct', seq: htmlAlignSeq, list: fixR });
+            }
+          }
+        } else if (data.type === 'corrected') {
+          if (!htmlAlignTotals) return;
+          htmlAlignTotals[side] = data.total;
+          if (htmlAlignTotals.left != null && htmlAlignTotals.right != null) {
+            requestHtmlPositions(); // 詰めた結果をもう一度測り直す
+          }
+        }
+      });
+
+      // 答え合わせの 1 往復を始める。
+      function requestHtmlPositions() {
+        if (!htmlSplitActive) return;
+        htmlAlignPositions = { left: null, right: null };
+        postToHtmlFrame(htmlDiffFrameLeft, { type: 'positions', seq: htmlAlignSeq });
+        postToHtmlFrame(htmlDiffFrameRight, { type: 'positions', seq: htmlAlignSeq });
+      }
+
+      // iframe 自身はスクロールさせず、#htmlSplitContainer 側でスクロールバーを
+      // 1 本にするため、各 iframe の高さを中身の高さぴったりに合わせる。
+      function finalizeHtmlAlign() {
+        if (!htmlAlignTotals) return;
+        const h = Math.max(htmlAlignTotals.left || 0, htmlAlignTotals.right || 0) + 'px';
+        htmlDiffFrameLeft.style.height = h;
+        htmlDiffFrameRight.style.height = h;
+        htmlSplitDivider.style.height = h;
+        htmlLastAlignWidth = htmlSplitContainer.clientWidth;
+      }
+
+      // 左右表示に切り替わるたびに iframe が読み込み直される（renderHtmlView が
+      // srcdoc を差し替える）。読み込みが終わるたび（＝中の注入スクリプトが
+      // 動き出せる状態になるたび）に揃え直しの起点とする。1列表示中や、まだ
+      // 中身の無い about:blank への遷移のときは htmlSplitActive で弾かれる。
+      htmlDiffFrameLeft.addEventListener('load', () => scheduleHtmlRealign());
+      htmlDiffFrameRight.addEventListener('load', () => scheduleHtmlRealign());
 
       const restoreMonacoView = () => {
         // Monacoの表示を元に戻す (display: none からの復帰ではないためバグが発生しない)
@@ -2008,6 +2501,7 @@ a[data-diff-nolink]{ cursor: pointer; }
         htmlSplitContainer.classList.remove('visible');
         htmlDiffFrameLeft.removeAttribute('srcdoc');
         htmlDiffFrameRight.removeAttribute('srcdoc');
+        resetHtmlAlignState();
 
         if (typeof mdResizers !== 'undefined') {
           mdResizers.forEach(r => r.style.display = 'none');
@@ -2090,8 +2584,166 @@ a[data-diff-nolink]{ cursor: pointer; }
         }
       }
 
+      // 対応するブロックとして扱ってよい「上から下へ積み重なっているだけ」の
+      // 縦に積む器かどうかを判定する。true なら中へ潜って良く、子は「今と
+      // 同じ流れ」に属したまま数える。表（table・thead/tbody/tfoot・
+      // caption・セル）は行が縦に積み重なるだけなので、ここでは縦積み扱いに
+      // する（横に並ぶのは tr の中の td/th だけ）。
+      function isVerticalHtmlContainer(el) {
+        const win = el.ownerDocument.defaultView;
+        let d = null;
+        try { d = win ? win.getComputedStyle(el).display : null; } catch (e) {}
+        if (!d) return true; // 取得できないときは並び順をそのまま信じる
+        if (d === 'flex' || d === 'inline-flex') {
+          let fd = 'row';
+          try { fd = win.getComputedStyle(el).flexDirection || 'row'; } catch (e) {}
+          return fd.indexOf('column') === 0;
+        }
+        if (d === 'grid' || d === 'inline-grid' || d === 'table-row'
+          || d === 'inline' || d === 'inline-block' || d === 'none') return false;
+        if (d.indexOf('table') === 0) return true; // table/thead/tbody/tfoot/caption/セル
+        return true;
+      }
+
+      // 横に並べる器（grid・flex の行・表の行）かどうかを判定する。true の器は
+      // 自分自身を「今の流れの 1 ブロック」として対応表に出したうえで、子
+      // それぞれを新しい流れの起点として中へ降りる（collectHtmlSyncUnits 側の
+      // コメント参照）。isVerticalHtmlContainer が false を返す残り
+      // （inline・inline-block・none・判定できないもの）は、横並びとしても
+      // 扱いようが無いので、これまでどおり中へは入らない 1 ブロックのまま
+      // にする（isVerticalHtmlContainer と isHtmlSplitContainer が両方 false
+      // になる場合が、その「諦める」ケース）。
+      function isHtmlSplitContainer(el) {
+        const win = el.ownerDocument.defaultView;
+        let d = null;
+        try { d = win ? win.getComputedStyle(el).display : null; } catch (e) {}
+        if (!d) return false;
+        if (d === 'flex' || d === 'inline-flex') {
+          let fd = 'row';
+          try { fd = win.getComputedStyle(el).flexDirection || 'row'; } catch (e) {}
+          return fd.indexOf('column') !== 0;
+        }
+        if (d === 'grid' || d === 'inline-grid' || d === 'table-row') return true;
+        return false;
+      }
+
+      // 「自分自身が直接持つ文字列」を求めるための、この節専用のブロック
+      // 判定。diff エンジンの isBlockEl は buildDiff を実行する前に取った
+      // スナップショット（boundaryEls）をそのまま信じるため、buildDiff が
+      // あとから挿し込む削除ブロックの複製など「判定後に現れた要素」を
+      // 誤って「ブロックではない」と見なしてしまう（実測: main/nav の
+      // 「自分の文字列」に、削除された節の中身がまるごと漏れて拾われ、
+      // hasOwnText が真になって以後の再帰が止まっていた）。ここでの
+      // ブロック判定は isVerticalHtmlContainer/isHtmlSplitContainer と同じ、
+      // その場で getComputedStyle を見る基準にして、この漏れを断つ。
+      // BLOCKISH_DISPLAY/BLOCK_TAGS は diff エンジン側で定義済みの定数
+      // （判定に使う値そのものは変えない）をそのまま読むだけで、diff エンジン
+      // の計算処理そのものには手を入れない。
+      function htmlSyncIsBlockish(el) {
+        const win = el.ownerDocument.defaultView;
+        let d = null;
+        try { d = win ? win.getComputedStyle(el).display : null; } catch (e) {}
+        return d ? BLOCKISH_DISPLAY.has(d) : BLOCK_TAGS.has(el.tagName);
+      }
+      function htmlSyncOwnText(el) {
+        let text = '';
+        for (let c = el.firstChild; c; c = c.nextSibling) {
+          if (c.nodeType === 3) { text += c.data; continue; }
+          if (c.nodeType !== 1) continue;
+          const t = c.tagName;
+          if (t === 'SCRIPT' || t === 'STYLE') continue;
+          if (c.dataset && c.dataset.diff === 'del') continue; // 自分が挿入した del は数えない
+          if (htmlSyncIsBlockish(c)) continue; // 入れ子のブロックはそれ自体が別単位なので含めない
+          text += htmlSyncOwnText(c);
+        }
+        return text;
+      }
+
+      // body から再帰的に「安全に縦へ分解できる」コンテナだけを潜り、それ以上
+      // 潜れない要素を対応ブロックの単位として扱う。Markdown View の
+      // markSyncIndex は pane の直接の子だけを見れば済む（marked.parse の出力は
+      // 最初からブロックが横に並んでいるだけの平らな列）が、貼り付けられた
+      // HTML は body 直下を 1 枚の div で包んでいるだけのことが多く、直接の子
+      // だけを見ても実質 1 ブロックにしかならない（節ごとの対応が取れない）。
+      // 潜れるところは潜って、実際に対応づけたい単位まで降りる。
+      //
+      // 「流れ」という考え方: 余白を入れて高さを揃えられるのは、同じ縦の
+      // 流れに並んでいるブロックどうしだけ（`A | B` が横に並んでいるとき、
+      // A の下に余白を足しても B は下がらない ── これは正しい既存の懸念で、
+      // ここでも維持する）。だから縦に積む器は中へ降りて同じ流れのまま数え、
+      // 横に並べる器（grid・flex の行・表の行）は自分自身を親の流れの 1
+      // ブロックとして出したうえで、子それぞれを新しい流れの起点として中へ
+      // 降りる。こうすると、grid の中の nav と main はそれぞれ独立した流れ
+      // になり、main の中の節どうしはちゃんと同じ流れに並ぶので余白がその
+      // まま効く。カードが横に並ぶ箇所も、カードごとに独立した流れになる
+      // ので隣のカードを巻き込まない。
+      //
+      // 流れは data-sync-flow（左右は同じ木から作るので、決まった順で辿れば
+      // 両側で同じ番号になる）、流れの中の通し番号（0 から数え直す）は
+      // data-sync-index に持たせる。揃える側（ANCHOR_SCRIPT）は、横に並べる
+      // 器の高さが中の流れに余白を入れた結果で変わるため、深い流れから先に
+      // 処理する必要がある。その深さを data-sync-depth に持たせておく。
+      function collectHtmlSyncUnits(el, flow, depth, state) {
+        if (depth > state.maxDepth) state.maxDepth = depth;
+        const kids = [];
+        for (let c = el.firstElementChild; c; c = c.nextElementSibling) {
+          if (c.tagName === 'SCRIPT' || c.tagName === 'STYLE') continue;
+          kids.push(c);
+        }
+        // 自分自身がインライン内容を持つ（子要素とテキストが混ざっている）なら、
+        // それ以上分解しない。<p>本文<ins>追加</ins>続き</p> のような要素を
+        // <ins> だけに分解すると、段落全体としての位置を失ってしまう。
+        // ここでの判定は htmlSyncOwnText（この節専用、上のコメント参照）を使う。
+        const hasOwnText = kids.length > 0 && norm(htmlSyncOwnText(el)) !== '';
+        if (kids.length === 0 || hasOwnText) {
+          markHtmlSyncUnit(el, flow, depth, state);
+        } else if (isVerticalHtmlContainer(el)) {
+          kids.forEach(c => collectHtmlSyncUnits(c, flow, depth, state));
+        } else if (isHtmlSplitContainer(el)) {
+          markHtmlSyncUnit(el, flow, depth, state); // 器自身は親の流れの1ブロック
+          kids.forEach(c => {
+            const childFlow = String(state.nextFlowId++);
+            // 揃える側が「この流れの終端（下端）」を求めるための目印。
+            c.dataset.syncFlowRoot = childFlow;
+            collectHtmlSyncUnits(c, childFlow, depth + 1, state);
+          });
+        } else {
+          // inline・inline-block・none など、縦にも横にも分解しようが無いもの。
+          // これまでどおり1ブロックのまま扱う。
+          markHtmlSyncUnit(el, flow, depth, state);
+        }
+      }
+
+      function markHtmlSyncUnit(el, flow, depth, state) {
+        const n = state.flowCounters.get(flow) || 0;
+        state.flowCounters.set(flow, n + 1);
+        el.dataset.syncFlow = flow;
+        el.dataset.syncIndex = String(n);
+        el.dataset.syncDepth = String(depth);
+      }
+
+      // 左右ペインの対応ブロックへ、出現順の通し番号（流れごとに 0 から）を
+      // data-sync-index として、所属する流れを data-sync-flow として振って
+      // おく。Markdown View の markSyncIndex と同じ考え方で、取り除く前
+      // （＝ left/right どちらも newDoc から stripHtmlSide で再パース・間引くだけの、
+      // まだ共通の並びをしている段階）で振るので、この番号がそのまま左右の対応表に
+      // なる。あとから見た目の位置や高さから対応関係を推測する必要はない。
+      // 戻り値は流れの最大深さ（揃える側が「深い流れから先に処理する」ために
+      // 何段階の測定・適用を繰り返せばよいかを示す）。
+      function markHtmlSyncIndex(body) {
+        const state = { flowCounters: new Map(), nextFlowId: 1, maxDepth: 0 }; // 0 は最上位(body)の流れとして予約済み
+        collectHtmlSyncUnits(body, '0', 0, state);
+        return state.maxDepth;
+      }
+
       function buildHtmlDiffOutput(oldDoc, newDoc) {
         buildDiff(oldDoc, newDoc);
+        // 取り除く前（left/right に分かれる前）に振る。buildDiff 後の newDoc の
+        // body 直下がそのまま single の土台になり、left/right はこれを文字列ごと
+        // 再パースして間引くだけなので、ここで振った番号は両方に同じ形で残る。
+        // 戻り値（流れの最大深さ）は左右の高さ揃えが「深い流れから先に処理する」
+        // ために必要な段階数として、呼び出し側（openHtmlView）へ持ち帰る。
+        const maxFlowDepth = markHtmlSyncIndex(newDoc.body);
 
         // 削除ブロックは古い DOM の複製なので id ごと持ち込む。新しい側に同じ id が
         // 残っていると重複し、getElementById は文書順で先にある削除側を返してしまう
@@ -2165,7 +2817,7 @@ a[data-diff-nolink]{ cursor: pointer; }
         const left = stripHtmlSide(single, '[data-diff-block="ins"], ins[data-diff="ins"], [data-diff-pad]', true);
         const right = stripHtmlSide(single, '[data-diff-block="del"], del[data-diff="del"], [data-diff-pad]', false);
 
-        return { single, left, right };
+        return { single, left, right, maxFlowDepth };
       }
 
       // single を再パースし、selector に一致する要素を stripMarked と同じ考え方
@@ -2472,6 +3124,9 @@ a[data-diff-nolink]{ cursor: pointer; }
           htmlSplitContainer.classList.remove('visible');
           htmlDiffFrameLeft.removeAttribute('srcdoc');
           htmlDiffFrameRight.removeAttribute('srcdoc');
+          // 左右表示から離れるので、購読状態・世代番号・iframe の高さ指定を
+          // すべて元に戻す（余計な余白もイベントも残らないようにする）。
+          resetHtmlAlignState();
         } else {
           // 左右表示: #htmlDiffFrame は使わず、専用の 2 枚（left/right）を並べる。
           // sandbox は #htmlDiffFrame と同じ allow-scripts allow-popups のみ
@@ -2481,6 +3136,11 @@ a[data-diff-nolink]{ cursor: pointer; }
           htmlDiffFrameLeft.srcdoc = htmlDiffedDocs.left;
           htmlDiffFrameRight.srcdoc = htmlDiffedDocs.right;
           htmlSplitContainer.classList.add('visible');
+          // srcdoc を差し替えたので、いずれ両方の iframe から 'load' が届き、
+          // それぞれの load ハンドラが scheduleHtmlRealign を起こす。ここでは
+          // フラグを立てるだけでよい（このタイミングではまだ中の注入
+          // スクリプトが動いておらず、測っても意味がない）。
+          htmlSplitActive = true;
         }
       }
 
@@ -2514,6 +3174,7 @@ a[data-diff-nolink]{ cursor: pointer; }
           htmlSplitContainer.classList.remove('visible');
           htmlDiffFrameLeft.removeAttribute('srcdoc');
           htmlDiffFrameRight.removeAttribute('srcdoc');
+          resetHtmlAlignState();
           // richDiffViewer.style.display は renderMarkdownView が現在のモードに
           // 合わせて設定済み（block/flex）
 
@@ -2552,6 +3213,9 @@ a[data-diff-nolink]{ cursor: pointer; }
           // ここで 1 回だけ 3 通り（1列/変更前/変更後）を保持する。1列⇄左右の
           // 切り替えは renderHtmlView がこれを使い回すだけで、ここへは戻ってこない。
           htmlDiffedDocs = docs;
+          // 高さ揃えが「深い流れから先に処理する」ために必要な段階数。
+          // buildHtmlDiffOutput が markHtmlSyncIndex の戻り値として持ち帰った値。
+          htmlSyncMaxDepth = docs.maxFlowDepth || 0;
           renderHtmlView();
 
           // Monacoエディタを display: none で隠さず、絶対配置で画面外へ退避させる
