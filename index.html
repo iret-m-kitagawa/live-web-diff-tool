@@ -71,6 +71,11 @@
     }
     .btn:hover { background-color: var(--border-color); color: var(--text-main); }
     .btn.active { background-color: #0a84ff; color: #ffffff; border-color: #0a84ff; }
+    /* Inline / Split は二者択一なので、隣り合う辺をくっつけて 1 つの部品に見せる。 */
+    .view-mode-group { display: flex; }
+    .view-mode-group .view-mode-btn:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+    .view-mode-group .view-mode-btn:last-child { border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: -1px; }
+    .view-mode-group .view-mode-btn.active { z-index: 1; }
     .clear-btn:hover { background-color: rgba(248, 81, 73, 0.1); color: #ff7b72; border-color: rgba(248, 81, 73, 0.4); }
     .share-btn { background-color: #238636; color: #ffffff; border: 1px solid rgba(240, 246, 252, 0.1); }
     .share-btn:hover { background-color: #2ea043; color: #ffffff; }
@@ -87,12 +92,13 @@
     .main-container { display: flex; flex: 1; position: relative; min-height: 0; }
 
     /* ===== Markdown View Viewer Styles ===== */
-    .rich-diff-viewer {
-      display: none; width: 100%; height: 100%; 
-      padding: 32px max(32px, calc((100% - var(--md-width)) / 2)); 
-      overflow-y: auto;
-      
-      /* github-markdown-css variables mapping for custom themes */
+    /* github-markdown-css variables mapping for custom themes。
+       markdown-body クラス自身がこれらの変数の既定値を直接持っているため、
+       祖先 (.rich-diff-viewer) からの継承だけでは上書きできない
+       （同じ要素に直接掛かる値は、祖先からの継承より必ず優先される）。
+       左右表示の列 (.md-split-pane も markdown-body を持つ) にも同じ
+       マッピングを明示しておく。 */
+    .rich-diff-viewer, .md-split-pane {
       --color-canvas-default: var(--bg-main);
       --color-fg-default: var(--text-main);
       --color-canvas-subtle: var(--bg-panel);
@@ -100,13 +106,18 @@
       --color-border-muted: var(--border-color);
       --color-accent-fg: #58a6ff;
       --color-neutral-muted: rgba(110, 118, 125, 0.15);
-      
+
       background-color: var(--color-canvas-default); color: var(--color-fg-default);
-      font-size: var(--md-font-size, 14px); 
+      font-size: var(--md-font-size, 14px);
       word-wrap: break-word;
     }
-    [data-theme*="light"] .rich-diff-viewer { 
-      --color-accent-fg: #0969da; 
+    .rich-diff-viewer {
+      display: none; width: 100%; height: 100%;
+      padding: 32px max(32px, calc((100% - var(--md-width)) / 2));
+      overflow-y: auto;
+    }
+    [data-theme*="light"] .rich-diff-viewer, [data-theme*="light"] .md-split-pane {
+      --color-accent-fg: #0969da;
       --color-neutral-muted: rgba(175, 184, 193, 0.2);
     }
     .rich-diff-viewer > *:first-child { margin-top: 0 !important; }
@@ -121,8 +132,37 @@
     /* Markdown由来の通常の取り消し線 */
     .rich-diff-viewer del:not(.diffdel):not(.diffmod) { color: var(--text-muted); text-decoration: line-through; background-color: transparent; }
 
+    /* 1列 / 左右 の切り替えはツールバーの Inline / Split ボタンに一本化してある
+       （Monaco / Markdown View / HTML View で共通、状態は isInlineView を共有）。
+       以前はここに Markdown View 専用のプレビュー内切り替え UI を置いていたが、
+       ツールバーのボタンと意味が重複するので廃止した。
+
+       左右表示: #richDiffViewer の中身を 2 列にする。列ごとに高さが違っても
+       スクロールは同期しない（下に行くほどずれるが仕様どおり）ので、それぞれの
+       列が独立してスクロールするよう外側の padding/overflow を列側に移す。 */
+    /* display: flex 自体は JS 側（renderMarkdownView）がインラインで指定する。
+       インラインスタイルは常にここより優先されるため、ここで書いても意味がない。 */
+    .rich-diff-viewer.split-mode { padding: 0; overflow: hidden; }
+    .md-split-pane { flex: 1 1 50%; min-width: 0; height: 100%; overflow-y: auto; padding: 32px; }
+    .md-split-pane > *:first-child { margin-top: 0 !important; }
+    .md-split-pane > *:last-child { margin-bottom: 0 !important; }
+    .md-split-divider { flex: 0 0 1px; background-color: var(--border-color); }
+
     /* ===== HTML View (rich-html-diff engine) ===== */
     .html-diff-frame { display: none; width: 100%; height: 100%; border: none; background-color: #ffffff; }
+
+    /* HTML View の左右表示。Markdown View の .md-split-pane と同じ考え方だが、
+       iframe は他の要素を子として持てないので #htmlDiffFrame を中に入れ直す
+       ことができない。かわりに別枠の器 (#htmlSplitContainer) を用意し、
+       その中に「変更前」「変更後」それぞれ専用の iframe を並べる。
+       1列表示に戻したときは #htmlDiffFrame 側を、左右表示のときはこちらを
+       表示する（JS 側の renderHtmlView が切り替える。表示の入れ替えだけで、
+       差分の再計算はしない）。スクロール同期はしない（列ごとに高さが違っても
+       それぞれ独立にスクロールさせる。仕様どおり）。 */
+    .html-split-container { display: none; width: 100%; height: 100%; }
+    .html-split-container.visible { display: flex; }
+    .html-split-frame { flex: 1 1 50%; min-width: 0; height: 100%; border: none; background-color: #ffffff; }
+    .html-split-divider { flex: 0 0 1px; background-color: var(--border-color); }
 
     /* ===== Markdown View Resizer (左右対称フローティング・ハンドル) ===== */
     .md-resizer {
@@ -247,10 +287,19 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4L4 8l4 4M4 8h16M16 20l4-4-4-4M20 16H4"/></svg>
         Swap
       </button>
-      <button class="btn" id="toggleViewBtn" title="Toggle Inline/Split View">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="12" x2="21" y2="12"/></svg>
-        Inline View
-      </button>
+      <!-- 1列 / 左右 は「押したら何になるか」を出す 1 つのボタンではなく、選択肢を
+           2 つ並べて今どちらなのかを見せる。押す前に現在の状態が分かるほうが、
+           3 つのビューで共有する操作としては迷いが少ない。 -->
+      <div class="view-mode-group" role="group" aria-label="Inline / Split">
+        <button class="btn view-mode-btn" id="inlineViewBtn" title="Inline View">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="12" x2="21" y2="12"/></svg>
+          Inline
+        </button>
+        <button class="btn view-mode-btn active" id="splitViewBtn" title="Split View">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="12" y1="3" x2="12" y2="21"/></svg>
+          Split
+        </button>
+      </div>
       <button class="btn clear-btn" id="clearBtn" title="Clear All">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 11-1.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"></path></svg>
         Clear
@@ -270,10 +319,18 @@
          pasted HTML's own <script> tags are allowed to run inside this sandboxed iframe so that
          content restored from a shared Diff URL behaves exactly as authored, including its JS. -->
     <iframe id="htmlDiffFrame" class="html-diff-frame" title="HTML 差分プレビュー" sandbox="allow-scripts allow-popups"></iframe>
+    <!-- HTML View の左右表示用。sandbox は #htmlDiffFrame と全く同じもの（allow-same-origin は
+         絶対に付けない。付けると計測用ステージング iframe と違って表示用なので、貼り付けた
+         ページのスクリプトから親ページ = このツール自身へアクセスできてしまう）。 -->
+    <div id="htmlSplitContainer" class="html-split-container">
+      <iframe id="htmlDiffFrameLeft" class="html-split-frame" title="HTML 差分プレビュー（変更前）" sandbox="allow-scripts allow-popups"></iframe>
+      <div class="html-split-divider"></div>
+      <iframe id="htmlDiffFrameRight" class="html-split-frame" title="HTML 差分プレビュー（変更後）" sandbox="allow-scripts allow-popups"></iframe>
+    </div>
 
     <div id="mdResizerLeft" class="md-resizer left" data-dir="left"></div>
     <div id="mdResizerRight" class="md-resizer right" data-dir="right"></div>
-    
+
     <div id="changeActions"></div>
 
     <div class="jump-controls">
@@ -1560,9 +1617,13 @@ a[data-diff-nolink]{ cursor: pointer; }
     let beforeModel, afterModel;
     let beforeFocused = false;
     let afterFocused = false;
+    // 1列 / 左右 の選択はこの 1 つで Monaco / Markdown View / HTML View 共通に持つ
+    // （ツールバーの Inline / Split ボタンで切り替える。false＝左右、true＝1列/インライン）。
     let isInlineView = false;
     let isRichDiffView = false;
     let richViewMode = null; // 'markdown' | 'html' | null — どちらの Rich View が開いているか（未オープン時は null）
+    let mdDiffedHtml = null; // openMarkdownView で 1 回だけ作った sanitize 済み diff HTML。1列⇄左右はこれを使い回す
+    let htmlDiffedDocs = null; // openHtmlView で 1 回だけ作った {single, left, right}。1列⇄左右はこれを使い回す
 
     const showToast = (msg) => {
       const t = document.getElementById('toast');
@@ -1876,6 +1937,9 @@ a[data-diff-nolink]{ cursor: pointer; }
       const diffEditorContainer = document.getElementById('diffEditor');
       const richDiffViewer = document.getElementById('richDiffViewer');
       const htmlDiffFrame = document.getElementById('htmlDiffFrame');
+      const htmlSplitContainer = document.getElementById('htmlSplitContainer');
+      const htmlDiffFrameLeft = document.getElementById('htmlDiffFrameLeft');
+      const htmlDiffFrameRight = document.getElementById('htmlDiffFrameRight');
       const changeActionsContainer = document.getElementById('changeActions');
       const jumpControls = document.querySelector('.jump-controls');
 
@@ -1888,6 +1952,9 @@ a[data-diff-nolink]{ cursor: pointer; }
         richDiffViewer.style.display = 'none';
         htmlDiffFrame.style.display = 'none';
         htmlDiffFrame.removeAttribute('srcdoc');
+        htmlSplitContainer.classList.remove('visible');
+        htmlDiffFrameLeft.removeAttribute('srcdoc');
+        htmlDiffFrameRight.removeAttribute('srcdoc');
 
         if (typeof mdResizers !== 'undefined') {
           mdResizers.forEach(r => r.style.display = 'none');
@@ -2030,8 +2097,145 @@ a[data-diff-nolink]{ cursor: pointer; }
         const html = '<!DOCTYPE html>\n' + newDoc.documentElement.outerHTML;
         const bodyClose = '</' + 'body>';
         const idx = html.lastIndexOf(bodyClose);
-        return idx < 0 ? html + navScript.outerHTML
+        const single = idx < 0 ? html + navScript.outerHTML
           : html.slice(0, idx) + navScript.outerHTML + html.slice(idx);
+
+        // 左右表示の 2 通りは、ここまでで組み上がった single（1列表示そのままの
+        // HTML 文字列）を土台にする。差分エンジン（buildDiff）はこの関数の先頭で
+        // 既に 1 回動いただけで、ここから先は文字列を再パースして要素を間引くだけ
+        // なので、開閉のたびに呼んでも重い計測処理（renderHtmlDiffDocument の
+        // iframe 2 枚立て）は走らない。
+        // 左（変更前）: 追加ブロック・追加インライン・列そろえ用の空セルを除く。
+        // 右（変更後）: 削除ブロック・削除インライン・列そろえ用の空セルを除く。
+        // [data-diff-attr]（属性だけ変わった要素）はどちらの選択子にも含めない
+        // ── 要素そのものは変更前にも変更後にも存在するので、両側に残す。
+        const left = stripHtmlSide(single, '[data-diff-block="ins"], ins[data-diff="ins"], [data-diff-pad]', true);
+        const right = stripHtmlSide(single, '[data-diff-block="del"], del[data-diff="del"], [data-diff-pad]', false);
+
+        return { single, left, right };
+      }
+
+      // single を再パースし、selector に一致する要素を stripMarked と同じ考え方
+      // （表のセルは単体で消さず、行が丸ごと空になったときだけ行を消す）で取り除く。
+      // restoreOldId が真のとき（左＝変更前を作るとき）だけ、data-diff-old-id に
+      // 退避されていた id を戻す。削除ブロックは id を新しい側（ins）に譲って
+      // いるので、その ins 側を取り除く左では、残った要素の data-diff-old-id を
+      // id に戻さないと変更前側のページ内リンクが切れる。右（変更後）は id を
+      // 持っていた側がそのまま残るので戻す必要がない。
+      function stripHtmlSide(html, selector, restoreOldId) {
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        stripMarked(doc.body, selector);
+        if (restoreOldId) {
+          doc.body.querySelectorAll('[data-diff-old-id]').forEach(el => {
+            const oldId = el.getAttribute('data-diff-old-id');
+            if (oldId) el.setAttribute('id', oldId);
+          });
+        }
+        return '<!DOCTYPE html>\n' + doc.documentElement.outerHTML;
+      }
+
+      // mdDiffedHtml（sanitize 済みの diff HTML、1 回だけ作る）を現在のモード
+      // （1列 / 左右）に応じて #richDiffViewer に描き直すだけの関数。
+      // ここでは絶対に差分を取り直さない。1列⇄左右の切り替えは全部これを呼ぶだけでよい。
+      // 片側だけに存在する印を取り除いたあと、その中身しか持っていなかった器が
+      // 空のまま残る。表の行がこれに当たり、追加された行を取り除いた側に
+      // 罫線だけの行が居座って、変更前には無かったものが見えてしまう。
+      // 取り除いた要素の祖先だけを見て、中身が無くなったものを畳む。
+      // 元から空だった器（`| A |  |` のような空セル）は候補に入らないので残る。
+      function stripMarked(root, selector) {
+        const suspects = new Set();
+        root.querySelectorAll(selector).forEach(el => {
+          for (let n = el.parentElement; n && n !== root; n = n.parentElement) suspects.add(n);
+          el.remove();
+        });
+        const isEmpty = el => !el.textContent.trim() && !el.querySelector('img,svg,input,hr,br');
+        const depth = el => { let d = 0; for (let n = el; n && n !== root; n = n.parentElement) d++; return d; };
+        // 内側から順に畳む。root はまだ DOM に繋がっていないので、生死の判定に
+        // isConnected は使えない（常に false になる）。root の中に居るかで見る。
+        Array.from(suspects)
+          .sort((a, b) => depth(b) - depth(a))
+          .forEach(el => {
+            if (!root.contains(el) || !isEmpty(el)) return;
+            // 表のセルを単体で消すと桁が崩れる。行ごと空になったときだけ行を消す。
+            if (el.tagName === 'TD' || el.tagName === 'TH') return;
+            if (el.tagName === 'TR' && !Array.from(el.children).every(isEmpty)) return;
+            el.remove();
+          });
+      }
+
+      function renderMarkdownView() {
+        if (mdDiffedHtml === null) return;
+        // 1列 / 左右 の選択はツールバーの isInlineView と共有する
+        // （false＝左右、true＝1列。初期値は false なので、
+        // ここも既定は左右になる）。
+        const mdViewSplit = !isInlineView;
+
+        richDiffViewer.classList.toggle('split-mode', mdViewSplit);
+        // display は毎回インラインで指定し直す。インラインスタイルは常に
+        // stylesheet より優先されるため、.split-mode { display: flex } の
+        // クラス指定だけでは効かない（block のまま残ってしまう）ことに注意。
+        richDiffViewer.style.display = mdViewSplit ? 'flex' : 'block';
+
+        if (!mdViewSplit) {
+          // 1列表示: これまでどおり sanitize 済み HTML をそのまま流し込む
+          richDiffViewer.innerHTML = mdDiffedHtml;
+          mdResizers.forEach(r => r.style.display = 'flex');
+        } else {
+          // 左右表示: 同じ HTML 文字列を 2 回パースし、片方から追加を、
+          // もう片方から削除を取り除く。ins/del は「タグ名」では絶対に消さない
+          // ── GFM の ~~取り消し線~~ が <del> になるため、タグ名で消すと
+          // 文書が元から持っている取り消し線まで消えてしまう。HtmlDiff が
+          // 付けるクラス（diffins/diffmod/diffdel）だけを見て要素ごと remove() する。
+          const leftPane = document.createElement('div');
+          leftPane.className = 'md-split-pane md-split-left markdown-body';
+          leftPane.innerHTML = mdDiffedHtml;
+          stripMarked(leftPane, 'ins.diffins, ins.diffmod');
+
+          const rightPane = document.createElement('div');
+          rightPane.className = 'md-split-pane md-split-right markdown-body';
+          rightPane.innerHTML = mdDiffedHtml;
+          stripMarked(rightPane, 'del.diffdel, del.diffmod');
+
+          const divider = document.createElement('div');
+          divider.className = 'md-split-divider';
+
+          richDiffViewer.innerHTML = '';
+          richDiffViewer.appendChild(leftPane);
+          richDiffViewer.appendChild(divider);
+          richDiffViewer.appendChild(rightPane);
+
+          // 幅リサイザーは「1列の読みやすい幅」のための仕掛けなので、左右表示では
+          // 意味を持たない。隠すだけにして --md-width 自体には触れない
+          // （1列表示に戻したときに元どおりの幅で復元されるようにするため）。
+          mdResizers.forEach(r => r.style.display = 'none');
+        }
+      }
+
+      // htmlDiffedDocs（{single, left, right}、1 回だけ作る）を現在のモード
+      // （1列 / 左右）に応じて #htmlDiffFrame / #htmlSplitContainer に描き直す
+      // だけの関数。ここでも絶対に差分を取り直さない。1列⇄左右の切り替えは
+      // 全部これを呼ぶだけでよい。
+      function renderHtmlView() {
+        if (htmlDiffedDocs === null) return;
+        const split = !isInlineView;
+
+        if (!split) {
+          // 1列表示: これまでどおり #htmlDiffFrame 1 枚に single を流し込む
+          htmlDiffFrame.srcdoc = htmlDiffedDocs.single;
+          htmlDiffFrame.style.display = 'block';
+          htmlSplitContainer.classList.remove('visible');
+          htmlDiffFrameLeft.removeAttribute('srcdoc');
+          htmlDiffFrameRight.removeAttribute('srcdoc');
+        } else {
+          // 左右表示: #htmlDiffFrame は使わず、専用の 2 枚（left/right）を並べる。
+          // sandbox は #htmlDiffFrame と同じ allow-scripts allow-popups のみ
+          // （allow-same-origin は付けない）。
+          htmlDiffFrame.style.display = 'none';
+          htmlDiffFrame.removeAttribute('srcdoc');
+          htmlDiffFrameLeft.srcdoc = htmlDiffedDocs.left;
+          htmlDiffFrameRight.srcdoc = htmlDiffedDocs.right;
+          htmlSplitContainer.classList.add('visible');
+        }
       }
 
       // ---- Markdown View を開く (marked.parse → HtmlDiff.execute → DOMPurify.sanitize は不変) ----
@@ -2047,7 +2251,10 @@ a[data-diff-nolink]{ cursor: pointer; }
           const diffedHtml = HtmlDiff.execute(bHtml, aHtml);
 
           if (typeof DOMPurify === 'undefined') throw new Error("DOMPurify library is missing");
-          richDiffViewer.innerHTML = DOMPurify.sanitize(diffedHtml);
+          // ここで 1 回だけ diff を作り、保持しておく。1列⇄左右の切り替えは
+          // renderMarkdownView がこれを使い回すだけで、ここへは戻ってこない。
+          mdDiffedHtml = DOMPurify.sanitize(diffedHtml);
+          renderMarkdownView();
 
           // Monacoエディタを display: none で隠さず、絶対配置で画面外へ退避させる
           diffEditorContainer.style.position = 'absolute';
@@ -2058,8 +2265,11 @@ a[data-diff-nolink]{ cursor: pointer; }
           if (jumpControls) jumpControls.style.display = 'none';
           htmlDiffFrame.style.display = 'none';
           htmlDiffFrame.removeAttribute('srcdoc');
-          richDiffViewer.style.display = 'block';
-          mdResizers.forEach(r => r.style.display = 'flex');
+          htmlSplitContainer.classList.remove('visible');
+          htmlDiffFrameLeft.removeAttribute('srcdoc');
+          htmlDiffFrameRight.removeAttribute('srcdoc');
+          // richDiffViewer.style.display は renderMarkdownView が現在のモードに
+          // 合わせて設定済み（block/flex）
 
           richDiffBtn.classList.add('active');
           htmlViewBtn.classList.remove('active');
@@ -2091,9 +2301,12 @@ a[data-diff-nolink]{ cursor: pointer; }
         try {
           // 描画待ちが入るため非同期。連続クリック時は最後の要求だけを反映する。
           const seq = ++htmlRenderSeq;
-          const docHtml = await renderHtmlDiffDocument(bText, aText);
+          const docs = await renderHtmlDiffDocument(bText, aText);
           if (seq !== htmlRenderSeq) return;
-          htmlDiffFrame.srcdoc = docHtml;
+          // ここで 1 回だけ 3 通り（1列/変更前/変更後）を保持する。1列⇄左右の
+          // 切り替えは renderHtmlView がこれを使い回すだけで、ここへは戻ってこない。
+          htmlDiffedDocs = docs;
+          renderHtmlView();
 
           // Monacoエディタを display: none で隠さず、絶対配置で画面外へ退避させる
           diffEditorContainer.style.position = 'absolute';
@@ -2104,7 +2317,8 @@ a[data-diff-nolink]{ cursor: pointer; }
           if (jumpControls) jumpControls.style.display = 'none';
           richDiffViewer.style.display = 'none';
           mdResizers.forEach(r => r.style.display = 'none');
-          htmlDiffFrame.style.display = 'block';
+          // htmlDiffFrame / htmlSplitContainer の表示は renderHtmlView が現在の
+          // モードに合わせて設定済み
 
           htmlViewBtn.classList.add('active');
           richDiffBtn.classList.remove('active');
@@ -2127,6 +2341,7 @@ a[data-diff-nolink]{ cursor: pointer; }
         if (isRichDiffView && richViewMode === 'html') { restoreMonacoView(); return; }
         openHtmlView();
       });
+
       // ==============================================================
 
       document.getElementById('swapBtn').addEventListener('click', () => {
@@ -2134,20 +2349,32 @@ a[data-diff-nolink]{ cursor: pointer; }
         updatePlaceholders();
       });
 
-      const toggleViewBtn = document.getElementById('toggleViewBtn');
-      toggleViewBtn.addEventListener('click', () => {
-        isInlineView = !isInlineView;
+      const inlineViewBtn = document.getElementById('inlineViewBtn');
+      const splitViewBtn = document.getElementById('splitViewBtn');
+
+      // 押された側を選ぶ。同じものを押し直したときは何もしない
+      // （Markdown / HTML View を描き直す無駄を避ける）。
+      function setViewMode(inline) {
+        if (isInlineView === inline) return;
+        isInlineView = inline;
+        inlineViewBtn.classList.toggle('active', isInlineView);
+        splitViewBtn.classList.toggle('active', !isInlineView);
+
         diffEditor.updateOptions({ renderSideBySide: !isInlineView });
-        if (isInlineView) {
-          toggleViewBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="12" y1="3" x2="12" y2="21"/></svg> Split View';
-        } else {
-          toggleViewBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="12" x2="21" y2="12"/></svg> Inline View';
-        }
         if (!isRichDiffView && jumpControls) {
           jumpControls.style.display = isInlineView ? 'none' : 'flex';
         }
         updatePlaceholders(); rebuildChangeActions();
-      });
+
+        // Markdown View / HTML View が開いているときは、そちらの 1列⇄左右も
+        // 同じ状態に合わせる。状態は isInlineView を共有しているので、
+        // 開いているほうを描き直すだけでよい（差分は取り直さない）。
+        if (richViewMode === 'markdown') renderMarkdownView();
+        else if (richViewMode === 'html') renderHtmlView();
+      }
+
+      inlineViewBtn.addEventListener('click', () => setViewMode(true));
+      splitViewBtn.addEventListener('click', () => setViewMode(false));
 
       const updatePlaceholders = () => {
         const beforeHasText = beforeModel.getValue().length > 0; const afterHasText = afterModel.getValue().length > 0;
