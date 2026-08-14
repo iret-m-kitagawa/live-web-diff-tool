@@ -90,12 +90,32 @@ Developer: Reload Window）。アプリケーション自体を終了する必�
 | `claude plugin uninstall richdiff@live-web-diff-tool` | アンインストール |
 | `claude plugin marketplace update live-web-diff-tool` | カタログを最新化 |
 
-更新は、リポジトリへの push 後に `claude plugin update` を実行する。再インストールは不要である。
+### 更新する
+
+```
+claude plugin update richdiff@live-web-diff-tool
+```
+
+**プラグイン名の指定は必須である**（省略すると `missing required argument 'plugin'` となる）。
+すでに最新の場合は「already at the latest version」と表示されるだけなので、
+繰り返し実行しても差し支えない。再インストールは不要である。
+
+**更新の適用にも再読み込みが必要である。** 実行すると
+`Restart to apply changes.` と表示される。動作中のセッションは古い版のままなので、
+ウィンドウを再読み込みすること。現在の版は `claude plugin list` で確認できる。
+
+カタログの更新は通常不要である。`claude plugin update` はリポジトリの取得を含むため、
+カタログを登録した時点より新しい版も取得できる。最新版が反映されない場合に限り、
+カタログを明示的に更新してから再度実行する。
+
+```
+claude plugin marketplace update live-web-diff-tool
+```
 
 **本マーケットプレイスの自動更新は、既定で無効である。** 自動更新が既定で有効なのは
 公式のマーケットプレイスのみであり、それ以外は各利用者が明示的に有効化する必要がある。
 有効化は `/plugin` の **Marketplaces** タブからのみ行えるため、`/plugin` を開けない
-環境では、上記の `claude plugin update` による手動更新となる。
+環境では上記の手動更新となる。
 
 ## Cursor のエージェントを使用する場合
 
@@ -181,6 +201,10 @@ node <展開先>/bin/richdiff.mjs --proposed docs/spec.md=/tmp/spec.new.md --no-
 ```
 node <展開先>/bin/richdiff.mjs --version
 ```
+
+**動作に関わる変更を加えた場合は、必ず版数を上げること。** 利用者に配られるのは
+版数の更新を伴うものだけであり、実装を直しても `version` を据え置くと、
+`claude plugin update` は「すでに最新」と判断して古い版のまま残る。
 
 `plugin.json` の `version` と `bin/richdiff.mjs` の `VERSION` 定数は、
 別々に保持している。リリース時は次のコマンドで整合を確認する。
