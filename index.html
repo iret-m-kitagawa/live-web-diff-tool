@@ -137,16 +137,57 @@
        以前はここに Markdown View 専用のプレビュー内切り替え UI を置いていたが、
        ツールバーのボタンと意味が重複するので廃止した。
 
-       左右表示: #richDiffViewer の中身を 2 列にする。列ごとに高さが違っても
-       スクロールは同期しない（下に行くほどずれるが仕様どおり）ので、それぞれの
-       列が独立してスクロールするよう外側の padding/overflow を列側に移す。 */
+       左右表示: #richDiffViewer の中身を 2 列にする。スクロール領域は
+       #richDiffViewer 側の 1 つだけに持たせ、列側 (.md-split-pane) は個別に
+       スクロールしない。対応するブロックが両側で同じ高さになるよう JS 側
+       （alignSplitPanes）が余白を足して揃えるので、スクロールバーが 1 本でも
+       ズレない。以前はここを列ごとに独立スクロールにして、スクロール位置を
+       JS 側 (bindMdScrollSync) で追従させていたが、揃える対象を「位置」では
+       なく「高さ」に変えたことで、そのスクロール同期そのものが丸ごと不要に
+       なった。
+
+       align-items: flex-start にしてあるのは意図的（既定の stretch のままは
+       ダメ）。#richDiffViewer は高さ 100% の固定サイズを持つスクロール領域
+       なので、そこへ display: flex を掛けたときの cross-size（＝高さ）は
+       「中身の自然な高さ」ではなく「#richDiffViewer 自身の固定高さ」になる。
+       既定の stretch のままだと、2 列 (.md-split-pane。下のとおり中身は
+       flex-direction: column) がその固定高さぎりぎりへ stretch され、中身が
+       それより多いぶん（別ページより長い文書はほぼ必ずそうなる）を flex の
+       縮小アルゴリズムが押し縮めてしまう（実際に表がまるごと高さ 0 に潰れる
+       不具合が出た）。flex-start にして「揃えない」ことで、2 列それぞれが
+       自分の中身の高さぶんだけ育ち、#richDiffViewer の固定高さを素直に
+       はみ出す（はみ出した分は #richDiffViewer の overflow-y: auto がそのまま
+       スクロールで見せる）。
+
+       この結果、仕切り線 (.md-split-divider) は他の 2 列と違って「勝手に
+       伸びて両側の高さに揃う」ことがなくなる（stretch を諦めた代償）。その
+       ぶん、揃え終わった 2 列の高さを見て、仕切り線の高さを JS 側
+       （alignSplitPanes）で直接指定している。
+
+       .md-split-pane 自体も flex-direction: column にしてあるのは見た目の
+       ためではなく、隣接ブロック間のマージン相殺（margin collapsing）を
+       止めるため。片側にしか無いブロックを余白 div に置き換えたとき、
+       素の縦積み（block）のままだと「本物どうしが隣り合っていたときに
+       畳まれていたマージン」が余白側では畳まれず消えてしまい、両側の
+       積算の高さが少しずつズレていく（実測で見出しのマージン分＝十数〜
+       二十数 px ズレる不具合が実際に出た）。flex アイテムはマージンが
+       絶対に相殺されないので、JS 側で測った高さ（マージンぶんも合わせて
+       計算する）がそのまま積み上がった高さと一致するようになる。 */
     /* display: flex 自体は JS 側（renderMarkdownView）がインラインで指定する。
        インラインスタイルは常にここより優先されるため、ここで書いても意味がない。 */
-    .rich-diff-viewer.split-mode { padding: 0; overflow: hidden; }
-    .md-split-pane { flex: 1 1 50%; min-width: 0; height: 100%; overflow-y: auto; padding: 32px; }
+    .rich-diff-viewer.split-mode { padding: 0; align-items: flex-start; }
+    .md-split-pane { flex: 1 1 50%; min-width: 0; padding: 32px; display: flex; flex-direction: column; }
     .md-split-pane > *:first-child { margin-top: 0 !important; }
     .md-split-pane > *:last-child { margin-bottom: 0 !important; }
     .md-split-divider { flex: 0 0 1px; background-color: var(--border-color); }
+
+    /* 高さを揃えるための余白（alignSplitPanes が挿入する data-align-spacer）。
+       対応するブロックが両側で同じ位置から始まるよう、低いほうの直後、または
+       片側にしか無いブロックの反対側の同じ位置に足す。
+       地色のままにして見えないようにする。薄く塗って「ここには対応する中身が
+       無い」と示す案もあるが、片側に大きな追加があると画面の半分が塗られた箱に
+       なり、そちらのほうが目に付く。何も無いことは、反対側を見れば分かる。 */
+    .md-split-pane [data-align-spacer] { background-color: transparent; }
 
     /* ===== HTML View (rich-html-diff engine) ===== */
     .html-diff-frame { display: none; width: 100%; height: 100%; border: none; background-color: #ffffff; }
@@ -1597,14 +1638,22 @@ a[data-diff-nolink]{ cursor: pointer; }
       }
     };
 
-    function applyTheme(t) { 
-      if(!THEMES[t]) return; 
+    // Markdown View 左右表示の高さ揃え（realignMdSplit 系）は Monaco 読み込み後の
+    // require コールバックの中で定義されるため、ここから直接は呼べない。テーマは
+    // 文字や罫線の寸法を変えうるので、揃え直しを起こせるようこの変数へ橋渡しして
+    // おく（require コールバック側が中身を差し込む。読み込み前にテーマが変わる
+    // ことは無いので null チェックだけで十分）。
+    let mdRealignHook = null;
+
+    function applyTheme(t) {
+      if(!THEMES[t]) return;
       for (const [k, v] of Object.entries(THEMES[t].css)) {
-        document.documentElement.style.setProperty(k, v); 
+        document.documentElement.style.setProperty(k, v);
       }
-      document.body.setAttribute('data-theme', t); 
-      localStorage.setItem('diffToolTheme', t); 
-      if (window.monaco) monaco.editor.setTheme(THEMES[t].monaco); 
+      document.body.setAttribute('data-theme', t);
+      localStorage.setItem('diffToolTheme', t);
+      if (window.monaco) monaco.editor.setTheme(THEMES[t].monaco);
+      if (mdRealignHook) mdRealignHook();
     }
     
     document.getElementById('themeSelect').addEventListener('change', (e) => applyTheme(e.target.value));
@@ -1790,6 +1839,10 @@ a[data-diff-nolink]{ cursor: pointer; }
         // 補正処理: 標準プロポーショナルフォント向けに「Monacoサイズ ＋ 2px」で連動更新
         document.documentElement.style.setProperty('--md-font-size', `${size + 2}px`);
         rebuildChangeActions();
+        // 文字サイズが変わるとブロックの折り返し行数が変わり、高さも変わる。
+        // ウィンドウ幅の変化と違って ResizeObserver では拾えない（#richDiffViewer
+        // 自体の幅は変わらないため）ので、ここで明示的に測り直す。
+        scheduleMdRealign();
       });
 
       function updateLineNumberWidth(editor) {
@@ -2163,6 +2216,175 @@ a[data-diff-nolink]{ cursor: pointer; }
           });
       }
 
+      // 左右ペインのトップレベル子要素へ、出現順の通し番号を data-sync-index として
+      // 振っておく。stripMarked をかける前（＝両ペインの構造が mdDiffedHtml と
+      // 完全に同一な段階）で振るので、この番号がそのまま左右の対応表になる。
+      // あとから見た目の位置や高さから対応関係を推測する必要はない。
+      function markSyncIndex(pane) {
+        Array.from(pane.children).forEach((el, i) => { el.dataset.syncIndex = String(i); });
+      }
+
+      // ---- 左右ペインの高さ揃え ----
+      // 対応表は markSyncIndex で振った data-sync-index そのもの。renderMarkdownView
+      // が左右表示を組み立てるたびに、いま画面に出ているペインをここへ持たせておく。
+      // 1列表示に戻ったとき（renderMarkdownView 側で null に戻す）は、以下の
+      // realignMdSplit / ResizeObserver がすべて素通りになり、余計な処理は残らない。
+      let mdSplitLeftPane = null;
+      let mdSplitRightPane = null;
+      let mdSplitDivider = null;
+      let mdLastAlignWidth = 0;
+      let mdRealignQueued = false;
+
+      // 1px 未満の差は無視する。揃える意味が無いうえ、getBoundingClientRect の
+      // 小数点以下の揺れで無駄な spacer が増えるのを防ぐ。
+      const ALIGN_EPS = 1;
+
+      function clearAlignSpacers(pane) {
+        pane.querySelectorAll('[data-align-spacer]').forEach(el => el.remove());
+      }
+
+      function insertSpacerAfter(pane, afterNode, height) {
+        const spacer = document.createElement('div');
+        spacer.dataset.alignSpacer = '';
+        spacer.style.height = height + 'px';
+        if (afterNode) afterNode.insertAdjacentElement('afterend', spacer);
+        else pane.insertBefore(spacer, pane.firstChild);
+        return spacer;
+      }
+
+      // ブロックが実際に縦方向へ占めている量（余白 div が肩代わりすべき量）。
+      // .md-split-pane を flex-direction: column にしてマージン相殺を止めて
+      // あるので、素の getBoundingClientRect().height だけでは自身の
+      // margin-top / margin-bottom ぶんが漏れる。その2つを足した「見た目の
+      // 占有高さ」で測る。
+      function blockExtent(el) {
+        if (!el) return 0;
+        const cs = getComputedStyle(el);
+        return el.getBoundingClientRect().height + (parseFloat(cs.marginTop) || 0) + (parseFloat(cs.marginBottom) || 0);
+      }
+
+      // 対応するブロックの高さを両側で測り、低いほうへ余白（data-align-spacer）
+      // を足して揃える。呼ぶたびに、まず入っている余白を全部取り除いてから測り
+      // 直す。余白は幅を変えないので、入れても他のブロックの高さには影響しない
+      // ── だから「全部測る → 全部入れる」の 1 往復で足りる（測って入れてまた
+      // 測る、を繰り返す必要はない）。
+      // divider は省略可（呼び出し元がまだ持っていない初回描画の直前など）。
+      // 渡された場合は、揃え終わった 2 列の高さに合わせて仕切り線自身の高さも
+      // ここで直接指定する（align-items を stretch にできない理由は CSS 側の
+      // コメントを参照）。
+      function alignSplitPanes(leftPane, rightPane, divider) {
+        clearAlignSpacers(leftPane);
+        clearAlignSpacers(rightPane);
+
+        // markSyncIndex がフィルタ前に振った通し番号がそのまま対応表になる。
+        // stripMarked で丸ごと消えたブロックは、その番号がどちらか片方
+        // （場合によっては両方）から欠番になる。
+        const leftByIndex = new Map();
+        Array.from(leftPane.children).forEach(el => {
+          if (el.dataset.syncIndex !== undefined) leftByIndex.set(Number(el.dataset.syncIndex), el);
+        });
+        const rightByIndex = new Map();
+        Array.from(rightPane.children).forEach(el => {
+          if (el.dataset.syncIndex !== undefined) rightByIndex.set(Number(el.dataset.syncIndex), el);
+        });
+
+        let maxIndex = -1;
+        leftByIndex.forEach((_, idx) => { if (idx > maxIndex) maxIndex = idx; });
+        rightByIndex.forEach((_, idx) => { if (idx > maxIndex) maxIndex = idx; });
+
+        // まず全部測る。spacer はまだ 1 つも入れていないので、ここで得る高さは
+        // 「元の内容だけ」の高さ＝これから行う挿入の影響を受けない確定値になる。
+        // blockExtent は margin-top/margin-bottom を含めた占有高さ（理由は
+        // 上の .md-split-pane 定義のコメントを参照）。
+        const rows = [];
+        for (let idx = 0; idx <= maxIndex; idx++) {
+          const l = leftByIndex.get(idx) || null;
+          const r = rightByIndex.get(idx) || null;
+          rows.push({ l, r, lh: blockExtent(l), rh: blockExtent(r) });
+        }
+
+        // 次に全部入れる。挿入先は「直前まで処理した番号が占めていた場所（本物
+        // の要素、または直前に入れた spacer）の直後」。番号が欠番の側でも spacer
+        // がその場所を占めるので、次の番号を挿入すべき位置を見失わない。
+        let leftCursor = null;
+        let rightCursor = null;
+        rows.forEach(({ l, r, lh, rh }) => {
+          if (l && r) {
+            // 両側にある: 差の分だけ、低いほうの直後に余白を入れる
+            const diff = lh - rh;
+            if (diff > ALIGN_EPS) insertSpacerAfter(rightPane, r, diff);
+            else if (diff < -ALIGN_EPS) insertSpacerAfter(leftPane, l, -diff);
+            leftCursor = l;
+            rightCursor = r;
+          } else if (l && !r) {
+            // 右側に無い（追加ブロック）: 右側の同じ位置に、左のブロック高さぶんの余白
+            rightCursor = insertSpacerAfter(rightPane, rightCursor, lh);
+            leftCursor = l;
+          } else if (r && !l) {
+            // 左側に無い（削除ブロック）: 左側の同じ位置に、右のブロック高さぶんの余白
+            leftCursor = insertSpacerAfter(leftPane, leftCursor, rh);
+            rightCursor = r;
+          }
+          // 両側とも無い（ins/del だけで構成されていたブロックが両方から消えた
+          // 場合）は、そもそも埋めるものが無いので何もしない。
+        });
+
+        // 揃え終わった直後は両列の高さが（浮動小数点の誤差を除けば）等しい
+        // はずなので、高いほうに合わせておけば仕切り線が両側にぴったり届く。
+        if (divider) {
+          const h = Math.max(leftPane.getBoundingClientRect().height, rightPane.getBoundingClientRect().height);
+          divider.style.height = h + 'px';
+        }
+      }
+
+      // 画像は読み込みが遅れて高さが後から変わる。読み込み中の <img> にだけ
+      // 一度きりの load/error 監視を付け、届いたら揃え直す。
+      function watchImagesForRealign(pane) {
+        pane.querySelectorAll('img').forEach(img => {
+          if (img.complete) return;
+          const onSettle = () => scheduleMdRealign();
+          img.addEventListener('load', onSettle, { once: true });
+          img.addEventListener('error', onSettle, { once: true });
+        });
+      }
+
+      // 現在の左右ペインを測り直す。1列表示中（mdSplitLeftPane が null）や、
+      // 描き直しで既に切り離された古い参照を掴んでいるだけのときは何もしない。
+      function realignMdSplit() {
+        if (!mdSplitLeftPane || !mdSplitRightPane) return;
+        if (!richDiffViewer.contains(mdSplitLeftPane)) return;
+        alignSplitPanes(mdSplitLeftPane, mdSplitRightPane, mdSplitDivider);
+        mdLastAlignWidth = richDiffViewer.clientWidth;
+      }
+
+      // 短時間に何度も発火するイベント（複数画像の読み込み完了など）を 1 フレーム
+      // にまとめてから測り直す。
+      function scheduleMdRealign() {
+        if (mdRealignQueued) return;
+        mdRealignQueued = true;
+        requestAnimationFrame(() => { mdRealignQueued = false; realignMdSplit(); });
+      }
+
+      // ほかのスクリプト（テーマ切り替えの applyTheme。require コールバックの
+      // 外側にあるため、この関数群を直接は呼べない）から測り直しを起こせるよう、
+      // 外側スコープの変数へ橋渡ししておく。いまの THEMES は色しか変えないが、
+      // 文字や罫線の寸法が変わる可能性を将来にわたって取りこぼさないため。
+      mdRealignHook = scheduleMdRealign;
+
+      // ウィンドウ幅が変わるとブロックの折り返しが変わり、高さも変わる。
+      // #richDiffViewer 自体の幅を ResizeObserver で監視して測り直す（1列表示中は
+      // mdSplitLeftPane が null なので realignMdSplit 側で素通りする）。幅が
+      // 変わっていないのに高さだけ変化した場合（＝自分で入れた spacer 自身の
+      // 影響）で何度も走らないよう、前回測ったときの幅と比べてから走らせる
+      // ── 無駄打ちを避けるため。
+      if (typeof ResizeObserver !== 'undefined') {
+        new ResizeObserver(() => {
+          if (!mdSplitLeftPane) return;
+          if (richDiffViewer.clientWidth === mdLastAlignWidth) return;
+          scheduleMdRealign();
+        }).observe(richDiffViewer);
+      }
+
       function renderMarkdownView() {
         if (mdDiffedHtml === null) return;
         // 1列 / 左右 の選択はツールバーの isInlineView と共有する
@@ -2180,6 +2402,12 @@ a[data-diff-nolink]{ cursor: pointer; }
           // 1列表示: これまでどおり sanitize 済み HTML をそのまま流し込む
           richDiffViewer.innerHTML = mdDiffedHtml;
           mdResizers.forEach(r => r.style.display = 'flex');
+          // 左右表示の参照を手放す。innerHTML の入れ替えで古い leftPane/rightPane
+          // は DOM から切り離されるので、以後 realignMdSplit / ResizeObserver は
+          // ここで素通りするようになる（余白もイベント購読も残らない）。
+          mdSplitLeftPane = null;
+          mdSplitRightPane = null;
+          mdSplitDivider = null;
         } else {
           // 左右表示: 同じ HTML 文字列を 2 回パースし、片方から追加を、
           // もう片方から削除を取り除く。ins/del は「タグ名」では絶対に消さない
@@ -2189,11 +2417,15 @@ a[data-diff-nolink]{ cursor: pointer; }
           const leftPane = document.createElement('div');
           leftPane.className = 'md-split-pane md-split-left markdown-body';
           leftPane.innerHTML = mdDiffedHtml;
+          // フィルタをかける前＝左右の構造がまだ完全に同一な段階で番号を振る。
+          // これがそのまま左右の対応表になるので、あとから対応関係を推測しない。
+          markSyncIndex(leftPane);
           stripMarked(leftPane, 'ins.diffins, ins.diffmod');
 
           const rightPane = document.createElement('div');
           rightPane.className = 'md-split-pane md-split-right markdown-body';
           rightPane.innerHTML = mdDiffedHtml;
+          markSyncIndex(rightPane);
           stripMarked(rightPane, 'del.diffdel, del.diffmod');
 
           const divider = document.createElement('div');
@@ -2208,6 +2440,20 @@ a[data-diff-nolink]{ cursor: pointer; }
           // 意味を持たない。隠すだけにして --md-width 自体には触れない
           // （1列表示に戻したときに元どおりの幅で復元されるようにするため）。
           mdResizers.forEach(r => r.style.display = 'none');
+
+          // leftPane/rightPane はこの呼び出しのたびに新しく作り直しているので、
+          // 高さを揃える対象もペインと運命を共にする。1列表示に戻ったとき
+          // （上の分岐で richDiffViewer.innerHTML を丸ごと入れ替える）これらの
+          // 要素ごと破棄され、参照だけが残ることはない。
+          mdSplitLeftPane = leftPane;
+          mdSplitRightPane = rightPane;
+          mdSplitDivider = divider;
+          watchImagesForRealign(leftPane);
+          watchImagesForRealign(rightPane);
+          // 初回は開いた瞬間から揃っていてほしいので、rAF 待ち
+          // （scheduleMdRealign）にはせずここで同期的に揃える。
+          alignSplitPanes(leftPane, rightPane, divider);
+          mdLastAlignWidth = richDiffViewer.clientWidth;
         }
       }
 
