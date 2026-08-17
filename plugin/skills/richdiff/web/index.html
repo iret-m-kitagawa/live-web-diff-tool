@@ -40,9 +40,15 @@
   <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.50.0/min/vs/loader.js" integrity="sha384-6dL6PzuB2Ah5xpeMPnVze1iuvqyP3DOLQwLqglKlj9vHFfC2k3hOLIU01CbLAtH+" crossorigin="anonymous"></script>
 
   <style>
-    :root { 
-      --split-x: 0.5; 
+    :root {
+      --split-x: 0.5;
       --md-width: 900px;
+      /* Markdown View 目次の幅。出ていないとき 0 / 通常は既定190px（ドラッグで
+         140〜420px の範囲で変えられる）/ 畳んで 34px。
+         JS 側 (updateMdToc) が唯一の書き手。.rich-diff-viewer の左パディングと
+         .md-resizer の位置計算にも織り込んである（各箇所のコメント参照）。 */
+      --md-toc-w: 0px;
+      --md-toc-dot: 0.72em; /* 目次の印(丸)の直径。項目の文字サイズに対する比で持つ */
     }
     * { box-sizing: border-box; }
     body, html {
@@ -113,7 +119,12 @@
     }
     .rich-diff-viewer {
       display: none; width: 100%; height: 100%;
-      padding: 32px max(32px, calc((100% - var(--md-width)) / 2));
+      /* 目次(--md-toc-w)が左に乗る分だけ、中央寄せの基準を「目次を除いた
+         領域」(100% - --md-toc-w) に付け替える。目次が無い(0px)ときは
+         これまでどおりの式と一致する。padding-left だけ目次の幅ぶん
+         さらに足すことで、本文そのものは残り領域の中央に来る。 */
+      padding: 32px max(32px, calc((100% - var(--md-toc-w) - var(--md-width)) / 2));
+      padding-left: calc(var(--md-toc-w) + max(32px, calc((100% - var(--md-toc-w) - var(--md-width)) / 2)));
       overflow-y: auto;
     }
     [data-theme*="light"] .rich-diff-viewer, [data-theme*="light"] .md-split-pane {
@@ -175,7 +186,9 @@
        計算する）がそのまま積み上がった高さと一致するようになる。 */
     /* display: flex 自体は JS 側（renderMarkdownView）がインラインで指定する。
        インラインスタイルは常にここより優先されるため、ここで書いても意味がない。 */
-    .rich-diff-viewer.split-mode { padding: 0; align-items: flex-start; }
+    /* 左右表示は中央寄せの計算そのものが要らない (padding: 0) が、目次の幅
+       ぶんだけはここでも本文の前に確保しておかないと、目次と2列が重なる。 */
+    .rich-diff-viewer.split-mode { padding: 0; padding-left: var(--md-toc-w); align-items: flex-start; }
     .md-split-pane { flex: 1 1 50%; min-width: 0; padding: 32px; display: flex; flex-direction: column; }
     .md-split-pane > *:first-child { margin-top: 0 !important; }
     .md-split-pane > *:last-child { margin-bottom: 0 !important; }
@@ -217,8 +230,11 @@
       position: absolute; top: 0; bottom: 0; width: 12px; cursor: col-resize; z-index: 150;
       display: none; align-items: center; justify-content: center;
     }
-    .md-resizer.left  { left: calc(50% - var(--md-width) / 2 - 6px); }
-    .md-resizer.right { left: calc(50% + var(--md-width) / 2 - 6px); }
+    /* 目次が出ている分だけ「中心」が右へ寄る（目次の幅の半分だけ）。
+       ドラッグ中の計算（JS 側の mousemove ハンドラ）も同じ式で --md-toc-w を
+       読んで揃えてある。 */
+    .md-resizer.left  { left: calc((100% + var(--md-toc-w)) / 2 - var(--md-width) / 2 - 6px); }
+    .md-resizer.right { left: calc((100% + var(--md-toc-w)) / 2 + var(--md-width) / 2 - 6px); }
 
     .md-resizer::after {
       content: ""; height: 32px; width: 4px; border-radius: 2px;
@@ -229,6 +245,131 @@
       background-color: #0a84ff; transform: scaleX(1.5);
     }
     body.is-resizing { user-select: none; cursor: col-resize; }
+
+    /* ===== Markdown View 目次 (Index) ===== */
+    /* 「変更の地図」として、見出し(h1/h2/h3)ごとにその節が追加/削除/内部変更/
+       無変更のどれかを丸印で示す。Zenn 風に、枠で囲わず余白と細い縦線だけで
+       区切る。#richDiffViewer の中には入れない（左右表示の高さ揃えの測定に
+       混ざるのを避けるため）。.md-resizer と同じく .main-container への
+       絶対配置にし、幅は --md-toc-w 1本だけで持つ（出ていない/通常/畳んだ、
+       の3値。JS 側 updateMdToc が唯一の書き手）。この変数は上の
+       .rich-diff-viewer の左パディングと .md-resizer の位置計算にも
+       織り込んである。 */
+    .md-toc {
+      display: none; position: absolute; top: 0; bottom: 0; left: 0;
+      width: var(--md-toc-w); overflow: hidden; z-index: 130;
+      flex-direction: column; background-color: var(--bg-main);
+      border-right: 1px solid var(--border-color);
+    }
+    .md-toc.visible { display: flex; }
+
+    /* 目次自体の幅をドラッグで変えるための掴み所。.md-resizer（左右ペインの
+       幅を変える方）とは別物で、こちらは .md-toc の右端に重ねた6px帯。
+       right: 0 に収めているのは、.md-toc に overflow: hidden が付いている
+       ため、はみ出す位置に置くと半分切れてしまうから。畳んでいるときは幅が
+       34px固定で、掴んでも意味が無いので出さない。 */
+    .md-toc-resizer {
+      position: absolute; top: 0; bottom: 0; right: 0; width: 6px; cursor: col-resize; z-index: 140;
+    }
+    .md-toc-resizer:hover, .md-toc-resizer.dragging { background-color: #0a84ff; opacity: .4; }
+    .md-toc.collapsed .md-toc-resizer { display: none; }
+
+    .md-toc-head {
+      flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between;
+      gap: 6px; padding: 10px 8px 8px 12px;
+    }
+    .md-toc-title, .md-toc-title-v {
+      font-size: 10px; letter-spacing: .14em; text-transform: uppercase;
+      color: var(--text-muted); font-weight: bold; white-space: nowrap;
+    }
+    /* 畳んだ状態でだけ出す縦書きの見出し（横書きの方は隠す）。 */
+    .md-toc-title-v { display: none; writing-mode: vertical-rl; text-orientation: mixed; margin: 2px auto 0; }
+    .md-toc-fold {
+      flex: 0 0 auto; width: 24px; height: 24px; border-radius: 3px; font-family: inherit;
+      border: 1px solid var(--border-color); background: transparent; color: var(--text-muted);
+      display: flex; align-items: center; justify-content: center; font-size: 14px;
+      line-height: 1; cursor: pointer; padding: 0;
+    }
+    .md-toc-fold:hover { background-color: var(--border-color); color: var(--text-main); }
+
+    /* 畳んだ状態: 完全に消すと変更の位置が見えなくなるので、34px 程度の帯を
+       残し、縦書きの Index と印だけを縦に並べる（文言だけ隠す）。 */
+    .md-toc.collapsed .md-toc-head { flex-direction: column; padding: 10px 0 6px; }
+    .md-toc.collapsed .md-toc-title { display: none; }
+    .md-toc.collapsed .md-toc-title-v { display: block; }
+    .md-toc.collapsed .md-toc-list { align-items: center; }
+    .md-toc.collapsed .md-toc-i { justify-content: center; padding: 4px 0; gap: 0; }
+    .md-toc.collapsed .md-toc-i .md-toc-t { display: none; }
+    /* 開いているときは slot の高さを1行分(1.5em)にして印を1行目の中央に
+       置くが、畳んだ状態は文言が消えて slot だけが行の中身になるので、
+       印そのものの大きさ(1em)まで詰める（下の .md-toc-slot のコメント参照）。 */
+    .md-toc.collapsed .md-toc-slot { height: var(--md-toc-dot); }
+
+    /* min-height: 0 が要る。列方向の flex 子は既定の min-height:auto で中身より
+       小さくなれないので、これが無いと一覧が目次の高さを超えて伸び、
+       .md-toc の overflow:hidden で下が切り落とされてスクロールできない。 */
+    .md-toc-list {
+      flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 2px 0 16px;
+      display: flex; flex-direction: column;
+    }
+    /* 項目は <button> にして、キーボード操作やフォーカスの見た目をタダで
+       もらう。all: unset でボタンの既定見た目を消してから、必要な分だけ
+       (レイアウトと文字色) を明示し直す。 */
+    /* font-size はヘッダーの文字サイズ選択（#fontSizeSelect）が書き換える
+       --md-font-size（Monacoのサイズ+2px、既定14px）にそのまま連動させる。
+       CSS変数を参照するだけなのでJS側の追加は不要 ── ただし文字サイズが
+       変われば行の高さも変わるので、fontSizeSelect の change ハンドラから
+       scheduleMdTocHighlight() も呼ぶようにしてある（隣の scheduleMdRealign
+       と同じ場所）。長い見出しは1行に切らず3行まで折り返す
+       （.md-toc-t 側の -webkit-line-clamp 参照）ので、white-space は折り返す
+       側にし、align-items も flex-start にして複数行でも印(.md-toc-slot)が
+       1行目の高さに来るようにする。 */
+    .md-toc-i {
+      /* flex: 0 0 auto が要る。列方向の flex 子は既定で縮むので、項目数が
+         多い長い文書では1件あたりの高さが削られて文字が潰れる。縮ませずに
+         溢れさせて、上の .md-toc-list 側でスクロールさせる。 */
+      all: unset; flex: 0 0 auto; box-sizing: border-box; display: flex; align-items: flex-start; gap: 7px;
+      width: 100%; padding: 3px 10px 3px 12px; border-left: 2px solid transparent;
+      color: var(--text-muted); font-size: calc(var(--md-font-size, 14px) - 1px);
+      white-space: normal; overflow: hidden;
+      cursor: pointer;
+    }
+    .md-toc-i:hover { color: var(--text-main); }
+    .md-toc-i.lv3 { padding-left: 24px; font-size: calc(var(--md-font-size, 14px) - 2px); }
+    /* 現在位置は左端の青い線と明るい文字で示す（Zenn と同じ）。 */
+    .md-toc-i.current { color: var(--text-main); font-weight: bold; border-left-color: #0a84ff; background-color: var(--bg-panel); }
+    /* 削除された節の項目は取り消し線。 */
+    .md-toc-i.removed .md-toc-t { text-decoration: line-through; opacity: .72; }
+    /* 長い見出しは3行までは折り返し、それを超えたら省略記号（全文は
+       renderMdTocList が item.title に入れているので hover で読める）。
+       overflow-wrap: anywhere は、区切りの無い長い文字列（URLなど）でも
+       3行に収まるよう途中で強制的に折り返すため。 */
+    .md-toc-t {
+      overflow: hidden; text-overflow: ellipsis; overflow-wrap: anywhere;
+      display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical;
+    }
+
+    /* 印はすべて丸。大きさは文字に対する比（--md-toc-dot）で持ち、文字サイズを
+       変えても釣り合いが崩れないようにする。7px 固定だと「中に変更」の
+       左半分赤・右半分緑が潰れて、ただのオレンジ色の点に見えてしまっていた。
+       変更なしは何も置かず、位置だけ空けて字揃えを保つ
+       （.md-toc-slot 自体は残すが中に .md-toc-m を入れない）。 */
+    /* height は開いた状態では「1行分」(1.5em 程度) にする。.md-toc-i が
+       align-items: flex-start になったので、複数行に折り返した項目でも
+       slot がその中で縦中央に置かれ、印が1行目の高さに揃って見える。
+       畳んだ状態は上の .md-toc.collapsed .md-toc-slot で印の分だけに詰める
+       （畳むと文言が消えて slot が唯一の中身になるので、印の無い行だけ
+       丈が縮んで字揃えが崩れてしまうのを防ぐため。理由は元のコメントと
+       同じで、値だけ開閉で使い分けている）。 */
+    .md-toc-slot { display: inline-flex; align-items: center; justify-content: center; width: 1.1em; height: 1.5em; flex: 0 0 auto; }
+    .md-toc-m { width: var(--md-toc-dot); height: var(--md-toc-dot); border-radius: 50%; display: inline-block; flex: 0 0 auto; }
+    .md-toc-m.add { background-color: #3fb950; }
+    .md-toc-m.del { background-color: #f85149; }
+    /* 中に変更がある節は、左半分が赤・右半分が緑の丸1つ（案B）。 */
+    .md-toc-m.mod { background: linear-gradient(90deg, #f85149 0 50%, #3fb950 50% 100%); }
+    [data-theme*="light"] .md-toc-m.add { background-color: #238636; }
+    [data-theme*="light"] .md-toc-m.del { background-color: #da3633; }
+    [data-theme*="light"] .md-toc-m.mod { background: linear-gradient(90deg, #da3633 0 50%, #238636 50% 100%); }
 
     /* ===== Jump Controls ===== */
     .jump-controls {
@@ -362,6 +503,18 @@
 
   <div class="main-container" id="mainContainer">
     <div id="diffEditor" style="width: 100%; height: 100%;"></div>
+    <!-- Markdown View 専用の目次。#richDiffViewer の外、.main-container への
+         絶対配置にしてある理由は上の .md-toc CSS のコメントを参照。
+         HTML View / Monaco では JS 側（hideMdToc）が常に隠す。 -->
+    <div id="mdToc" class="md-toc" role="navigation" aria-label="目次">
+      <div class="md-toc-head">
+        <span class="md-toc-title">Index</span>
+        <span class="md-toc-title-v">Index</span>
+        <button type="button" id="mdTocFold" class="md-toc-fold" title="目次をたたむ">‹</button>
+      </div>
+      <div id="mdTocList" class="md-toc-list"></div>
+      <div id="mdTocResizer" class="md-toc-resizer" title="目次の幅を変える"></div>
+    </div>
     <div id="richDiffViewer" class="rich-diff-viewer markdown-body"></div>
     <!-- sandbox="allow-scripts allow-popups" is intentional (matches the source rich-html-diff tool):
          pasted HTML's own <script> tags are allowed to run inside this sandboxed iframe so that
@@ -2012,14 +2165,18 @@ a[data-diff-nolink]{ cursor: pointer; }
 
     document.addEventListener('mousemove', (e) => {
       if (!isMdResizing) return;
-      const center = window.innerWidth / 2;
-      
+      // 目次が出ている分だけ、読みやすい列の「中心」は画面ちょうど中央では
+      // なく目次の幅の半分だけ右へ寄る。.md-resizer の CSS 側の計算式と
+      // 揃えてある（そちらのコメント参照）。
+      const tocW = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--md-toc-w')) || 0;
+      const center = (window.innerWidth + tocW) / 2;
+
       const dist = activeResizerDir === 'left' ? (center - e.clientX) : (e.clientX - center);
       let newWidth = dist * 2;
-      
-      if (newWidth < 400) newWidth = 400; 
-      if (newWidth > window.innerWidth - 64) newWidth = window.innerWidth - 64; 
-      
+
+      if (newWidth < 400) newWidth = 400;
+      if (newWidth > window.innerWidth - tocW - 64) newWidth = window.innerWidth - tocW - 64;
+
       document.documentElement.style.setProperty('--md-width', `${newWidth}px`);
     });
 
@@ -2107,6 +2264,10 @@ a[data-diff-nolink]{ cursor: pointer; }
         // ウィンドウ幅の変化と違って ResizeObserver では拾えない（#richDiffViewer
         // 自体の幅は変わらないため）ので、ここで明示的に測り直す。
         scheduleMdRealign();
+        // 目次の項目も --md-font-size に連動して大きさが変わり、行の高さも
+        // 変わる。現在位置ハイライトは項目の位置を実測して決めているので、
+        // ここで測り直しておかないと文字サイズを変えた直後だけずれて見える。
+        scheduleMdTocHighlight();
         if (htmlRealignHook) htmlRealignHook();
       });
 
@@ -2496,6 +2657,7 @@ a[data-diff-nolink]{ cursor: pointer; }
         diffEditorContainer.style.visibility = '';
 
         richDiffViewer.style.display = 'none';
+        hideMdToc(); // 目次も一緒に消す。購読(scroll)も残さない
         htmlDiffFrame.style.display = 'none';
         htmlDiffFrame.removeAttribute('srcdoc');
         htmlSplitContainer.classList.remove('visible');
@@ -3037,8 +3199,368 @@ a[data-diff-nolink]{ cursor: pointer; }
         }).observe(richDiffViewer);
       }
 
+      // ========== Markdown View 目次 (Index) ==========
+      // ただの目次ではなく「変更の地図」。見出し(h1/h2/h3)ごとに、その節が
+      // 追加/削除/内部変更/無変更のどれかを丸印で示す。差分は絶対に取り直さない
+      // ── mdDiffedHtml（sanitize 済みの diff HTML、openMarkdownView が1回だけ
+      // 作る）から組み立てるだけ。
+      const mdToc = document.getElementById('mdToc');
+      const mdTocList = document.getElementById('mdTocList');
+      const mdTocFoldBtn = document.getElementById('mdTocFold');
+      const mdTocResizer = document.getElementById('mdTocResizer');
+
+      let mdTocCollapsed = false;   // 折りたたみ状態。セッション中だけ覚える（永続化はしない）
+      // 開いているときの目次の幅(px)。ドラッグで変わる。--md-toc-w を書くのは
+      // updateMdToc とここの2箇所だけ（下のドラッグ処理）にして、この変数
+      // だけが値の出どころになるようにしてある。mdTocCollapsed と同じく
+      // セッション中だけ覚え、localStorage には残さない。
+      let mdTocOpenW = 190;
+      const MD_TOC_MIN_W = 140; // これより狭くはしない
+      const MD_TOC_MAX_W = 420; // これより広くはしない
+      let mdTocEntries = [];        // 直近に組み立てた項目一覧
+      let mdTocBuiltHtml = null;    // mdTocEntries がどの mdDiffedHtml から作られたか（同じなら作り直さない）
+      let mdTocCurrentIndex = null; // 現在ハイライト中の項目の data-sync-index
+      let mdTocScrollBound = false; // #richDiffViewer への scroll 購読が生きているか
+      let mdTocRafQueued = false;   // 現在位置の再計算を rAF に1本化するためのフラグ
+      const MD_TOC_JUMP_MARGIN = 16; // クリックで飛んだとき、対象が少し下に来る程度の余白
+
+      // ins/del は絶対にタグ名で判定しない。GFM の ~~取り消し線~~ が <del> に
+      // なるため、タグ名で判定すると文書自身の取り消し線を巻き込んでしまう。
+      // クラス（diffins/diffmod/diffdel）だけを見るのは stripMarked と同じ考え方。
+      const MD_TOC_INS_SEL = 'ins.diffins, ins.diffmod';
+      const MD_TOC_DEL_SEL = 'del.diffdel, del.diffmod';
+      const MD_TOC_MARK_SEL = MD_TOC_INS_SEL + ', ' + MD_TOC_DEL_SEL;
+
+      // 要素から「変更前の姿」「変更後の姿」を取り出す。要素自身が対象
+      // （まるごと追加/削除された段落など、HtmlDiff がトップレベル要素そのものを
+      // ins/del にすることがある）なら中身ごと数えない。
+      function mdTocStripText(el, selector) {
+        if (el.matches(selector)) return '';
+        const clone = el.cloneNode(true);
+        clone.querySelectorAll(selector).forEach((n) => n.remove());
+        return (clone.textContent || '').replace(/\s+/g, ' ').trim();
+      }
+      const mdTocBeforeText = (el) => mdTocStripText(el, MD_TOC_INS_SEL); // ins(追加分)を除く＝変更前の姿
+      const mdTocAfterText = (el) => mdTocStripText(el, MD_TOC_DEL_SEL);  // del(削除分)を除く＝変更後の姿
+      const mdTocHasMark = (el) => el.matches(MD_TOC_MARK_SEL) || !!el.querySelector(MD_TOC_MARK_SEL);
+      const mdTocHasSide = (els, sel) => els.some((el) => el.matches(sel) || !!el.querySelector(sel));
+
+      // 意味のある文字（文字か数字）の数。空白・記号・句読点は数えない。
+      // 文字か数字かで見るのは、差分エンジンの identityOverlap と同じ基準。
+      const mdTocWeight = (s) => ((s || '').match(/[\p{L}\p{N}]/gu) || []).length;
+
+      // 見出しの文字を「追加された分・削除された分・どちらでもない分」の
+      // 3つに数え分ける。節ごとの増減はこの内訳で決める（下の判定を参照）。
+      function mdTocHeadWeights(el) {
+        const w = { ins: 0, del: 0, keep: 0 };
+        const walk = (node, side) => {
+          if (node.nodeType === 3) { w[side] += mdTocWeight(node.nodeValue); return; }
+          if (node.nodeType !== 1) return;
+          // ins/del は入れ子にならない前提だが、外側で決まった側を優先して
+          // おけば入れ子でも二重に数えない。
+          let s = side;
+          if (s === 'keep') {
+            if (node.matches(MD_TOC_INS_SEL)) s = 'ins';
+            else if (node.matches(MD_TOC_DEL_SEL)) s = 'del';
+          }
+          Array.from(node.childNodes).forEach((c) => walk(c, s));
+        };
+        walk(el, 'keep');
+        return w;
+      }
+
+      // 「節ごと増減した」とみなす上限。見出しのうち、増えた側（減った側）
+      // 以外が全体のこれ以下なら、まるごと増減したものとして扱う。
+      const MD_TOC_GONE_RATIO = 0.25;
+
+      // mdDiffedHtml を独立したコンテナへ流し込み、markSyncIndex で通し番号を
+      // 振ってから見出し単位に切り分ける。ここで振る番号は renderMarkdownView が
+      // 1列表示・左右ペインそれぞれに振る番号と全く同じ規則（トップレベルの子を
+      // 出現順に0から）なので、そのまま飛び先の鍵として使い回せる。
+      // トップレベルの子だけを見る（blockquote や li の中の見出しは対象外）。
+      function buildMdTocEntries() {
+        if (mdDiffedHtml === null) return [];
+        const container = document.createElement('div');
+        container.innerHTML = mdDiffedHtml;
+        markSyncIndex(container);
+
+        // 見出しから次の見出しの直前までを1節とする（見出し自身を含む）。
+        const sections = [];
+        let cur = null;
+        Array.from(container.children).forEach((el) => {
+          const m = /^H([123])$/.exec(el.tagName);
+          if (m) {
+            cur = { level: Number(m[1]), heading: el, members: [el] };
+            sections.push(cur);
+          } else if (cur) {
+            cur.members.push(el);
+          }
+        });
+
+        return sections.flatMap((sec) => {
+          // 節ごと増えたか減ったかは、見出し自身だけで決める。目次は見出しの
+          // 一覧なので、「その項目が変更前にあったか・変更後にあるか」が
+          // そのまま印の意味になる。
+          // 節の中身の増減で決めると破綻する。HtmlDiff は段落をまたいで文字
+          // 単位で差分を取るので、前の節の削除された末尾が、次の節の見出しより
+          // 後ろに置かれることがある。すると新しく足したはずの節が、隣の節の
+          // 残骸を自分の中身として数えてしまい「中に変更」に化ける。
+          //
+          // ただし見出しも「片側に丸ごと入っているか」では測れない。HtmlDiff は
+          // 文字単位なので、まるごと足した見出しでも、前からそこにあった見出しと
+          // たまたま一致した文字が残る。番号を振った文書では「3.4 」のような
+          // 見出し番号がまさにそれで、新設した節が「中に変更」に化けていた。
+          // そこで内訳の割合で見る ── 増えた分以外がごく僅かなら節ごと追加。
+          const hw = mdTocHeadWeights(sec.heading);
+          const total = hw.ins + hw.del + hw.keep;
+          const headBefore = mdTocBeforeText(sec.heading);
+          const headAfter = mdTocAfterText(sec.heading);
+
+          // 見出しが「まるごと消えた分」と「まるごと足した分」だけで出来て
+          // いるときは、書き換えではなく別々の見出しが1要素にまとめられた形。
+          // 節を差し替えると（古い節を消して新しい節を足すと）必ずこうなる。
+          // 1行の「中に変更」で出すと、消えた節も足した節も見えなくなるので、
+          // 消えた分と足した分の2行に分けて出す。飛び先は同じ要素でよい
+          // （文書の上では同じ場所にあるため）。
+          if (hw.ins > 0 && hw.del > 0 && hw.keep <= total * MD_TOC_GONE_RATIO) {
+            return [
+              { level: sec.level, status: 'del', gone: true, label: headBefore, syncIndex: sec.heading.dataset.syncIndex },
+              { level: sec.level, status: 'add', gone: false, label: headAfter, syncIndex: sec.heading.dataset.syncIndex },
+            ];
+          }
+
+          // 節ごと消えたか（＝項目に取り消し線を引くか）は見出しだけで決まる。
+          // 中に削除があるだけの節に取り消し線を引いてはいけない。
+          const gone = hw.del > 0 && hw.ins + hw.keep <= total * MD_TOC_GONE_RATIO;
+          let status;
+          if (hw.ins > 0 && hw.del + hw.keep <= total * MD_TOC_GONE_RATIO) status = 'add'; // 節ごと追加
+          else if (gone) status = 'del';                                                   // 節ごと削除
+          else {
+            // 見出しは残っている節。印の色は「中で何が起きたか」で分ける。
+            // 一律で赤緑にすると、足しただけの節にも赤が入り、何かを消した
+            // ように見えてしまう。実際そう見えるという指摘があった。
+            const ins = mdTocHasSide(sec.members, MD_TOC_INS_SEL);
+            const del = mdTocHasSide(sec.members, MD_TOC_DEL_SEL);
+            status = ins && del ? 'mod' : ins ? 'add' : del ? 'del' : 'none';
+          }
+          // 見出しの文言そのものが変わっていても、出すのは変更後の文言だけ
+          // （節ごと削除のときだけ変更後が空になるので、変更前を使う）。
+          // どちらも空という取りこぼしに備えて反対側で埋める。文言の無い項目を
+          // 目次に並べるくらいなら、反対側の文言のほうがましなので。
+          const label = (gone ? headBefore : headAfter) || headBefore || headAfter;
+          return [{ level: sec.level, status, gone, label, syncIndex: sec.heading.dataset.syncIndex }];
+        });
+      }
+
+      // 項目一覧の DOM を作り直す（entries の中身が変わったときだけ呼ぶ）。
+      function renderMdTocList() {
+        mdTocList.innerHTML = '';
+        mdTocCurrentIndex = null;
+        mdTocEntries.forEach((entry) => {
+          const item = document.createElement('button');
+          item.type = 'button';
+          item.className = 'md-toc-i'
+            + (entry.level === 3 ? ' lv3' : '')
+            + (entry.gone ? ' removed' : '');
+          item.dataset.syncIndex = entry.syncIndex;
+          if (entry.label) item.title = entry.label; // 長い見出しは省略記号で切るので、全文は title に
+
+          // 印はすべて丸。変更なしは何も置かず、位置だけ空けて字揃えを保つ
+          // （slot 自体は残すが、中に .md-toc-m を入れない）。
+          const slot = document.createElement('span');
+          slot.className = 'md-toc-slot';
+          if (entry.status !== 'none') {
+            const mark = document.createElement('i');
+            mark.className = 'md-toc-m ' + (entry.status === 'add' ? 'add' : entry.status === 'del' ? 'del' : 'mod');
+            slot.appendChild(mark);
+          }
+          item.appendChild(slot);
+
+          const label = document.createElement('span');
+          label.className = 'md-toc-t';
+          label.textContent = entry.label;
+          item.appendChild(label);
+
+          item.addEventListener('click', () => mdTocJumpTo(entry.syncIndex));
+          mdTocList.appendChild(item);
+        });
+      }
+
+      // #richDiffViewer の中から、飛び先の鍵(data-sync-index)に対応する要素を
+      // 探す。左右分割では片側にしか無い節もあるが、querySelector はどちらの
+      // ペインにあっても見つけてくれるので、対象が1列/左右のどちらでも同じ
+      // 呼び方で済む。
+      function mdTocFindTarget(syncIndex) {
+        return richDiffViewer.querySelector('[data-sync-index="' + syncIndex + '"]');
+      }
+
+      // 項目をクリックしたときの飛び先。スクロールを持っているのは
+      // #richDiffViewer 自身（左右分割でも1本のスクロール領域を共有している）
+      // ので、そこへ対して行う。対象が少し下に来る程度の余白を残す。
+      function mdTocJumpTo(syncIndex) {
+        const target = mdTocFindTarget(syncIndex);
+        if (!target) return;
+        const delta = target.getBoundingClientRect().top - richDiffViewer.getBoundingClientRect().top;
+        richDiffViewer.scrollTo({ top: richDiffViewer.scrollTop + delta - MD_TOC_JUMP_MARGIN, behavior: 'smooth' });
+      }
+
+      // 器のスクロールに追随して、いま画面上端をまたいでいる見出しを現在位置と
+      // する。項目は文書の出現順に並んでいるので、「まだ画面上端より上に来て
+      // いる」項目のうち一番後ろのものを探せばよい。1つも無ければ（まだ最初の
+      // 見出しにも達していない）先頭を現在位置とする。
+      function updateMdTocHighlight() {
+        const items = Array.from(mdTocList.children);
+        if (!items.length) return;
+        let current;
+        // 一番下まで来ているときは、最後の見出しから先の中身が短くて画面上端
+        // まで来ないことがある（見出しの直後で文書が終わる場合など）。
+        // それでも「もうこれ以上下は無い」以上、最後の項目を現在位置とする
+        // ── これが無いと、文書の末尾にいるのに最後の項目がいつまでも
+        // 現在位置にならないことがある。
+        const atBottom = richDiffViewer.scrollTop + richDiffViewer.clientHeight >= richDiffViewer.scrollHeight - 2;
+        if (atBottom) {
+          current = items[items.length - 1];
+        } else {
+          // 判定の線は、クリックで飛んだときに対象が止まる位置に合わせる。
+          // 器の上端ちょうどで測ると、飛んだ直後は対象が MD_TOC_JUMP_MARGIN
+          // だけ下にいて線に届かず、ひとつ前の項目が現在位置のままになる
+          // （少しスクロールすると直る、という状態だった）。
+          const topLine = richDiffViewer.getBoundingClientRect().top + MD_TOC_JUMP_MARGIN + 1;
+          current = items[0];
+          for (const item of items) {
+            const target = mdTocFindTarget(item.dataset.syncIndex);
+            if (target && target.getBoundingClientRect().top <= topLine) current = item;
+          }
+        }
+        if (current.dataset.syncIndex === mdTocCurrentIndex) return; // 変化が無ければ何もしない
+        mdTocCurrentIndex = current.dataset.syncIndex;
+        items.forEach((item) => item.classList.toggle('current', item === current));
+        // 項目数の多い文書では現在位置が一覧の外に出ていることがあり、そのままだと
+        // 強調しても見えない。block:'nearest' なので、既に見えているときは動かない。
+        current.scrollIntoView({ block: 'nearest' });
+      }
+
+      // 短時間に何度も発火するイベント（スクロール中の連続発火など）を1フレーム
+      // にまとめる。Markdown View の scheduleMdRealign と同じ考え方。
+      function scheduleMdTocHighlight() {
+        if (mdTocRafQueued) return;
+        mdTocRafQueued = true;
+        requestAnimationFrame(() => { mdTocRafQueued = false; updateMdTocHighlight(); });
+      }
+
+      function mdTocBindScroll() {
+        if (mdTocScrollBound) return;
+        richDiffViewer.addEventListener('scroll', scheduleMdTocHighlight, { passive: true });
+        mdTocScrollBound = true;
+      }
+      function mdTocUnbindScroll() {
+        if (!mdTocScrollBound) return;
+        richDiffViewer.removeEventListener('scroll', scheduleMdTocHighlight);
+        mdTocScrollBound = false;
+      }
+
+      // Markdown View を閉じる、または見出しが1つも無い文書のときに呼ぶ。
+      // 畳んだ帯も含めて領域ごと消し、購読も残さない
+      // （--md-toc-w を 0 に戻すので、.rich-diff-viewer 側の余白計算も
+      // 目次が無かったときの式にそのまま戻る）。
+      function hideMdToc() {
+        mdToc.classList.remove('visible');
+        document.documentElement.style.setProperty('--md-toc-w', '0px');
+        mdTocUnbindScroll();
+        mdTocCurrentIndex = null;
+      }
+
+      // renderMarkdownView が1列⇄左右を描き直すたびに呼ぶ。差分は取り直さない
+      // ので、mdDiffedHtml が前回と同じなら項目一覧も作り直さない
+      // （1列⇄左右の往復のたびに目次がちらつかないようにするため）。
+      function updateMdToc() {
+        if (mdDiffedHtml === null) { hideMdToc(); return; }
+        if (mdTocBuiltHtml !== mdDiffedHtml) {
+          mdTocEntries = buildMdTocEntries();
+          mdTocBuiltHtml = mdDiffedHtml;
+          renderMdTocList();
+        }
+        // 見出しが1つも無い文書では、目次の領域ごと出さない（畳んだ帯も出さない）。
+        if (mdTocEntries.length === 0) { hideMdToc(); return; }
+
+        mdToc.classList.add('visible');
+        mdToc.classList.toggle('collapsed', mdTocCollapsed);
+        mdTocFoldBtn.title = mdTocCollapsed ? '目次を開く' : '目次をたたむ';
+        mdTocFoldBtn.textContent = mdTocCollapsed ? '›' : '‹';
+        document.documentElement.style.setProperty('--md-toc-w', mdTocCollapsed ? '34px' : `${mdTocOpenW}px`);
+        mdTocBindScroll();
+        scheduleMdTocHighlight();
+      }
+
+      mdTocFoldBtn.addEventListener('click', () => {
+        mdTocCollapsed = !mdTocCollapsed;
+        mdToc.classList.toggle('collapsed', mdTocCollapsed);
+        mdTocFoldBtn.title = mdTocCollapsed ? '目次を開く' : '目次をたたむ';
+        mdTocFoldBtn.textContent = mdTocCollapsed ? '›' : '‹';
+        document.documentElement.style.setProperty('--md-toc-w', mdTocCollapsed ? '34px' : `${mdTocOpenW}px`);
+        // 目次の幅が変わると、左右表示の2列に残された横幅も変わり、折り返しが
+        // 変わって高さも変わりうる（#richDiffViewer 自体の clientWidth は
+        // 目次を重ねているだけなので変わらず、既存の ResizeObserver では
+        // 拾えない）。scheduleMdRealign は1列表示中（mdSplitLeftPane が null）
+        // なら素通りするので、常に呼んでよい。
+        scheduleMdRealign();
+      });
+
+      // ========== Markdown View 目次の幅リサイズ ==========
+      // 右端の掴み所（#mdTocResizer）をドラッグして目次自体の幅（mdTocOpenW）
+      // を変える。.md-resizer（左右ペインの幅）用の isMdResizing とは別の
+      // フラグで判定する ── 同じ mousemove/mouseup に相乗りさせると、
+      // どちらのドラッグ中かの判定が絡まりかねないため。
+      let isMdTocResizing = false;
+      let mdTocDragLeft = 0; // ドラッグ開始時に測った目次の左端(px)。ドラッグ中は動かないので、mousemove のたびに測り直さない。
+
+      mdTocResizer.addEventListener('mousedown', () => {
+        isMdTocResizing = true;
+        mdTocDragLeft = mdToc.getBoundingClientRect().left;
+        mdTocResizer.classList.add('dragging');
+        document.body.classList.add('is-resizing');
+      });
+
+      document.addEventListener('mousemove', (e) => {
+        if (!isMdTocResizing) return;
+        let newWidth = e.clientX - mdTocDragLeft;
+        if (newWidth < MD_TOC_MIN_W) newWidth = MD_TOC_MIN_W;
+        if (newWidth > MD_TOC_MAX_W) newWidth = MD_TOC_MAX_W;
+        mdTocOpenW = newWidth;
+        // ドラッグ中は --md-toc-w を書き換えるだけにとどめる。左右分割の
+        // 再計算や現在位置の測り直しを毎フレーム行うと重いので、それらは
+        // mouseup でまとめて行う。
+        document.documentElement.style.setProperty('--md-toc-w', `${newWidth}px`);
+      });
+
+      document.addEventListener('mouseup', () => {
+        if (!isMdTocResizing) return;
+        isMdTocResizing = false;
+        mdTocResizer.classList.remove('dragging');
+        document.body.classList.remove('is-resizing');
+        // 幅が変わると左右分割の折り返し・高さと、目次の現在位置がどちらも
+        // 変わりうるので、ドラッグが終わったところでまとめて測り直す。
+        scheduleMdRealign();
+        scheduleMdTocHighlight();
+      });
+
+      // ウィンドウ幅が変わると見出しの位置も動くので、現在位置を測り直す。
+      // 幅が変わらないのに高さだけ変わる（=自分で入れた spacer の影響）ときは
+      // 何度も走らないよう、既存の realignMdSplit 用 ResizeObserver とは別に
+      // 目次が出ているときだけ動く軽量な監視にしてある。
+      if (typeof ResizeObserver !== 'undefined') {
+        new ResizeObserver(() => {
+          if (mdToc.classList.contains('visible')) scheduleMdTocHighlight();
+        }).observe(richDiffViewer);
+      }
+
       function renderMarkdownView() {
         if (mdDiffedHtml === null) return;
+        // 目次は差し替えの都度、まず先に組み立てる（--md-toc-w をここで確定
+        // させておかないと、下の左右表示でパネル幅ぶんの余白がまだ乗っていない
+        // 状態で alignSplitPanes が測ってしまう）。
+        updateMdToc();
+
         // 1列 / 左右 の選択はツールバーの isInlineView と共有する
         // （false＝左右、true＝1列。初期値は false なので、
         // ここも既定は左右になる）。
@@ -3051,8 +3573,14 @@ a[data-diff-nolink]{ cursor: pointer; }
         richDiffViewer.style.display = mdViewSplit ? 'flex' : 'block';
 
         if (!mdViewSplit) {
-          // 1列表示: これまでどおり sanitize 済み HTML をそのまま流し込む
-          richDiffViewer.innerHTML = mdDiffedHtml;
+          // 1列表示: sanitize 済み HTML をそのまま流し込むが、目次の飛び先が
+          // 1列表示でも同じ鍵（data-sync-index）で引けるよう、左右表示と同じく
+          // markSyncIndex を通してから差し込む（属性が増えるだけで見た目には
+          // 影響しない）。
+          const inlineWrap = document.createElement('div');
+          inlineWrap.innerHTML = mdDiffedHtml;
+          markSyncIndex(inlineWrap);
+          richDiffViewer.innerHTML = inlineWrap.innerHTML;
           mdResizers.forEach(r => r.style.display = 'flex');
           // 左右表示の参照を手放す。innerHTML の入れ替えで古い leftPane/rightPane
           // は DOM から切り離されるので、以後 realignMdSplit / ResizeObserver は
@@ -3226,6 +3754,7 @@ a[data-diff-nolink]{ cursor: pointer; }
           changeActionsContainer.style.display = 'none';
           if (jumpControls) jumpControls.style.display = 'none';
           richDiffViewer.style.display = 'none';
+          hideMdToc(); // Markdown View から直接 HTML View へ移った場合も目次を消す
           mdResizers.forEach(r => r.style.display = 'none');
           // htmlDiffFrame / htmlSplitContainer の表示は renderHtmlView が現在の
           // モードに合わせて設定済み

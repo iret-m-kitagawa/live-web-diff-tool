@@ -3,7 +3,7 @@
   "name": "richdiff",
   "displayName": "richdiff",
   "description": "変更内容をブラウザで確認するためのツール",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "author": {
     "name": "iret-m-kitagawa",
     "url": "https://github.com/iret-m-kitagawa"
