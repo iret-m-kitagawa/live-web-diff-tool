@@ -48,7 +48,8 @@
          JS 側 (updateMdToc) が唯一の書き手。.rich-diff-viewer の左パディングと
          .md-resizer の位置計算にも織り込んである（各箇所のコメント参照）。 */
       --md-toc-w: 0px;
-      --md-toc-dot: 0.72em; /* 目次の印(丸)の直径。項目の文字サイズに対する比で持つ */
+      --md-toc-dot: 0.72em; /* 畳んだ帯での印(丸)の直径。項目の文字サイズに対する比で持つ */
+      --md-toc-badge: 1.3em; /* 開いているときの印(角丸バッジ)の一辺 */
     }
     * { box-sizing: border-box; }
     body, html {
@@ -349,10 +350,9 @@
       display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical;
     }
 
-    /* 印はすべて丸。大きさは文字に対する比（--md-toc-dot）で持ち、文字サイズを
-       変えても釣り合いが崩れないようにする。7px 固定だと「中に変更」の
-       左半分赤・右半分緑が潰れて、ただのオレンジ色の点に見えてしまっていた。
-       変更なしは何も置かず、位置だけ空けて字揃えを保つ
+    /* 印は角丸バッジに +/−/± を乗せる。丸1色だと「増えたのか減ったのか」を
+       色の意味として覚えるしかなかったが、記号自体に意味があるので初見でも
+       伝わる。変更なしは何も置かず、位置だけ空けて字揃えを保つ
        （.md-toc-slot 自体は残すが中に .md-toc-m を入れない）。 */
     /* height は開いた状態では「1行分」(1.5em 程度) にする。.md-toc-i が
        align-items: flex-start になったので、複数行に折り返した項目でも
@@ -361,15 +361,61 @@
        （畳むと文言が消えて slot が唯一の中身になるので、印の無い行だけ
        丈が縮んで字揃えが崩れてしまうのを防ぐため。理由は元のコメントと
        同じで、値だけ開閉で使い分けている）。 */
-    .md-toc-slot { display: inline-flex; align-items: center; justify-content: center; width: 1.1em; height: 1.5em; flex: 0 0 auto; }
-    .md-toc-m { width: var(--md-toc-dot); height: var(--md-toc-dot); border-radius: 50%; display: inline-block; flex: 0 0 auto; }
-    .md-toc-m.add { background-color: #3fb950; }
-    .md-toc-m.del { background-color: #f85149; }
-    /* 中に変更がある節は、左半分が赤・右半分が緑の丸1つ（案B）。 */
-    .md-toc-m.mod { background: linear-gradient(90deg, #f85149 0 50%, #3fb950 50% 100%); }
-    [data-theme*="light"] .md-toc-m.add { background-color: #238636; }
-    [data-theme*="light"] .md-toc-m.del { background-color: #da3633; }
-    [data-theme*="light"] .md-toc-m.mod { background: linear-gradient(90deg, #da3633 0 50%, #238636 50% 100%); }
+    .md-toc-slot { display: inline-flex; align-items: center; justify-content: center; width: calc(var(--md-toc-badge) + 0.3em); height: 1.5em; flex: 0 0 auto; }
+    /* width/height は var(--md-toc-badge) を em のまま使うので、.md-toc-m
+       自身に font-size を持たせてはいけない。em は「その要素自身の
+       font-size」が基準になるため、ここで font-size を上書きすると
+       width/height の換算先までズレて、意図したバッジの大きさにならない
+       （実際にそのバグで大幅に小さくなっていた）。文字の大きさは代わりに
+       中の .glyph（下で定義）に持たせ、.md-toc-m 自身は素通しで
+       .md-toc-i から font-size を継承するだけにする。 */
+    .md-toc-m {
+      width: var(--md-toc-badge); height: var(--md-toc-badge); border-radius: 4px;
+      display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
+    }
+    /* +/−/± の文字はすべてこの中に入れる。font-family と大きさをここに
+       集約することで、.md-toc-m 自身の font-size はいじらずに済む。 */
+    .md-toc-m .glyph {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-weight: 600; line-height: 1; font-size: calc(var(--md-toc-badge) * 0.66);
+    }
+    .md-toc-m.add { background-color: rgba(63, 185, 80, 0.18); color: #3fb950; }
+    .md-toc-m.del { background-color: rgba(248, 81, 73, 0.18); color: #f85149; }
+    /* 「中に変更」は ± の1文字。地は赤緑を左右に割った薄いトーン（add/del と
+       同じ濃さ）にし、文字そのものも同じ赤緑を左右に映す（.glyph に
+       background-clip: text で切り抜く）。黄色などの第三の色を使わないのは、
+       「増えたのか減ったのか」の情報をここでも残すため。 */
+    .md-toc-m.mod {
+      background: linear-gradient(90deg, rgba(248, 81, 73, 0.20) 0 50%, rgba(63, 185, 80, 0.20) 50% 100%);
+    }
+    .md-toc-m.mod .glyph {
+      background-image: linear-gradient(90deg, #f85149 0 50%, #3fb950 50% 100%);
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+    [data-theme*="light"] .md-toc-m.add { background-color: rgba(35, 134, 54, 0.14); color: #238636; }
+    [data-theme*="light"] .md-toc-m.del { background-color: rgba(218, 54, 51, 0.14); color: #da3633; }
+    [data-theme*="light"] .md-toc-m.mod {
+      background: linear-gradient(90deg, rgba(218, 54, 51, 0.16) 0 50%, rgba(35, 134, 54, 0.16) 50% 100%);
+    }
+    [data-theme*="light"] .md-toc-m.mod .glyph {
+      background-image: linear-gradient(90deg, #da3633 0 50%, #238636 50% 100%);
+    }
+
+    /* 畳んだ帯（34px）にはバッジの角丸・グリフを描く余白が無いので、これまで
+       通り色だけの丸に戻す。地の濃淡ではなく単色にするのは、7px 相当まで
+       縮んだ薄いトーンは色の判別が付きにくくなるため。文字は全ステータスで
+       .glyph に入っているので、丸のときは display:none で一括で隠せる
+       （色を透明にするような個別対応は要らない）。 */
+    .md-toc.collapsed .md-toc-m {
+      width: var(--md-toc-dot); height: var(--md-toc-dot); border-radius: 50%;
+    }
+    .md-toc.collapsed .md-toc-m .glyph { display: none; }
+    .md-toc.collapsed .md-toc-m.add { background-color: #3fb950; }
+    .md-toc.collapsed .md-toc-m.del { background-color: #f85149; }
+    .md-toc.collapsed .md-toc-m.mod { background: linear-gradient(90deg, #f85149 0 50%, #3fb950 50% 100%); }
+    [data-theme*="light"] .md-toc.collapsed .md-toc-m.add { background-color: #238636; }
+    [data-theme*="light"] .md-toc.collapsed .md-toc-m.del { background-color: #da3633; }
+    [data-theme*="light"] .md-toc.collapsed .md-toc-m.mod { background: linear-gradient(90deg, #da3633 0 50%, #238636 50% 100%); }
 
     /* ===== Jump Controls ===== */
     .jump-controls {
@@ -3368,13 +3414,22 @@ a[data-diff-nolink]{ cursor: pointer; }
           item.dataset.syncIndex = entry.syncIndex;
           if (entry.label) item.title = entry.label; // 長い見出しは省略記号で切るので、全文は title に
 
-          // 印はすべて丸。変更なしは何も置かず、位置だけ空けて字揃えを保つ
-          // （slot 自体は残すが、中に .md-toc-m を入れない）。
+          // 印は +/−/± のバッジ。変更なしは何も置かず、位置だけ空けて字揃えを
+          // 保つ（slot 自体は残すが、中に .md-toc-m を入れない）。
           const slot = document.createElement('span');
           slot.className = 'md-toc-slot';
           if (entry.status !== 'none') {
             const mark = document.createElement('i');
             mark.className = 'md-toc-m ' + (entry.status === 'add' ? 'add' : entry.status === 'del' ? 'del' : 'mod');
+            // 文字は必ず .glyph に入れ、mark 自身には font-size を持たせない
+            // （CSS 側のコメント参照。mark に font-size を持たせると、
+            // width/height の em 換算先までズレてバッジが潰れる）。
+            const glyph = document.createElement('span');
+            glyph.className = 'glyph';
+            glyph.textContent = entry.status === 'add' ? '+'
+              : entry.status === 'del' ? '−' // − (U+2212, ハイフンではない)
+              : '±';
+            mark.appendChild(glyph);
             slot.appendChild(mark);
           }
           item.appendChild(slot);
