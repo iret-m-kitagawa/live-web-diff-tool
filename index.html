@@ -2247,6 +2247,9 @@ a[data-diff-nolink]{ cursor: pointer; }
       diffOrig.updateOptions({ wordWrap: 'on', renderOverviewRuler: true });
       diffMod.updateOptions({ wordWrap: 'on', renderOverviewRuler: true });
 
+      // 開いた直後にそのまま貼り付け始められるよう、before欄にフォーカスを当てる。
+      diffOrig.focus();
+
       // Webフォントの読み込み完了を待ってから、文字幅を強制再計算させる
       document.fonts.ready.then(() => {
         monaco.editor.remeasureFonts();
