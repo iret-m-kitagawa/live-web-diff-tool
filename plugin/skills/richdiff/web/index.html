@@ -2472,6 +2472,17 @@ a[data-diff-nolink]{ cursor: pointer; }
       const changeActionsContainer = document.getElementById('changeActions');
       const jumpControls = document.querySelector('.jump-controls');
 
+      // 差分ジャンプのボタンを出すかどうか。判断の材料が3つ（どのビューか、
+      // 1列か左右か）に散っていて呼ぶ場所も多いので、1箇所にまとめておく。
+      //   Monaco     … 左右分割のときだけ。1列表示では行単位の飛び先が定まらない
+      //   Markdown   … 1列・左右のどちらでも出す
+      //   HTML View  … 未対応なので出さない
+      function updateJumpControlsVisibility() {
+        if (!jumpControls) return;
+        const show = isRichDiffView ? richViewMode === 'markdown' : !isInlineView;
+        jumpControls.style.display = show ? 'flex' : 'none';
+      }
+
       // ---- HTML View 左右ペインの高さ揃え ----
       // Markdown View の alignSplitPanes と考え方は同じ（対応するブロックの
       // 高さを揃えて、1 つのスクロール領域に 2 列を収める）。違うのは、iframe
@@ -2719,11 +2730,11 @@ a[data-diff-nolink]{ cursor: pointer; }
         }
 
         changeActionsContainer.style.display = 'block';
-        if (jumpControls) jumpControls.style.display = isInlineView ? 'none' : 'flex';
         richDiffBtn.classList.remove('active');
         htmlViewBtn.classList.remove('active');
         isRichDiffView = false;
         richViewMode = null;
+        updateJumpControlsVisibility();
 
         // 念のためレイアウト再計算
         if (typeof diffEditor !== 'undefined' && diffEditor) {
@@ -3456,10 +3467,112 @@ a[data-diff-nolink]{ cursor: pointer; }
       // #richDiffViewer 自身（左右分割でも1本のスクロール領域を共有している）
       // ので、そこへ対して行う。対象が少し下に来る程度の余白を残す。
       function mdTocJumpTo(syncIndex) {
-        const target = mdTocFindTarget(syncIndex);
-        if (!target) return;
+        mdScrollTo(mdTocFindTarget(syncIndex), true);
+      }
+
+      // 目次の項目からも差分ジャンプからも同じ飛び方をするので、1箇所にまとめる。
+      // 実際に落ち着くスクロール位置を返す。差分ジャンプ側は「そこから動かされて
+      // いないか」を見るのにこの値を使うので、器の端で頭打ちになる分も含めて
+      // 丸めた値を返しておく必要がある。
+      // 目次のクリックは1回きりの移動なので滑らかに、差分ジャンプは連打される
+      // 前提なので即座に飛ばす（滑らかにすると、着地前にもう一度押されたときに
+      // 途中の位置を読んでしまい、現在地の判断がぶれる）。
+      function mdScrollTo(target, smooth) {
+        if (!target) return -1;
         const delta = target.getBoundingClientRect().top - richDiffViewer.getBoundingClientRect().top;
-        richDiffViewer.scrollTo({ top: richDiffViewer.scrollTop + delta - MD_TOC_JUMP_MARGIN, behavior: 'smooth' });
+        const max = Math.max(0, richDiffViewer.scrollHeight - richDiffViewer.clientHeight);
+        const top = Math.max(0, Math.min(max, richDiffViewer.scrollTop + delta - MD_TOC_JUMP_MARGIN));
+        richDiffViewer.scrollTo({ top, behavior: smooth ? 'smooth' : 'auto' });
+        return top;
+      }
+
+      // ========== Markdown View 差分ジャンプ ==========
+      // 中身の無い印は飛び先にしない。HtmlDiff はブロックの切れ目の改行にも印を
+      // 付けることがあり（<ins>\n</ins> のような高さ0の要素ができる）、そこへ
+      // 飛んでも画面は何も変わらないので「押しても進まない」ように見える。
+      // 文字か数字があれば中身あり。画像だけの変更もあるので、置換要素も見る。
+      const MD_STOP_MEDIA_SEL = 'img, svg, video, canvas';
+      const mdMarkHasContent = (el) =>
+        /[\p{L}\p{N}]/u.test(el.textContent || '')
+        || el.matches(MD_STOP_MEDIA_SEL) || !!el.querySelector(MD_STOP_MEDIA_SEL);
+
+      // 印を含む一番内側のブロックまで遡って、そこを飛び先にする。
+      // トップレベルのかたまり（data-sync-index の単位）を飛び先にしてはいけない
+      // ── 箇条書きや表は丸ごとで1ブロックなので、長い一覧の下の方が変わって
+      // いると、変更のはるか手前（実測で 400px 超）に着地する。着地点には何の
+      // 変化も見えず「関係ないところで止まる」ことになる。
+      // 表は td ではなく tr 単位。1行の中で複数のセルが変わっても1回で済ませる。
+      const MD_STOP_LEAF_SEL = 'li, p, h1, h2, h3, h4, h5, h6, tr, pre, blockquote, dd, dt';
+      function mdStopUnitOf(mark) {
+        let el = mark;
+        while (el && el !== richDiffViewer) {
+          if (el.matches(MD_STOP_LEAF_SEL)) return el;
+          // かたまりの外までは遡らない。葉が見つからなければ、そのかたまり自身。
+          if (el.dataset && el.dataset.syncIndex !== undefined) return el;
+          el = el.parentElement;
+        }
+        return null;
+      }
+
+      function mdDiffStops() {
+        if (!isRichDiffView || richViewMode !== 'markdown') return [];
+        const units = [];
+        const seen = new Set();
+        richDiffViewer.querySelectorAll(MD_TOC_MARK_SEL).forEach((mark) => {
+          if (!mdMarkHasContent(mark)) return;
+          const unit = mdStopUnitOf(mark);
+          if (!unit || seen.has(unit)) return;
+          seen.add(unit);
+          units.push(unit);
+        });
+        // 画面上の縦位置で並べ替える。DOM の並びは左ペイン→右ペインなので
+        // そのままでは文書順にならない。
+        // ついでに、ほぼ同じ高さに来たものは1つに畳む。左右分割では同じ変更が
+        // 両ペインに出る（左は削除・右は追加）が、高さを揃えてあるので必ず同じ
+        // 位置に並ぶ ── どちらへ飛んでも結果は同じなので2回止まる必要はない。
+        return units
+          .map((el) => ({ el, top: el.getBoundingClientRect().top }))
+          .sort((a, b) => a.top - b.top)
+          .filter((u, i, arr) => i === 0 || Math.abs(u.top - arr[i - 1].top) >= 4)
+          .map((u) => u.el);
+      }
+
+      // 直前に飛んだ先と、そのとき落ち着いたスクロール位置。次に押されたときの
+      // 「現在地」の判断に使う。描き直しで DOM ごと作り替わったら参照は迷子に
+      // なるが、下の stops.indexOf が -1 を返して位置からの判断に落ちるので、
+      // 明示的に捨てる必要はない。
+      let mdJumpLast = null;
+      let mdJumpLastScroll = -1;
+
+      function mdJumpToDiff(dir) {
+        const stops = mdDiffStops();
+        if (!stops.length) return;
+        const viewerTop = richDiffViewer.getBoundingClientRect().top;
+        const offsetOf = (el) => el.getBoundingClientRect().top - viewerTop;
+        const last = stops.indexOf(mdJumpLast);
+        // 前回置いた位置から動いていなければ、まだそこに居るとみなす。
+        // 手でスクロールされていれば一致しないので、位置から探し直す方へ落ちる。
+        const parked = last >= 0 && Math.abs(richDiffViewer.scrollTop - mdJumpLastScroll) < 2;
+        let target;
+
+        if (parked) {
+          // 番号でひとつ動かす。位置だけで決めると文書の末尾で進めなくなる ──
+          // もう下に余白が無くてスクロールが動かず、次のかたまりも「まだ下に
+          // ある」と判定され続けて同じ場所を拾い直してしまうため。
+          // 番号なら最後まで数えて端で折り返せる（Monaco 側のジャンプと同じ）。
+          target = stops[(last + (dir === 'next' ? 1 : -1) + stops.length) % stops.length];
+        } else if (dir === 'next') {
+          // 判定線を MD_TOC_JUMP_MARGIN に合わせてあるのは、飛んだ直後の対象が
+          // ちょうどその位置に来るため。器の上端で測ると、いま居るかたまりを
+          // 「まだ下にある」と拾い直してしまう。
+          target = stops.find((el) => offsetOf(el) > MD_TOC_JUMP_MARGIN + 2) || stops[0];
+        } else {
+          const prevs = stops.filter((el) => offsetOf(el) < MD_TOC_JUMP_MARGIN - 2);
+          target = prevs.length ? prevs[prevs.length - 1] : stops[stops.length - 1];
+        }
+
+        mdJumpLast = target;
+        mdJumpLastScroll = mdScrollTo(target, false);
       }
 
       // 器のスクロールに追随して、いま画面上端をまたいでいる見出しを現在位置と
@@ -3754,7 +3867,6 @@ a[data-diff-nolink]{ cursor: pointer; }
           diffEditorContainer.style.visibility = 'hidden';
 
           changeActionsContainer.style.display = 'none';
-          if (jumpControls) jumpControls.style.display = 'none';
           htmlDiffFrame.style.display = 'none';
           htmlDiffFrame.removeAttribute('srcdoc');
           htmlSplitContainer.classList.remove('visible');
@@ -3768,6 +3880,7 @@ a[data-diff-nolink]{ cursor: pointer; }
           htmlViewBtn.classList.remove('active');
           isRichDiffView = true;
           richViewMode = 'markdown';
+          updateJumpControlsVisibility();
           saveAutoSave();
         } catch (error) {
           console.error("Markdown View Render Error:", error);
@@ -3810,7 +3923,6 @@ a[data-diff-nolink]{ cursor: pointer; }
           diffEditorContainer.style.visibility = 'hidden';
 
           changeActionsContainer.style.display = 'none';
-          if (jumpControls) jumpControls.style.display = 'none';
           richDiffViewer.style.display = 'none';
           hideMdToc(); // Markdown View から直接 HTML View へ移った場合も目次を消す
           mdResizers.forEach(r => r.style.display = 'none');
@@ -3821,6 +3933,7 @@ a[data-diff-nolink]{ cursor: pointer; }
           richDiffBtn.classList.remove('active');
           isRichDiffView = true;
           richViewMode = 'html';
+          updateJumpControlsVisibility();
           saveAutoSave();
         } catch (error) {
           console.error("HTML View Render Error:", error);
@@ -3858,9 +3971,7 @@ a[data-diff-nolink]{ cursor: pointer; }
         splitViewBtn.classList.toggle('active', !isInlineView);
 
         diffEditor.updateOptions({ renderSideBySide: !isInlineView });
-        if (!isRichDiffView && jumpControls) {
-          jumpControls.style.display = isInlineView ? 'none' : 'flex';
-        }
+        updateJumpControlsVisibility();
         updatePlaceholders(); rebuildChangeActions();
 
         // Markdown View / HTML View が開いているときは、そちらの 1列⇄左右も
@@ -3893,6 +4004,12 @@ a[data-diff-nolink]{ cursor: pointer; }
       beforeModel.onDidChangeContent(scheduleAutoSave); afterModel.onDidChangeContent(scheduleAutoSave);
 
       const jump = (dir) => {
+        // Markdown View が開いているときは、Monaco の行ではなく描画された
+        // ブロックを渡り歩く（HTML View はまだ未対応で、ボタン自体を出さない）。
+        if (isRichDiffView) {
+          if (richViewMode === 'markdown') mdJumpToDiff(dir);
+          return;
+        }
         if (!diffEditor) return; const changes = diffEditor.getLineChanges(); if (!changes || changes.length === 0) return;
         const modifiedEditor = diffEditor.getModifiedEditor(); const currentLine = modifiedEditor.getPosition().lineNumber;
         let target;
