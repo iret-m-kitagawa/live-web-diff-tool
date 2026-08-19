@@ -42,7 +42,13 @@
   <style>
     :root {
       --split-x: 0.5;
-      --md-width: 900px;
+      /* 1列表示の本文幅（左右表示では列が全幅を使うので効かない）。
+         目次を除いた領域の7割。固定 px にすると画面の広さによって余白の
+         見え方が変わってしまうので、常に割合で決める。
+         広い画面では1行が長くなるが（日本語の目安は35〜45文字）、そこは
+         左右のつまみで好みの幅に詰められる。ドラッグすると px の固定値で
+         上書きされる。 */
+      --md-width: calc((100% - var(--md-toc-w)) * 0.7);
       /* Markdown View 目次の幅。出ていないとき 0 / 通常は既定190px（ドラッグで
          140〜420px の範囲で変えられる）/ 畳んで 34px。
          JS 側 (updateMdToc) が唯一の書き手。.rich-diff-viewer の左パディングと
@@ -117,6 +123,11 @@
       background-color: var(--color-canvas-default); color: var(--color-fg-default);
       font-size: var(--md-font-size, 14px);
       word-wrap: break-word;
+
+      /* github-markdown-css の既定の行間 1.5 は英文向け。小文字の背が低い英字なら
+         足りるが、字面が正方形いっぱいに詰まる日本語だと行が密着して見えるので
+         1.8 まで開ける。フォントは既定のまま（環境のぶら下がりに任せる）。 */
+      line-height: 1.8;
     }
     .rich-diff-viewer {
       display: none; width: 100%; height: 100%;
