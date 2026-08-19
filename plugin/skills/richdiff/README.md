@@ -58,16 +58,17 @@ richdiff は特定のリポジトリに依存しないため、**通常は `user
 
 シェルから導入した場合、**実行中のセッションには反映されない。**
 
-ターミナルの CLI では `/reload-plugins` で反映できる。一方、**VS Code / Cursor の
-拡張ではこのコマンドが存在しない。** 代わりに案内される `/reload-skills` は、
-プラグイン由来のスキルを拾わない（実行しても `no changes` となる）。
+反映させるには、次を実行する。
 
-拡張を使っている場合は、**ウィンドウを再読み込みする**（コマンドパレットの
-Developer: Reload Window）。アプリケーション自体を終了する必要はなく、
-会話も引き継がれる。
+| 環境 | 実行するもの |
+|---|---|
+| VS Code / Cursor の拡張 | `/reload-skills` |
+| ターミナルの CLI | `/reload-plugins` |
+
+**ウィンドウの再読み込み（Developer: Reload Window）では反映されないことがある。**
+上記のコマンドか、新しいセッションを開くこと。
 
 反映されたかどうかは、スキルの一覧に `richdiff:richdiff` が現れるかで判断できる。
-プラグイン由来のスキルは `プラグイン名:スキル名` の形で並ぶ。
 
 有効になったのち、利用者が「diff を見せて」等の依頼を行った際に `richdiff` スキルが使用される。
 
@@ -85,7 +86,7 @@ Developer: Reload Window）。アプリケーション自体を終了する必�
 | コマンド | 内容 |
 |---|---|
 | `claude plugin list` | インストール済みプラグインの一覧 |
-| `claude plugin update richdiff@live-web-diff-tool` | 最新版に更新（適用には再起動が必要） |
+| `claude plugin update richdiff@live-web-diff-tool` | 最新版に更新（適用には `/reload-skills` が必要） |
 | `claude plugin disable richdiff@live-web-diff-tool` | 一時的に無効化（アンインストールはしない） |
 | `claude plugin uninstall richdiff@live-web-diff-tool` | アンインストール |
 | `claude plugin marketplace update live-web-diff-tool` | カタログを最新化 |
@@ -101,8 +102,8 @@ claude plugin update richdiff@live-web-diff-tool
 繰り返し実行しても差し支えない。再インストールは不要である。
 
 **更新の適用にも再読み込みが必要である。** 実行すると
-`Restart to apply changes.` と表示される。動作中のセッションは古い版のままなので、
-ウィンドウを再読み込みすること。現在の版は `claude plugin list` で確認できる。
+`Restart to apply changes.` と表示される。「インストール後」と同じ手順を実行すること。
+現在の版は `claude plugin list` で確認できる。
 
 カタログの更新は通常不要である。`claude plugin update` はリポジトリの取得を含むため、
 カタログを登録した時点より新しい版も取得できる。最新版が反映されない場合に限り、
