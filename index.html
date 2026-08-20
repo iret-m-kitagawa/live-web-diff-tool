@@ -54,7 +54,6 @@
          JS 側 (updateMdToc) が唯一の書き手。.rich-diff-viewer の左パディングと
          .md-resizer の位置計算にも織り込んである（各箇所のコメント参照）。 */
       --md-toc-w: 0px;
-      --md-toc-dot: 0.72em; /* 畳んだ帯での印(丸)の直径。項目の文字サイズに対する比で持つ */
       --md-toc-badge: 1.3em; /* 開いているときの印(角丸バッジ)の一辺 */
     }
     * { box-sizing: border-box; }
@@ -314,8 +313,8 @@
     .md-toc.collapsed .md-toc-i .md-toc-t { display: none; }
     /* 開いているときは slot の高さを1行分(1.5em)にして印を1行目の中央に
        置くが、畳んだ状態は文言が消えて slot だけが行の中身になるので、
-       印そのものの大きさ(1em)まで詰める（下の .md-toc-slot のコメント参照）。 */
-    .md-toc.collapsed .md-toc-slot { height: var(--md-toc-dot); }
+       印そのものの大きさまで詰める（下の .md-toc-slot のコメント参照）。 */
+    .md-toc.collapsed .md-toc-slot { height: var(--md-toc-badge); }
 
     /* min-height: 0 が要る。列方向の flex 子は既定の min-height:auto で中身より
        小さくなれないので、これが無いと一覧が目次の高さを超えて伸び、
@@ -412,21 +411,11 @@
       background-image: linear-gradient(90deg, #da3633 0 50%, #238636 50% 100%);
     }
 
-    /* 畳んだ帯（34px）にはバッジの角丸・グリフを描く余白が無いので、これまで
-       通り色だけの丸に戻す。地の濃淡ではなく単色にするのは、7px 相当まで
-       縮んだ薄いトーンは色の判別が付きにくくなるため。文字は全ステータスで
-       .glyph に入っているので、丸のときは display:none で一括で隠せる
-       （色を透明にするような個別対応は要らない）。 */
-    .md-toc.collapsed .md-toc-m {
-      width: var(--md-toc-dot); height: var(--md-toc-dot); border-radius: 50%;
-    }
-    .md-toc.collapsed .md-toc-m .glyph { display: none; }
-    .md-toc.collapsed .md-toc-m.add { background-color: #3fb950; }
-    .md-toc.collapsed .md-toc-m.del { background-color: #f85149; }
-    .md-toc.collapsed .md-toc-m.mod { background: linear-gradient(90deg, #f85149 0 50%, #3fb950 50% 100%); }
-    [data-theme*="light"] .md-toc.collapsed .md-toc-m.add { background-color: #238636; }
-    [data-theme*="light"] .md-toc.collapsed .md-toc-m.del { background-color: #da3633; }
-    [data-theme*="light"] .md-toc.collapsed .md-toc-m.mod { background: linear-gradient(90deg, #da3633 0 50%, #238636 50% 100%); }
+    /* 畳んだ帯（34px）でも印は上のバッジをそのまま使う。以前は色だけの小さな
+       丸に差し替えていたが、同じ意味の印が開閉で別物に見えるのが良くない。
+       16.9px 相当のバッジは 34px の帯に収まり、+/−/± も読めるので、大きさ・
+       角丸・地の濃淡・グリフのすべてを開いているときと共通にする
+       （このブロックに上書きを足さないこと）。 */
 
     /* ===== Jump Controls ===== */
     .jump-controls {
