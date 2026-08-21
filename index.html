@@ -2125,6 +2125,70 @@ a[data-diff-nolink]{ cursor: pointer; }
     const savedTheme = localStorage.getItem('diffToolTheme') || 'github-dark';
     document.getElementById('themeSelect').value = THEMES[savedTheme] ? savedTheme : 'github-dark';
 
+    // ---- HtmlDiff の出力のタグの釣り合いを直す（Markdown View 用） ----
+    // HtmlDiff はタグも「単語」として差分を取るため、開きと閉じが釣り合わない
+    // HTML を返すことがある。実データ（230行の設計文書）では <strong> が
+    // 開き 97 / 閉じ 86、</p> が 1 つ余った。ブラウザはこれを閉じ忘れとして
+    // 補正し、以降の文書ぜんぶを開いたままの <strong> の中に入れてしまう。
+    // その結果 #richDiffViewer のトップレベルの子が 19 個で打ち切られ、それ
+    // 以降のブロックに data-sync-index が振られない。左右表示の高さ揃えも
+    // 目次も差分ジャンプも「トップレベルの要素ごとの対応」で成り立っている
+    // ので、文書の途中から左右の高さが合わなくなる。
+    //
+    // 直し方は素朴なタグの積み直し。
+    //   ・閉じタグは、対応する開きが積まれていなければ捨てる
+    //   ・対応が積みの途中にあれば、その上に積まれた分を先に閉じる
+    //   ・ブロック要素が始まるところでは、開いたままの装飾タグを必ず閉じる
+    //     （装飾タグがブロックをまたぐ、が崩れの本体）
+    //   ・最後に残った分を閉じる
+    // 釣り合っている入力には何もしない ── 閉じタグは常に積みの一番上と一致し、
+    // ブロックの境目に開いたままの装飾タグも残らないので、出力は入力と同一に
+    // なる（正常な文書の見え方は変わらない）。
+    //
+    // ins/del（HtmlDiff の印）をブロックの境目で閉じてしまわないかが唯一の
+    // 気がかりだが、HtmlDiff は段落・表の行・箇条書き・節を丸ごと足し引きした
+    // 場合も印をブロックの中に置き、ブロックそのものを ins/del で包むことは
+    // ない（実測）。ブロック間の改行だけは <ins>\n</ins> の形で外に出るが、
+    // これは中身の無い印として既に別途扱っている。だから装飾タグと同じ扱いで
+    // 差し支えない。
+    const BALANCE_VOID = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
+    const BALANCE_BLOCK = new Set(['address', 'article', 'aside', 'blockquote', 'dd', 'details', 'div', 'dl', 'dt', 'fieldset', 'figcaption', 'figure', 'footer', 'form', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'header', 'hr', 'li', 'main', 'nav', 'ol', 'p', 'pre', 'section', 'summary', 'table', 'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'ul']);
+    // 属性値の中に > が入り得るので、引用符の中は読み飛ばす。
+    const BALANCE_TAG_RE = /<(\/?)([a-zA-Z][a-zA-Z0-9]*)((?:"[^"]*"|'[^']*'|[^>"'])*)>/g;
+
+    function balanceDiffTags(html) {
+      const stack = [];
+      let out = '';
+      let last = 0;
+      let m;
+      BALANCE_TAG_RE.lastIndex = 0;
+      while ((m = BALANCE_TAG_RE.exec(html)) !== null) {
+        out += html.slice(last, m.index);
+        last = m.index + m[0].length;
+        const name = m[2].toLowerCase();
+        if (m[1] === '/') {
+          const at = stack.lastIndexOf(name);
+          if (at < 0) continue; // 対応する開きが無い閉じタグは捨てる
+          for (let i = stack.length - 1; i > at; i--) out += '</' + stack[i] + '>';
+          stack.length = at;
+          out += m[0];
+          continue;
+        }
+        if (BALANCE_BLOCK.has(name)) {
+          // ブロックが始まるなら、開いたままの装飾タグはここで閉じる。<p> は
+          // ブロックを抱えられないので、積みの一番上にあれば同じく閉じる。
+          while (stack.length && (!BALANCE_BLOCK.has(stack[stack.length - 1]) || stack[stack.length - 1] === 'p')) {
+            out += '</' + stack.pop() + '>';
+          }
+        }
+        out += m[0];
+        if (!BALANCE_VOID.has(name) && !/\/\s*$/.test(m[3])) stack.push(name);
+      }
+      out += html.slice(last);
+      for (let i = stack.length - 1; i >= 0; i--) out += '</' + stack[i] + '>';
+      return out;
+    }
+
     let diffEditor, diffOrig, diffMod;
     let beforeModel, afterModel;
     let beforeFocused = false;
@@ -3843,7 +3907,9 @@ a[data-diff-nolink]{ cursor: pointer; }
         }
       }
 
-      // ---- Markdown View を開く (marked.parse → HtmlDiff.execute → DOMPurify.sanitize は不変) ----
+      // ---- Markdown View を開く ----
+      // marked.parse → HtmlDiff.execute → DOMPurify.sanitize の順序は不変。
+      // その間に balanceDiffTags を挟むだけ（釣り合っている出力には何もしない）。
       function openMarkdownView() {
         try {
           const bText = beforeModel.getValue();
@@ -3853,7 +3919,8 @@ a[data-diff-nolink]{ cursor: pointer; }
           const aHtml = marked.parse(aText);
 
           if (typeof HtmlDiff === 'undefined') throw new Error("HtmlDiff library is missing");
-          const diffedHtml = HtmlDiff.execute(bHtml, aHtml);
+          // タグの釣り合いを直してから渡す（balanceDiffTags のコメント参照）。
+          const diffedHtml = balanceDiffTags(HtmlDiff.execute(bHtml, aHtml));
 
           if (typeof DOMPurify === 'undefined') throw new Error("DOMPurify library is missing");
           // ここで 1 回だけ diff を作り、保持しておく。1列⇄左右の切り替えは
