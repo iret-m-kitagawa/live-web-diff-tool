@@ -55,6 +55,17 @@
          .md-resizer の位置計算にも織り込んである（各箇所のコメント参照）。 */
       --md-toc-w: 0px;
       --md-toc-badge: 1.3em; /* 開いているときの印(角丸バッジ)の一辺 */
+      /* 左右表示の左列の取り分。仕切り線のドラッグで書き換える（既定は半々）。
+         px ではなく比で持つ ── ウィンドウ幅や目次の幅が変わっても取り分が
+         保たれるので、変わるたびに計算し直す必要がない。
+         単位を持たない数にしてあるのは、下の calc で「仕切り線を除いた幅」に
+         掛けるため。% のまま持つと、% は仕切り線ぶんも含んだ内容領域の幅に
+         対して解決されるので、既定の 50% でも左列だけが仕切り線ぶん広くなる
+         （実測で 705px / 694px になった）。 */
+      --md-split-ratio: 0.5;
+      /* 仕切り線の幅。上の calc と .md-split-divider の両方で使うので、
+         数を 2 か所に書かない。 */
+      --md-split-divider-w: 11px;
     }
     * { box-sizing: border-box; }
     body, html {
@@ -200,10 +211,30 @@
     /* 左右表示は中央寄せの計算そのものが要らない (padding: 0) が、目次の幅
        ぶんだけはここでも本文の前に確保しておかないと、目次と2列が重なる。 */
     .rich-diff-viewer.split-mode { padding: 0; padding-left: var(--md-toc-w); align-items: flex-start; }
-    .md-split-pane { flex: 1 1 50%; min-width: 0; padding: 32px; display: flex; flex-direction: column; }
+    .md-split-pane { min-width: 0; padding: 32px; display: flex; flex-direction: column; }
+    /* 左列だけを幅で決め、右列は残りを取る。両方に flex-basis を持たせると、
+       合計が 100% を超えたときの縮み方に左右で差が出る。
+       100% から仕切り線ぶんを引いてから比を掛ける ── そうしないと取り分の
+       分母が左右2列ぶんではなく「2列＋仕切り線」になってしまう。 */
+    .md-split-left { flex: 0 0 calc((100% - var(--md-split-divider-w)) * var(--md-split-ratio)); }
+    .md-split-right { flex: 1 1 0; }
     .md-split-pane > *:first-child { margin-top: 0 !important; }
     .md-split-pane > *:last-child { margin-bottom: 0 !important; }
-    .md-split-divider { flex: 0 0 1px; background-color: var(--border-color); }
+    /* 仕切り線は掴み所も兼ねる。線そのものは 1px のままにしたいので、当たり
+       判定だけを 11px に広げ、線は ::after で中央に描く（Monaco の sash と
+       同じやり方）。高さは alignSplitPanes が直接指定するので、::after の
+       top/bottom はそれに従う。 */
+    .md-split-divider {
+      flex: 0 0 var(--md-split-divider-w); position: relative; cursor: col-resize; background-color: transparent;
+    }
+    .md-split-divider::after {
+      content: ""; position: absolute; top: 0; bottom: 0; left: 50%; width: 1px;
+      background-color: var(--border-color); transform: translateX(-50%);
+      transition: background-color 0.15s, width 0.15s;
+    }
+    .md-split-divider:hover::after, .md-split-divider.dragging::after {
+      background-color: #0a84ff; width: 3px;
+    }
 
     /* 高さを揃えるための余白（alignSplitPanes が挿入する data-align-spacer）。
        対応するブロックが両側で同じ位置から始まるよう、低いほうの直後、または
@@ -3789,6 +3820,55 @@ a[data-diff-nolink]{ cursor: pointer; }
         }).observe(richDiffViewer);
       }
 
+      // ========== 左右表示の列幅リサイズ ==========
+      // 仕切り線（.md-split-divider）をドラッグして左右の比を変える。目次の幅
+      // （isMdTocResizing）や 1列表示の本文幅（isMdResizing）とはフラグを分ける
+      // ── 同じ mousemove に相乗りさせると、どちらのドラッグ中かの判定が
+      // 絡まりかねないため。
+      const MD_SPLIT_MIN_W = 200; // 片側の最小幅(px)。列の左右パディング 32px×2 を引くと本文は 136px 残る。
+      let isMdSplitResizing = false;
+      let mdSplitDragX = 0;      // ドラッグ開始時のマウス位置
+      let mdSplitDragLeftW = 0;  // ドラッグ開始時の左列の幅
+      let mdSplitDragTotalW = 0; // 左列＋右列の幅。比の分母（仕切り線のぶんは含めない）
+
+      function beginMdSplitResize(e) {
+        if (!mdSplitLeftPane || !mdSplitRightPane) return;
+        isMdSplitResizing = true;
+        mdSplitDragX = e.clientX;
+        mdSplitDragLeftW = mdSplitLeftPane.getBoundingClientRect().width;
+        mdSplitDragTotalW = mdSplitDragLeftW + mdSplitRightPane.getBoundingClientRect().width;
+        if (mdSplitDivider) mdSplitDivider.classList.add('dragging');
+        document.body.classList.add('is-resizing');
+      }
+
+      document.addEventListener('mousemove', (e) => {
+        if (!isMdSplitResizing) return;
+        const max = mdSplitDragTotalW - MD_SPLIT_MIN_W;
+        if (max < MD_SPLIT_MIN_W) return; // 両側に最小幅を取れないほど狭い（動かしても意味がない）
+        let w = mdSplitDragLeftW + (e.clientX - mdSplitDragX);
+        if (w < MD_SPLIT_MIN_W) w = MD_SPLIT_MIN_W;
+        if (w > max) w = max;
+        // ドラッグ中は変数を書き換えるだけにとどめる。列幅が変わると全ブロックの
+        // 折り返しと高さが変わり、余白（data-align-spacer）の入れ直しが毎フレーム
+        // では重すぎるので、揃え直しは mouseup でまとめて行う（目次の幅ドラッグと
+        // 同じ方針）。ドラッグ中は前の余白のまま少しずつずれて見えるが、放した
+        // ところで揃う。
+        // 単位を持たない比のまま書き込む。% にして書き込むと、CSS 側の calc が
+        // 「仕切り線を除いた幅」に対してこの比を掛けているのに、ここで既に
+        // 仕切り線を含めた % に変換してしまい、両者の基準がずれる。
+        document.documentElement.style.setProperty('--md-split-ratio', String(w / mdSplitDragTotalW));
+      });
+
+      document.addEventListener('mouseup', () => {
+        if (!isMdSplitResizing) return;
+        isMdSplitResizing = false;
+        if (mdSplitDivider) mdSplitDivider.classList.remove('dragging');
+        document.body.classList.remove('is-resizing');
+        // 列幅が変わると折り返し・高さと、目次の現在位置がどちらも変わる。
+        scheduleMdRealign();
+        scheduleMdTocHighlight();
+      });
+
       function renderMarkdownView() {
         if (mdDiffedHtml === null) return;
         // 目次は差し替えの都度、まず先に組み立てる（--md-toc-w をここで確定
@@ -3845,6 +3925,8 @@ a[data-diff-nolink]{ cursor: pointer; }
 
           const divider = document.createElement('div');
           divider.className = 'md-split-divider';
+          // ペインは描画のたびに作り直すので、掴み所の紐付けもここで毎回行う。
+          divider.addEventListener('mousedown', beginMdSplitResize);
 
           richDiffViewer.innerHTML = '';
           richDiffViewer.appendChild(leftPane);
