@@ -4040,6 +4040,9 @@ a[data-diff-nolink]{ cursor: pointer; }
 
       // ---- HTML View を開く (ported rich-html-diff engine) ----
       let htmlRenderSeq = 0;
+      // 戻り値は「開けたか」。開き直しに失敗したとき（入れ替えの結果 AFTER に
+      // 要素が無くなった場合）に、前の描画が残らないよう呼び出し側で片付けられる
+      // ようにするためのもの。ボタンから開くときは見なくてよい。
       async function openHtmlView() {
         const bText = beforeModel.getValue();
         const aText = afterModel.getValue();
@@ -4050,7 +4053,7 @@ a[data-diff-nolink]{ cursor: pointer; }
         const sanityDoc = new DOMParser().parseFromString(aText, 'text/html');
         if (!sanityDoc.body || sanityDoc.body.children.length === 0) {
           showToast('⚠️ HTML として解釈できる要素がありません');
-          return;
+          return false;
         }
 
         try {
@@ -4084,10 +4087,12 @@ a[data-diff-nolink]{ cursor: pointer; }
           richViewMode = 'html';
           updateJumpControlsVisibility();
           saveAutoSave();
+          return true;
         } catch (error) {
           console.error("HTML View Render Error:", error);
           restoreMonacoView();
           showToast('⚠️ HTML Viewの生成に失敗しました');
+          return false;
         }
       }
 
@@ -4103,9 +4108,20 @@ a[data-diff-nolink]{ cursor: pointer; }
 
       // ==============================================================
 
-      document.getElementById('swapBtn').addEventListener('click', () => {
+      document.getElementById('swapBtn').addEventListener('click', async () => {
         const temp = beforeModel.getValue(); beforeModel.setValue(afterModel.getValue()); afterModel.setValue(temp);
         updatePlaceholders();
+        // Markdown / HTML View が開いているときは、そちらも差分を取り直す。
+        // 1列⇄左右の切り替え（setViewMode）は描き直すだけで済むが、入れ替えは
+        // 差分そのものが変わるので、開き直しにあたる openMarkdownView /
+        // openHtmlView を呼ぶ（どちらも開いている状態から呼び直して差し支えない
+        // 作りになっている）。
+        if (!isRichDiffView) return;
+        if (richViewMode === 'markdown') openMarkdownView();
+        // 入れ替えた結果 AFTER 側に要素が無くなることがある（丸ごと追加の差分を
+        // 入れ替えた場合）。そのときは HTML View を開き直せないので、古い描画を
+        // 残さず Monaco に戻す。
+        else if (richViewMode === 'html' && !(await openHtmlView())) restoreMonacoView();
       });
 
       const inlineViewBtn = document.getElementById('inlineViewBtn');
