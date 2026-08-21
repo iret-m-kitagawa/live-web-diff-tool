@@ -2220,6 +2220,107 @@ a[data-diff-nolink]{ cursor: pointer; }
       return out;
     }
 
+    // ---- ブロック単位で対応を決めてから HtmlDiff にかける（Markdown View 用） ----
+    // HtmlDiff は文書ぜんぶを 1 本のトークン列として扱うため、before と after で
+    // ブロックの種類が変わる箇所（<p> が <ul> になる、節が丸ごと消える等）で対応を
+    // 取り違える。実データでは生出力が </table>\n<p><ul>…</p> のようになり、開いた
+    // ままの <li> が before にしか無い <h3> と <table> を飲み込んだうえ、after の
+    // 箇条書きの文がその表のセルの中に散らされていた（ul > li > table > tbody >
+    // tr > td）。右ペインに存在しない表が現れるのはこれが原因。1 つの文書で 6 箇所。
+    // balanceDiffTags はタグの開閉を釣り合わせるだけなので、これは直せない
+    // （直せないのは「どのブロックに文が入るか」の方）。
+    //
+    // そこで、まずトップレベルのブロックの対応を決めてしまい、HtmlDiff には
+    // 「対になったブロックどうし」だけを渡す。ブロックをまたいだ混入が原理的に
+    // 起きなくなる。
+    //   1. まったく同じブロック（outerHTML が一致）を Myers 差分（diffSeq）で固定する
+    //   2. 変わった区間だけ、nodeSimilarity（既存。タグの族と識別テキストを見る）で
+    //      順序を崩さない対応を選ぶ。PAIR_THRESHOLD を下回る組は対にしない
+    //      ＝ 別物として片側だけの追加/削除にする
+    //   3. 対になった組は HtmlDiff.execute(前, 後)。片側だけのブロックは
+    //      HtmlDiff.execute(前, '') / HtmlDiff.execute('', 後) に渡し、印の付け方は
+    //      エンジン自身に任せる（丸ごと追加/削除の印はブロックの中に付く形で返る）
+    // 印の形は従来と同じ（ブロックの中に ins.diffins / del.diffdel が入る）ままなので、
+    // 左右ペインの間引き（stripMarked）や目次・差分ジャンプが見ているものは変わらない。
+    //
+    // 鍵に本文だけでなく outerHTML を使うのは、見える文字が同じで書式だけ変わった
+    // ブロック（<strong> が <em> になった等）を「同一」にしてしまわないため。厳しく
+    // 見ておけば、そうしたブロックは 2 の対応付けを経て HtmlDiff にかかり、これまで
+    // どおり書式の変化として印が付く。
+    const MD_BLOCK_BAND = 8; // 変わった区間の中で対を探す幅。これより離れたブロックは対にしない
+    function blockPairedHtmlDiff(bHtml, aHtml) {
+      const bodyOf = (html) => new DOMParser().parseFromString(html, 'text/html').body;
+      const bEls = Array.from(bodyOf(bHtml).children);
+      const aEls = Array.from(bodyOf(aHtml).children);
+      // どちらかにブロックが 1 つも無いなら分ける意味が無いので、丸ごと渡す。
+      if (!bEls.length || !aEls.length) return HtmlDiff.execute(bHtml, aHtml);
+
+      const out = [];
+      const pairOne = (bEl, aEl) => out.push(HtmlDiff.execute(bEl.outerHTML, aEl.outerHTML));
+      const delOne = (bEl) => out.push(HtmlDiff.execute(bEl.outerHTML, ''));
+      const insOne = (aEl) => out.push(HtmlDiff.execute('', aEl.outerHTML));
+
+      // 変わった区間（片側だけの run が続く範囲）の突き合わせ。
+      const resolveRegion = (dels, inss) => {
+        const n = dels.length, m = inss.length;
+        if (!n) { inss.forEach(insOne); return; }
+        if (!m) { dels.forEach(delOne); return; }
+        // 似ている度合いの合計が最大になる、順序を崩さない対応を選ぶ（LCS と同じ形の
+        // DP）。帯（MD_BLOCK_BAND）の外は見ない ── 区間が大きいときの計算量を抑える
+        // ためで、対応するブロックが区間の中で大きく前後することは無い。
+        const sim = [];
+        for (let i = 0; i < n; i++) {
+          const row = new Float64Array(m);
+          for (let j = 0; j < m; j++) {
+            row[j] = Math.abs(i - j) > MD_BLOCK_BAND ? 0 : nodeSimilarity(dels[i], inss[j]);
+          }
+          sim.push(row);
+        }
+        const dp = [];
+        for (let i = 0; i <= n; i++) dp.push(new Float64Array(m + 1));
+        for (let i = n - 1; i >= 0; i--) {
+          for (let j = m - 1; j >= 0; j--) {
+            const take = sim[i][j] >= PAIR_THRESHOLD ? sim[i][j] + dp[i + 1][j + 1] : -1;
+            dp[i][j] = Math.max(dp[i + 1][j], dp[i][j + 1], take);
+          }
+        }
+        let i = 0, j = 0;
+        while (i < n && j < m) {
+          const take = sim[i][j] >= PAIR_THRESHOLD ? sim[i][j] + dp[i + 1][j + 1] : -1;
+          if (take >= dp[i + 1][j] && take >= dp[i][j + 1]) pairOne(dels[i++], inss[j++]);
+          else if (dp[i + 1][j] >= dp[i][j + 1]) delOne(dels[i++]);
+          else insOne(inss[j++]);
+        }
+        while (i < n) delOne(dels[i++]);
+        while (j < m) insOne(inss[j++]);
+      };
+
+      let bi = 0, ai = 0;
+      let pendingDel = [], pendingIns = [];
+      const flush = () => {
+        if (pendingDel.length || pendingIns.length) resolveRegion(pendingDel, pendingIns);
+        pendingDel = []; pendingIns = [];
+      };
+      diffSeq(bEls.map((el) => el.outerHTML), aEls.map((el) => el.outerHTML)).forEach((run) => {
+        const len = run.items.length;
+        if (run.op === 0) {
+          flush();
+          // 同一なのでどちらでもよい。after 側をそのまま使う。
+          for (let k = 0; k < len; k++) out.push(aEls[ai + k].outerHTML);
+          bi += len; ai += len;
+        } else if (run.op === -1) {
+          for (let k = 0; k < len; k++) pendingDel.push(bEls[bi + k]);
+          bi += len;
+        } else {
+          for (let k = 0; k < len; k++) pendingIns.push(aEls[ai + k]);
+          ai += len;
+        }
+      });
+      flush();
+      // marked の出力はブロックの間が改行で区切られている。同じ形に戻して繋ぐ。
+      return out.join('\n');
+    }
+
     let diffEditor, diffOrig, diffMod;
     let beforeModel, afterModel;
     let beforeFocused = false;
@@ -3991,7 +4092,9 @@ a[data-diff-nolink]{ cursor: pointer; }
 
       // ---- Markdown View を開く ----
       // marked.parse → HtmlDiff.execute → DOMPurify.sanitize の順序は不変。
-      // その間に balanceDiffTags を挟むだけ（釣り合っている出力には何もしない）。
+      // その間に blockPairedHtmlDiff（ブロック単位で対応を決めてから HtmlDiff に
+      // かける）と balanceDiffTags（タグの釣り合いを直す）を挟むだけ（釣り合っている
+      // 出力には何もしない）。
       function openMarkdownView() {
         try {
           const bText = beforeModel.getValue();
@@ -4001,8 +4104,9 @@ a[data-diff-nolink]{ cursor: pointer; }
           const aHtml = marked.parse(aText);
 
           if (typeof HtmlDiff === 'undefined') throw new Error("HtmlDiff library is missing");
-          // タグの釣り合いを直してから渡す（balanceDiffTags のコメント参照）。
-          const diffedHtml = balanceDiffTags(HtmlDiff.execute(bHtml, aHtml));
+          // ブロックの対応を先に決め（blockPairedHtmlDiff）、タグの釣り合いを
+          // 直してから渡す（保険として残す。各コメント参照）。
+          const diffedHtml = balanceDiffTags(blockPairedHtmlDiff(bHtml, aHtml));
 
           if (typeof DOMPurify === 'undefined') throw new Error("DOMPurify library is missing");
           // ここで 1 回だけ diff を作り、保持しておく。1列⇄左右の切り替えは
