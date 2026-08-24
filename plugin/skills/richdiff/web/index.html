@@ -2234,9 +2234,7 @@ a[data-diff-nolink]{ cursor: pointer; }
     // 「対になったブロックどうし」だけを渡す。ブロックをまたいだ混入が原理的に
     // 起きなくなる。
     //   1. まったく同じブロック（outerHTML が一致）を Myers 差分（diffSeq）で固定する
-    //   2. 変わった区間だけ、nodeSimilarity（既存。タグの族と識別テキストを見る）で
-    //      順序を崩さない対応を選ぶ。PAIR_THRESHOLD を下回る組は対にしない
-    //      ＝ 別物として片側だけの追加/削除にする
+    //   2. 変わった区間だけ mdPairSequence（下）に渡し、nodeSimilarity で対応を決める
     //   3. 対になった組は HtmlDiff.execute(前, 後)。片側だけのブロックは
     //      HtmlDiff.execute(前, '') / HtmlDiff.execute('', 後) に渡し、印の付け方は
     //      エンジン自身に任せる（丸ごと追加/削除の印はブロックの中に付く形で返る）
@@ -2247,7 +2245,118 @@ a[data-diff-nolink]{ cursor: pointer; }
     // ブロック（<strong> が <em> になった等）を「同一」にしてしまわないため。厳しく
     // 見ておけば、そうしたブロックは 2 の対応付けを経て HtmlDiff にかかり、これまで
     // どおり書式の変化として印が付く。
-    const MD_BLOCK_BAND = 8; // 変わった区間の中で対を探す幅。これより離れたブロックは対にしない
+    const MD_BLOCK_BAND = 8; // 変わった区間の中で対を探す幅。これより離れたものは対にしない
+
+    // 順序を崩さない対応を選ぶ（LCS と同じ形の DP）。似ている度合いの合計が最大に
+    // なる組み合わせを取り、PAIR_THRESHOLD を下回る組は対にしない（＝別物として
+    // 片側だけの追加/削除にする）。帯（MD_BLOCK_BAND）の外は見ない ── 数が多い
+    // ときの計算量を抑えるためで、対応するものが並びの中で大きく前後することは無い。
+    // ブロックの対応付け（nodeSimilarity）と表の行の対応付け（mdRowSimilarity）で
+    // 同じものを使う。
+    function mdPairSequence(lefts, rights, simOf, onPair, onLeft, onRight) {
+      const n = lefts.length, m = rights.length;
+      if (!n) { rights.forEach(onRight); return; }
+      if (!m) { lefts.forEach(onLeft); return; }
+      const sim = [];
+      for (let i = 0; i < n; i++) {
+        const row = new Float64Array(m);
+        for (let j = 0; j < m; j++) row[j] = Math.abs(i - j) > MD_BLOCK_BAND ? 0 : simOf(lefts[i], rights[j]);
+        sim.push(row);
+      }
+      const dp = [];
+      for (let i = 0; i <= n; i++) dp.push(new Float64Array(m + 1));
+      for (let i = n - 1; i >= 0; i--) {
+        for (let j = m - 1; j >= 0; j--) {
+          const take = sim[i][j] >= PAIR_THRESHOLD ? sim[i][j] + dp[i + 1][j + 1] : -1;
+          dp[i][j] = Math.max(dp[i + 1][j], dp[i][j + 1], take);
+        }
+      }
+      let i = 0, j = 0;
+      while (i < n && j < m) {
+        const take = sim[i][j] >= PAIR_THRESHOLD ? sim[i][j] + dp[i + 1][j + 1] : -1;
+        if (take >= dp[i + 1][j] && take >= dp[i][j + 1]) onPair(lefts[i++], rights[j++]);
+        else if (dp[i + 1][j] >= dp[i][j + 1]) onLeft(lefts[i++]);
+        else onRight(rights[j++]);
+      }
+      while (i < n) onLeft(lefts[i++]);
+      while (j < m) onRight(rights[j++]);
+    }
+
+    // ---- 表は行の対応を決めてから HtmlDiff にかける ----
+    // ブロック単位で対を作っても、表の中は 1 本のトークン列のままなので、行が
+    // 1 つ消えると以降の行がずれる。実データでは「担当者」の行が消えた 9 列の表で、
+    // 右ペインに中身の無い行が現れ、次の「顧客番号」の行から項目ID のセルが
+    // 消えていた（番号だけが前の行に残る）。
+    //
+    // 行の対応付けで気をつけないといけないのは、既存の identityText が行の識別に
+    // 先頭セルを使うこと。この手の表の先頭セルは「項目ID」の連番で、行が消えると
+    // ずれる＝いちばん当てにならない列になる。実測した nodeSimilarity:
+    //     前5:担当者   ↔ 後5:顧客番号  0.803  ← 番号が一致するので高い（誤り）
+    //     前6:顧客番号 ↔ 後5:顧客番号  0.484  ← 正しい対なのに低い
+    //     前7:起票日   ↔ 後7:更新日    0.878  ← 誤り
+    // これでは合計を最大にすると誤った鎖の方が選ばれる。そこで行には、「ただの
+    // 数字」の先頭セルを識別から外した専用の類似度（mdRowSimilarity）を使う。
+    // 同じ表での実測は 担当者=閾値超えの相手なし（純粋な削除）、顧客番号 0.984、
+    // 起票日 0.986、更新日 0.988 で、誤った組は 0.545 以下に落ちる。
+    // identityText / nodeSimilarity は HTML View も使っているので触らない。
+
+    // 行の識別テキスト。中身が「ただの数字」または空のセルは飛ばし、最初の意味の
+    // あるセルを使う。全部が数字なら先頭セルに戻す（数字そのものが識別子である
+    // 表もあるため）。
+    function mdRowIdentity(tr) {
+      const cells = Array.from(tr.children).filter((c) => c.tagName === 'TD' || c.tagName === 'TH');
+      for (const c of cells) {
+        const t = norm(c.textContent);
+        if (t && !/^[0-9]+([.\-][0-9]+)*$/.test(t)) return t;
+      }
+      return cells.length ? norm(cells[0].textContent) : '';
+    }
+
+    // nodeSimilarity と同じ組み立て（識別テキストと全文を半々で見る）で、識別
+    // テキストの取り方だけを行向けに差し替えたもの。
+    function mdRowSimilarity(x, y) {
+      const full = tokenOverlap(norm(x.textContent), norm(y.textContent));
+      const ia = mdRowIdentity(x), ib = mdRowIdentity(y);
+      if (!ia && !ib) return full;
+      return 0.5 * identityOverlap(ia, ib) + 0.5 * full;
+    }
+
+    // 想定は marked の出力（<table> の直下は thead / tbody だけ）。セルの結合
+    // （rowspan/colspan）があるものや、想定と違う組み立てのものは行に分けず、
+    // 表ごと HtmlDiff に渡す ── 行数と列の対応が単純に決まらないため。
+    function mdTableDiff(bTable, aTable) {
+      const whole = () => HtmlDiff.execute(bTable.outerHTML, aTable.outerHTML);
+      if (bTable.querySelector('[rowspan], [colspan]') || aTable.querySelector('[rowspan], [colspan]')) return whole();
+      const sectionsOf = (t) => {
+        const out = {};
+        for (const el of Array.from(t.children)) {
+          if (el.tagName !== 'THEAD' && el.tagName !== 'TBODY') return null; // caption/colgroup/tfoot 等
+          if (out[el.tagName]) return null;                                  // 同じ section が複数
+          out[el.tagName] = el;
+        }
+        return out;
+      };
+      const bs = sectionsOf(bTable), as = sectionsOf(aTable);
+      if (!bs || !as) return whole();
+
+      const rowsOf = (sec) => (sec ? Array.from(sec.children).filter((el) => el.tagName === 'TR') : []);
+      const build = (tag, bSec, aSec) => {
+        if (!bSec && !aSec) return '';
+        const parts = [];
+        mdPairSequence(
+          rowsOf(bSec), rowsOf(aSec), mdRowSimilarity,
+          (bTr, aTr) => parts.push(HtmlDiff.execute(bTr.outerHTML, aTr.outerHTML)),
+          (bTr) => parts.push(HtmlDiff.execute(bTr.outerHTML, '')),
+          (aTr) => parts.push(HtmlDiff.execute('', aTr.outerHTML)));
+        return '<' + tag + '>' + parts.join('\n') + '</' + tag + '>';
+      };
+      // 器は after 側の <table> を属性ごと複製して使う（marked は属性を付けないが、
+      // 付いていたときに落とさないため）。
+      const shell = aTable.cloneNode(false);
+      shell.innerHTML = build('thead', bs.THEAD, as.THEAD) + build('tbody', bs.TBODY, as.TBODY);
+      return shell.outerHTML;
+    }
+
     function blockPairedHtmlDiff(bHtml, aHtml) {
       const bodyOf = (html) => new DOMParser().parseFromString(html, 'text/html').body;
       const bEls = Array.from(bodyOf(bHtml).children);
@@ -2256,44 +2365,16 @@ a[data-diff-nolink]{ cursor: pointer; }
       if (!bEls.length || !aEls.length) return HtmlDiff.execute(bHtml, aHtml);
 
       const out = [];
-      const pairOne = (bEl, aEl) => out.push(HtmlDiff.execute(bEl.outerHTML, aEl.outerHTML));
+      // 表だけは行の対応も決めてから渡す（mdTableDiff のコメント参照）。
+      const pairOne = (bEl, aEl) => out.push(
+        bEl.tagName === 'TABLE' && aEl.tagName === 'TABLE'
+          ? mdTableDiff(bEl, aEl)
+          : HtmlDiff.execute(bEl.outerHTML, aEl.outerHTML));
       const delOne = (bEl) => out.push(HtmlDiff.execute(bEl.outerHTML, ''));
       const insOne = (aEl) => out.push(HtmlDiff.execute('', aEl.outerHTML));
 
       // 変わった区間（片側だけの run が続く範囲）の突き合わせ。
-      const resolveRegion = (dels, inss) => {
-        const n = dels.length, m = inss.length;
-        if (!n) { inss.forEach(insOne); return; }
-        if (!m) { dels.forEach(delOne); return; }
-        // 似ている度合いの合計が最大になる、順序を崩さない対応を選ぶ（LCS と同じ形の
-        // DP）。帯（MD_BLOCK_BAND）の外は見ない ── 区間が大きいときの計算量を抑える
-        // ためで、対応するブロックが区間の中で大きく前後することは無い。
-        const sim = [];
-        for (let i = 0; i < n; i++) {
-          const row = new Float64Array(m);
-          for (let j = 0; j < m; j++) {
-            row[j] = Math.abs(i - j) > MD_BLOCK_BAND ? 0 : nodeSimilarity(dels[i], inss[j]);
-          }
-          sim.push(row);
-        }
-        const dp = [];
-        for (let i = 0; i <= n; i++) dp.push(new Float64Array(m + 1));
-        for (let i = n - 1; i >= 0; i--) {
-          for (let j = m - 1; j >= 0; j--) {
-            const take = sim[i][j] >= PAIR_THRESHOLD ? sim[i][j] + dp[i + 1][j + 1] : -1;
-            dp[i][j] = Math.max(dp[i + 1][j], dp[i][j + 1], take);
-          }
-        }
-        let i = 0, j = 0;
-        while (i < n && j < m) {
-          const take = sim[i][j] >= PAIR_THRESHOLD ? sim[i][j] + dp[i + 1][j + 1] : -1;
-          if (take >= dp[i + 1][j] && take >= dp[i][j + 1]) pairOne(dels[i++], inss[j++]);
-          else if (dp[i + 1][j] >= dp[i][j + 1]) delOne(dels[i++]);
-          else insOne(inss[j++]);
-        }
-        while (i < n) delOne(dels[i++]);
-        while (j < m) insOne(inss[j++]);
-      };
+      const resolveRegion = (dels, inss) => mdPairSequence(dels, inss, nodeSimilarity, pairOne, delOne, insOne);
 
       let bi = 0, ai = 0;
       let pendingDel = [], pendingIns = [];

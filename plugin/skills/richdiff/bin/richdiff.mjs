@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 
 // --version の出力はここが元。plugin.json の version と手で揃える
 // （claude plugin tag が両者の一致を検証してくれる）。
-const VERSION = '1.8.0';
+const VERSION = '1.9.0';
 
 // Node の下限。18 を下回ったら動かさない。
 // 18 と 20 はサポート切れなので --help / README では 22 以上を勧めるが、
