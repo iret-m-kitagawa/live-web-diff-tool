@@ -1896,26 +1896,214 @@
     return cur;
   }
 
-  function insertSpacerAfter(afterEl, height, boundary){
+  // parent の display を調べる（表の行・行群・表そのものかどうかの判定に使う。
+  // getComputedStyle が失敗する状況＝要素が既にどこにも繋がっていない等は
+  // 起こり得ないはずだが、念のため空文字を返して「表ではない」扱いにする）。
+  function alignDisplayOf(el){
+    try { return el ? (window.getComputedStyle(el).display || '') : ''; } catch (e) { return ''; }
+  }
+  // 今までどおりの、地の色に紛れて見えなくなる高さ合わせ用の div。
+  function makeAlignSpacer(height){
     var spacer = document.createElement('div');
     spacer.setAttribute(ALIGN_ATTR, '');
-    // 地の色のままにして見えないようにする（Markdown View の
-    // [data-align-spacer] と同じ扱い）。
-    spacer.style.cssText = 'height:' + height + 'px;background-color:transparent;';
+    spacer.style.cssText = 'margin:0;padding:0;border:0;height:' + height + 'px;background-color:transparent;';
+    return spacer;
+  }
+  // 器に gap があると、兄弟として余白を 1 つ挿した時点で gap が 1 つぶん
+  // 余分に開く（実測: gap 8px で 8px、24px で 24px ずれた。しかも同じ流れに
+  // 余白を挿すたび積み上がる）。その分を余白の高さから引いておく。
+  // row-gap が 'normal'（＝gap 指定なし）のときは NaN になるので 0 とみなす。
+  function alignRowGapOf(el){
+    var g = NaN;
+    try { g = parseFloat(window.getComputedStyle(el).rowGap); } catch (e) {}
+    return (isFinite(g) && g > 0) ? g : 0;
+  }
+  // 表に border-spacing があると、行を 1 つ挿した時点でその縦幅ぶんが余分に
+  // 開く（実測: border-spacing 0 8px で 8px、0 20px で 20px ずれた）。
+  // flex/grid の gap とまったく同じ話。border-collapse: collapse の表では
+  // border-spacing は効かないので 0 とみなす。
+  function alignRowSpacingOf(el){
+    var v = 0;
+    try {
+      var table = el.closest ? el.closest('table') : null;
+      if (!table) return 0;
+      var cs = window.getComputedStyle(table);
+      if (cs.borderCollapse === 'collapse') return 0;
+      // border-spacing は "横 縦" の 2 値。縦だけ要る（1 値なら縦横同値）。
+      // このソース自体が ANCHOR_SCRIPT というテンプレートリテラル文字列の
+      // 中に書かれているため、正規表現リテラル中のバックスラッシュは外側の
+      // 文字列リテラルとしても一度解釈される。\s のまま書くと外側で
+      // 未知のエスケープシーケンスとして単なる s に潰れ、/s+/ という
+      // 別物の正規表現になってしまう（実測: 空白で分割されず追加が丸ごと
+      // 素通りし、border-spacing の減算が一切効かなかった）。\\s+ と
+      // 二重に エスケープしてはじめて注入先のスクリプトで /\s+/ に戻る。
+      var parts = String(cs.borderSpacing || '').split(/\\s+/);
+      v = parseFloat(parts.length > 1 ? parts[1] : parts[0]);
+    } catch (e) { v = 0; }
+    return (isFinite(v) && v > 0) ? v : 0;
+  }
+  // gap を差し引いた高さの余白を作る。引ききれない（必要な高さが gap より
+  // 小さい）ときは高さ 0 にして、足りない分を負の margin で戻す
+  //   必要な高さ H、gap G のとき  実際に開く量 = 余白の高さ + G + margin
+  //   H >= G: 高さ H-G / margin 0        → H
+  //   H <  G: 高さ 0   / margin H-G (負) → H
+  // 余白がその器で唯一の子になる場合は gap が発生しないので、既に要素の子が
+  // ある場合だけ差し引く。
+  function makeGapAwareSpacer(container, height){
+    var gap = (container && container.firstElementChild) ? alignRowGapOf(container) : 0;
+    var spacer = makeAlignSpacer(Math.max(0, height - gap));
+    if (gap > 0 && height < gap) spacer.style.marginBottom = (height - gap) + 'px';
+    return spacer;
+  }
+  // 表の行群（tbody/thead/tfoot）や表そのものの直下に差し込む用の、
+  // まるごと 1 行ぶんの空行。td だけが高さを持ち、border も背景も消して
+  // 見た目には出さない。tr:hover 等ホスト側のスタイルに反応しないよう
+  // pointer-events も切っておく。
+  function makeAlignRowSpacer(height, cols){
+    var tr = document.createElement('tr');
+    tr.setAttribute(ALIGN_ATTR, '');
+    tr.style.cssText = 'pointer-events:none;';
+    var td = document.createElement('td');
+    td.colSpan = cols > 0 ? cols : 1;
+    td.style.cssText = 'height:' + height + 'px;padding:0;border:none;background-color:transparent;';
+    tr.appendChild(td);
+    return tr;
+  }
+  // 行群の中で最大の列数（各行の colSpan の合計のうち最大のもの）を数える。
+  // 空の行スペーサーの colspan をこれに合わせないと、その行だけ列幅が
+  // 崩れて見えてしまう。
+  function alignColumnsOf(rowGroup){
+    var rows = rowGroup.rows ? rowGroup.rows : rowGroup.querySelectorAll(':scope > tr');
+    var max = 1;
+    for (var i = 0; i < rows.length; i++){
+      var cells = rows[i].cells || rows[i].querySelectorAll(':scope > th, :scope > td');
+      var n = 0;
+      for (var j = 0; j < cells.length; j++){ n += cells[j].colSpan || 1; }
+      if (n > max) max = n;
+    }
+    return max;
+  }
+  // 子を横に並べる器かどうか。こういう器の直下に余白を置くと、余白そのものが
+  // 「並びの1つ」として数えられてしまう ── 表なら無名セル、grid なら余分な
+  // グリッドアイテム（実測: 3 列の grid で 3 枚目が次の行へ折り返した）、
+  // flex の横並びなら余分なアイテムとして幅を食う。いずれも以降の子が
+  // 1 つずつずれる。縦に積む器（flex-direction が column 系）は、子の間に
+  // 余白が入るのが正しいので対象にしない。
+  function isAlignSideBySide(el, display){
+    if (display === 'table-row' || display === 'grid' || display === 'inline-grid') return true;
+    if (display === 'flex' || display === 'inline-flex'){
+      var fd = 'row';
+      try { fd = window.getComputedStyle(el).flexDirection || 'row'; } catch (e) {}
+      return fd.indexOf('column') !== 0;
+    }
+    return false;
+  }
+  // parent の中の beforeNode の直前へ、parent の display に合った器（div /
+  // tr / tbody）で余白を差し込む。
+  //
+  // 子を横に並べる器（表の行、grid、横方向の flex）は「並びそのもの」が
+  // 見た目を作っているので、そこに div を割り込ませると本来 1 個も無いはず
+  // の「余分な並びの1つ」が生まれてしまう（並びの外なら div は単に高さを
+  // 持つだけの無害な兄弟だが、並びの内側では構造そのものになる）。実測では、
+  // tr の中（th と td の間）に割り込んだ div が無名セルになって以降の
+  // td を 1 列分右へ押し出し（4 箇所・列がずれる）、tbody の中（tr と tr
+  // の間）に割り込んだ div が無名行になって表を横一杯の空白帯で
+  // 分断した（3 箇所・不自然な隙間）。grid でも同じ現象が起きる ── 3 列
+  // grid の葉要素（子を持たない子）に余白を挟むと div がそのままグリッド
+  // アイテムとして数えられ、3 枚目のカードが次のグリッド行へ折り返した
+  // （カード左端が 8, 239, 469 になるはずが 8, 239, 8 に）。row-flex でも
+  // 幅を食う分だけ以降のアイテムが右へずれるのは同じ理屈。そこで差し込み先
+  // の display を見て器を選び分ける。
+  //   ・parent が横に並べる器（isAlignSideBySide が true）: 並びの間に
+  //     何かを挟むこと自体が構造を壊す（挟んだ時点でそれが並びの1つに
+  //     数えられる）ので、高さは「並びの要素自身の中」に持たせる。
+  //     cellCandidate（climbLastChildChain 等で辿り着いた target）が
+  //     parent の直接の子であれば、その最後の子として div を追加する。
+  //     tr の場合、tr の直接の子になれるのは td/th だけなので、これは
+  //     従来どおり「セルの最後の子に足す」動作と一致する。同じ並びの
+  //     各要素にそれぞれ加えても、並び全体の高さは一番背の高い要素に
+  //     合わせて決まるので、二重に伸びることはない。
+  //     cellCandidate が特定できない、または parent の直接の子でない
+  //     場合は並びの中に余分な1個を避けようがないが、少なくとも並びの
+  //     外へ出すよりはまし。フォールバックとして親へ直接足す。
+  //   ・parent が table-row-group/table-header-group/table-footer-group:
+  //     本物の空行（tr>td）を挿す。td の colspan は行群内の最大列数に
+  //     合わせ、border も背景も消して見た目には何も無いままにする。
+  //   ・parent が table: thead と tbody の間など、行群をまたいだ位置。
+  //     tr は table の直接の子にはなれないので、tbody で包んでから挿す。
+  //   ・それ以外（td/ol/ul/body など）は今までどおり div のまま。
+  //
+  // 兄弟として div を挿す3箇所（並びのフォールバック／並び要素の中／
+  // それ以外の div 直挿し）はいずれも器に row-gap が付いていると、余白を
+  // 1 個増やしたことで gap も 1 個ぶん余分に開いてしまう（実測: column-flex
+  // で gap 0px→ずれ0px, 8px→8px, 24px→24px。gap の値そのままずれ、同じ
+  // 流れに余白を挿すたび積み上がる）。table の border-spacing はこの3箇所
+  // （div を挿す経路）には含めない ── 実測でずれなかった（外側の流れの
+  // 高さ計測が吸収する）ので、ここは今までどおり div のまま。
+  // ただし makeAlignRowSpacer が本物の tr を挿す table/行群の分岐は別
+  // ── そちらは applyCorrections 経由（実際の描画結果を突き合わせて差分を
+  // 押し込む経路）で border-spacing の余分な1個ぶんがそのままずれとして
+  // 出ることを実測で確認済み（alignRowSpacingOf 参照）。
+  function placeAlignSpacer(parent, beforeNode, height, cellCandidate){
+    var display = alignDisplayOf(parent);
+    var spacer;
+    if (isAlignSideBySide(parent, display)){
+      if (cellCandidate && cellCandidate.nodeType === 1 && cellCandidate.parentNode === parent){
+        spacer = makeGapAwareSpacer(cellCandidate, height);
+        cellCandidate.appendChild(spacer);
+        return spacer;
+      }
+      // 並びの要素が特定できない場合は余分な1個を避けようがないが、
+      // 少なくとも並びの外へ出すよりはまし。フォールバックとして親に
+      // 直接足す。
+      spacer = makeGapAwareSpacer(parent, height);
+      parent.insertBefore(spacer, beforeNode);
+      return spacer;
+    }
+    if (/^table-(row-group|header-group|footer-group)$/.test(display)){
+      var v1 = alignRowSpacingOf(parent);
+      // border-spacing V が必要な高さ H の半分より大きいと、行を挿すこと自体が
+      // 生む余分な V の方が H より大きくなり、挿さない方が近似として近い
+      // （挿せば最低でも V は開くので、狙いが V の半分未満なら何もしない方が
+      // 誤差が小さい）。呼び出し元は補正を何回かに分けて回すので、ここで
+      // 何もしなくても無限ループにはならない。
+      if (v1 > 0 && height * 2 < v1) return null;
+      spacer = makeAlignRowSpacer(Math.max(0, height - v1), alignColumnsOf(parent));
+      parent.insertBefore(spacer, beforeNode);
+      return spacer;
+    }
+    if (display === 'table'){
+      var v2 = alignRowSpacingOf(parent);
+      if (v2 > 0 && height * 2 < v2) return null;
+      var tbody = document.createElement('tbody');
+      tbody.setAttribute(ALIGN_ATTR, '');
+      tbody.appendChild(makeAlignRowSpacer(Math.max(0, height - v2), alignColumnsOf(parent)));
+      parent.insertBefore(tbody, beforeNode);
+      return tbody;
+    }
+    spacer = makeGapAwareSpacer(parent, height);
+    parent.insertBefore(spacer, beforeNode);
+    return spacer;
+  }
+
+  function insertSpacerAfter(afterEl, height, boundary){
     if (afterEl && afterEl.parentNode){
       var target = boundary ? climbLastChildChain(afterEl, boundary) : afterEl;
-      target.parentNode.insertBefore(spacer, target.nextSibling);
+      return placeAlignSpacer(target.parentNode, target.nextSibling, height, target);
     } else if (boundary){
       // 流れの先頭。boundary の最初の子が「親の最初の子」である間たどった
       // 一番外側の直前に差し込む（対称の考え方。既存の最初の子が無ければ
-      // boundary 自身の先頭でよい）。
+      // boundary 自身の先頭でよい）。boundary 自身が tr/tbody であること
+      // もあるので（表の行や行群がそのまま 1 つの流れの器になっている場合）、
+      // ここも placeAlignSpacer で display に応じた器を選ぶ。
       var head = boundary.firstElementChild;
       var insertBefore = head ? climbFirstChildChain(head, boundary) : null;
-      boundary.insertBefore(spacer, insertBefore || boundary.firstChild);
+      return placeAlignSpacer(boundary, insertBefore || boundary.firstChild, height, insertBefore);
     } else if (document.body){
+      var spacer = makeGapAwareSpacer(document.body, height);
       document.body.insertBefore(spacer, document.body.firstChild);
+      return spacer;
     }
-    return spacer;
   }
 
   // ある流れの先頭（対応するブロックがまだ 1 つも見つかっていない）に余白を
@@ -2014,15 +2202,28 @@
   // ことがあるため（相殺の有無は貼り付けられた文書の CSS しだいで、
   // 入れてみるまで分からない）。実際に来た位置を突き合わせて、足りない側に
   // その差だけ足す。親が数回まわして寄せていく。
+  //
+  // ここは placeAlignSpacer とは別に余白が入るもう1箇所であり、以前は自前で
+  // div を作って el.parentNode.insertBefore(sp, el) していた。それは
+  // placeAlignSpacer を素通りすることになり、この関数が避けている構造上の
+  // 問題（無名セル・無名行・余分なグリッドアイテム・gap の二重取り）を
+  // そのまま呼び戻してしまう。必ず placeAlignSpacer を経由させる。
+  //
+  // このパスがやりたいことは「el を delta だけ下へ押す」こと。ふつうの縦積みの
+  // 器なら el の直前に挿せばそのとおりに押し下がるし、tr の直前に tr の
+  // スペーサーを挿せば行群の中でも同じく押し下がる。しかし横に並ぶ器
+  // （tr・grid・row-flex）の中では、1 個の子だけを単独で下へ押すことはできない
+  // ── 並びは上端を共有しているため。この場合 placeAlignSpacer は el の
+  // “中” に高さを足す動作を選ぶので、結果は el を押し下げるのではなく el
+  // 自身（＝並び全体）を高くする。これは構造を壊さない安全な帰結であり、
+  // 親側は補正を何度か回すので、これで収束するか、少なくとも壊れたまま
+  // 止まることはない。それ以上凝ったことはしない。
   function applyCorrections(list){
     for (var i = 0; i < list.length; i++){
       var c = list[i];
       var el = document.querySelector('[data-sync-flow="' + c.flow + '"][data-sync-index="' + c.index + '"]');
       if (!el || !el.parentNode) continue;
-      var sp = document.createElement('div');
-      sp.setAttribute('data-align-spacer', 'fix');
-      sp.style.cssText = 'margin:0;padding:0;border:0;background:transparent;height:' + c.delta + 'px';
-      el.parentNode.insertBefore(sp, el);
+      placeAlignSpacer(el.parentNode, el, c.delta, el);
     }
   }
 
