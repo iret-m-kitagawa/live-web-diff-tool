@@ -3558,6 +3558,18 @@ a[data-diff-nolink]{ cursor: pointer; }
         return false;
       }
 
+      // Detect the root of a table: a literal <table>, or an element styled to look like
+      // one (display: table / inline-table), so a CSS table built from divs is caught too.
+      // Used by collectHtmlSyncUnits to stop descent at the table (see the comment there
+      // for why).
+      function isHtmlTableRoot(el) {
+        if (el.tagName === 'TABLE') return true;
+        const win = el.ownerDocument.defaultView;
+        let d = null;
+        try { d = win ? win.getComputedStyle(el).display : null; } catch (e) {}
+        return d === 'table' || d === 'inline-table';
+      }
+
       // A block check dedicated to this section, used to compute "the text this element
       // directly owns". The diff engine's isBlockEl trusts the snapshot (boundaryEls)
       // taken before buildDiff runs, so it wrongly treats elements that appear only
@@ -3630,6 +3642,28 @@ a[data-diff-nolink]{ cursor: pointer; }
         // (dedicated to this section, see the comment above).
         const hasOwnText = kids.length > 0 && norm(htmlSyncOwnText(el)) !== '';
         if (kids.length === 0 || hasOwnText) {
+          markHtmlSyncUnit(el, flow, depth, state);
+        } else if (isHtmlTableRoot(el)) {
+          // A table used to be descended into like any other vertical container --
+          // isVerticalHtmlContainer treats table/thead/tbody/tfoot/caption/cells as
+          // "just stacks rows vertically" -- so each <tr> became a numbered unit in the
+          // surrounding flow. Measured on diff-testcases/all-cases-before.html /
+          // all-cases-after.html, section "表：行の増減": a row deleted only on the left
+          // (index 40) grows a spacer after itself correctly, but a row inserted only on
+          // the right (index 43) needs its spacer BEFORE it -- and climbLastChildChain,
+          // walking the last-child chain to find where to plant that spacer, climbs
+          // straight out of the table and plants it after the table instead of before the
+          // new row inside it. The two tables ended up 206px (left) vs 279px (right) tall,
+          // with the misplaced spacer sitting outside the table it "belongs" to, and the
+          // correction pass patching the leftover gap back inside the table afterward. So
+          // a table is now one block: never descended into, and no element inside it is
+          // ever numbered, so no spacer can land inside one either. The table's own top
+          // edge still lines up with its counterpart (it's a single unit of the
+          // surrounding flow, same as a paragraph); the height difference is absorbed by
+          // a spacer placed after the table, outside it, where nothing shows. Trade-off:
+          // in a long table with an early insertion or deletion, later rows no longer
+          // line up row-for-row between the panes -- accepted, since the point is to stop
+          // rows being padded or table heights being fudged to force a match.
           markHtmlSyncUnit(el, flow, depth, state);
         } else if (isVerticalHtmlContainer(el)) {
           kids.forEach(c => collectHtmlSyncUnits(c, flow, depth, state));
