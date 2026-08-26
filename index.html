@@ -2740,6 +2740,20 @@ a[data-diff-nolink]{ cursor: pointer; }
       return 0.5 * identityOverlap(ia, ib) + 0.5 * full;
     }
 
+    // Pane filtering (stripMarked in openMarkdownView) keys off the ins/del marks
+    // HtmlDiff attaches -- but HtmlDiff only wraps text it actually diffs. An element with
+    // no text of its own (e.g. a bare `<hr>`, or a table row of empty cells) never gets an
+    // ins/del wrapper, so it used to survive the filter and leak into the opposite pane (a
+    // wholly-added `---` showed up in the before pane too). blockPairedHtmlDiff and
+    // mdTableDiff are the two places that already know an element is one-sided -- this
+    // records that as a data-md-only attribute (on a clone, so the source DOM is left
+    // alone) so the pane filter can catch it even when there's no text to mark.
+    const markMdOnly = (el, side) => {
+      const clone = el.cloneNode(true);
+      clone.setAttribute('data-md-only', side);
+      return clone.outerHTML;
+    };
+
     // Assumes marked's output (directly under <table> there is only thead / tbody). A table
     // with merged cells (rowspan/colspan), or one built differently than assumed, is not split
     // into rows and is passed to HtmlDiff whole -- because row count and column correspondence
@@ -2766,8 +2780,8 @@ a[data-diff-nolink]{ cursor: pointer; }
         mdPairSequence(
           rowsOf(bSec), rowsOf(aSec), mdRowSimilarity,
           (bTr, aTr) => parts.push(HtmlDiff.execute(bTr.outerHTML, aTr.outerHTML)),
-          (bTr) => parts.push(HtmlDiff.execute(bTr.outerHTML, '')),
-          (aTr) => parts.push(HtmlDiff.execute('', aTr.outerHTML)));
+          (bTr) => parts.push(HtmlDiff.execute(markMdOnly(bTr, 'del'), '')),
+          (aTr) => parts.push(HtmlDiff.execute('', markMdOnly(aTr, 'ins'))));
         return '<' + tag + '>' + parts.join('\n') + '</' + tag + '>';
       };
       // The shell is a clone of the after side's <table>, attributes included (marked doesn't
@@ -2790,8 +2804,11 @@ a[data-diff-nolink]{ cursor: pointer; }
         bEl.tagName === 'TABLE' && aEl.tagName === 'TABLE'
           ? mdTableDiff(bEl, aEl)
           : HtmlDiff.execute(bEl.outerHTML, aEl.outerHTML));
-      const delOne = (bEl) => out.push(HtmlDiff.execute(bEl.outerHTML, ''));
-      const insOne = (aEl) => out.push(HtmlDiff.execute('', aEl.outerHTML));
+      // Blocks with no text of their own never get an ins/del wrapper from HtmlDiff (see
+      // markMdOnly above) -- tag them here, the one place that already knows a top-level
+      // block is one-sided, so the pane filter can drop them.
+      const delOne = (bEl) => out.push(HtmlDiff.execute(markMdOnly(bEl, 'del'), ''));
+      const insOne = (aEl) => out.push(HtmlDiff.execute('', markMdOnly(aEl, 'ins')));
 
       // Match up a changed range (a run where only one side has content).
       const resolveRegion = (dels, inss) => mdPairSequence(dels, inss, nodeSimilarity, pairOne, delOne, insOne);
@@ -4627,8 +4644,9 @@ a[data-diff-nolink]{ cursor: pointer; }
           // Split view: parse the same HTML string twice, stripping additions from one
           // side and deletions from the other. Never strip ins/del by "tag name" -- GFM's
           // ~~strikethrough~~ turns into <del>, so stripping by tag name would also remove
-          // strikethrough that was already in the source document. Look only at the
-          // classes HtmlDiff attaches (diffins/diffmod/diffdel) and remove() element by
+          // strikethrough that was already in the source document. Look at the classes
+          // HtmlDiff attaches (diffins/diffmod/diffdel), plus data-md-only for one-sided
+          // blocks HtmlDiff never marks at all (see markMdOnly), and remove() element by
           // element.
           const leftPane = document.createElement('div');
           leftPane.className = 'md-split-pane md-split-left markdown-body';
@@ -4638,13 +4656,13 @@ a[data-diff-nolink]{ cursor: pointer; }
           // correspondence table as-is, so there is no need to infer correspondence
           // afterward.
           markSyncIndex(leftPane);
-          stripMarked(leftPane, 'ins.diffins, ins.diffmod');
+          stripMarked(leftPane, 'ins.diffins, ins.diffmod, [data-md-only="ins"]');
 
           const rightPane = document.createElement('div');
           rightPane.className = 'md-split-pane md-split-right markdown-body';
           rightPane.innerHTML = mdDiffedHtml;
           markSyncIndex(rightPane);
-          stripMarked(rightPane, 'del.diffdel, del.diffmod');
+          stripMarked(rightPane, 'del.diffdel, del.diffmod, [data-md-only="del"]');
 
           const divider = document.createElement('div');
           divider.className = 'md-split-divider';
