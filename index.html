@@ -3839,7 +3839,13 @@ a[data-diff-nolink]{ cursor: pointer; }
           for (let n = el.parentElement; n && n !== root; n = n.parentElement) suspects.add(n);
           el.remove();
         });
-        const isEmpty = el => !el.textContent.trim() && !el.querySelector('img,svg,input,hr,br');
+        // <br> must not count as content. It carries nothing on its own, and when a whole
+        // block belongs to only one side, HtmlDiff leaves the <br> tags outside the ins/del
+        // marks -- so after filtering, a cell holds nothing but <br>s. Counting those as
+        // content kept the row alive, which kept the table alive, and a wholly-added table
+        // showed up in the before pane as an empty 1-row husk (measured 64x55px next to the
+        // real 242px table). img/svg/input/hr stay in the list: they are visible on their own.
+        const isEmpty = el => !el.textContent.trim() && !el.querySelector('img,svg,input,hr');
         const depth = el => { let d = 0; for (let n = el; n && n !== root; n = n.parentElement) d++; return d; };
         // Collapse from the innermost outward. root isn't attached to the DOM yet, so
         // isConnected can't be used to check liveness (it's always false); check
