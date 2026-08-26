@@ -2731,13 +2731,39 @@ a[data-diff-nolink]{ cursor: pointer; }
       return cells.length ? norm(cells[0].textContent) : '';
     }
 
+    // identityOverlap (shared with the HTML View, so left untouched) is a bag-of-tokens
+    // comparison -- hit / max(len), counting whether each token of one string appears
+    // anywhere in the *set* of the other -- which is blind to order. For a short code-like id
+    // that differs in one place this returns 1.0:
+    //   identityOverlap("IT-AP-3-13-2", "IT-AP-3-13-3") = 1.0
+    //     meaningful tokens: [IT, AP, 3, 13, 2] vs [IT, AP, 3, 13, 3]
+    //     the trailing 3 matches the earlier 3 already in the set, so every token "hits"
+    // With identity tied at 1.0 for both candidates, the full-text term decides, and picks the
+    // wrong row:
+    //   IT-AP-3-13-2 <-> IT-AP-3-13-2   sim=0.936  (identity=1, full=0.872)
+    //   IT-AP-3-13-2 <-> IT-AP-3-13-3   sim=0.954  (identity=1, full=0.907)   <- chosen (wrong)
+    // So row identity uses a longest-common-subsequence ratio over the meaningful tokens
+    // instead, which is order-aware and pulls the mismatched-tail case back down (0.8: LCS
+    // [IT, AP, 3, 13] = 4 of 5). Same degenerate cases as identityOverlap (both empty -> 1, one
+    // empty -> 0).
+    function mdIdentityOverlap(sa, sb){
+      const isMeaningful = t => /[\p{L}\p{N}]/u.test(t);
+      const ta = tokenize(sa).filter(isMeaningful), tb = tokenize(sb).filter(isMeaningful);
+      if (!ta.length && !tb.length) return 1;
+      if (!ta.length || !tb.length) return 0;
+      const ops = diffSeq(ta, tb, 20000);
+      const lcs = ops ? ops.filter((r) => r.op === 0).reduce((n, r) => n + r.items.length, 0) : 0;
+      return lcs / Math.max(ta.length, tb.length);
+    }
+
     // Same structure as nodeSimilarity (identifying text and full text weighted 50/50), just
-    // with the way identifying text is extracted swapped out for rows.
+    // with the way identifying text is extracted swapped out for rows, and with the
+    // order-aware mdIdentityOverlap above instead of the bag-of-tokens identityOverlap.
     function mdRowSimilarity(x, y) {
       const full = tokenOverlap(norm(x.textContent), norm(y.textContent));
       const ia = mdRowIdentity(x), ib = mdRowIdentity(y);
       if (!ia && !ib) return full;
-      return 0.5 * identityOverlap(ia, ib) + 0.5 * full;
+      return 0.5 * mdIdentityOverlap(ia, ib) + 0.5 * full;
     }
 
     // Pane filtering (stripMarked in openMarkdownView) keys off the ins/del marks
@@ -2773,13 +2799,41 @@ a[data-diff-nolink]{ cursor: pointer; }
       const bs = sectionsOf(bTable), as = sectionsOf(aTable);
       if (!bs || !as) return whole();
 
+      // mdTableDiff used to hand a whole paired <tr> to HtmlDiff.execute. When cell contents
+      // are heavily rewritten, the </td><td> boundaries can shift, and the merged row comes
+      // back with a different cell count than either side went in with. Measured on this
+      // fixture, for a pair where both sides have 8 cells, the whole-row diff produced 9 cells
+      // -- a phantom empty column across the whole table:
+      //   mdTableDiff output cells per row (whole-row diff): [8,8,8,8,8,9,8,8,8]
+      //   whole-table HtmlDiff (the old path):               [8,8,8,8,8,8,8,8,8]
+      //   diffing that same pair cell by cell:                8
+      // So when a paired row's two sides have the same cell count, diff cell by cell and
+      // rebuild the row -- the column count then cannot change. When the counts differ (a
+      // column was added or removed), the column mapping isn't knowable here, so keep the
+      // whole-row diff. Named mdCellsOf, not cellsOf, since cellsOf (used by the HTML View
+      // engine) excludes already-marked cells, which doesn't apply to this raw pre-diff row.
+      const mdCellsOf = (tr) => Array.from(tr.children).filter((c) => c.tagName === 'TD' || c.tagName === 'TH');
+      const pairRow = (bTr, aTr) => {
+        const bc = mdCellsOf(bTr), ac = mdCellsOf(aTr);
+        if (!bc.length || bc.length !== ac.length) return HtmlDiff.execute(bTr.outerHTML, aTr.outerHTML);
+        const shell = aTr.cloneNode(false); // keep the row's own attributes
+        // marked's own table output separates adjacent <td>/<th> with a newline text node
+        // (e.g. "<td>A</td>\n<td>1</td>"), so joining the diffed cells with '' here would
+        // drop that separator and merge two cells' textContent together (measured: a row's
+        // textContent went from "A 1" to "A1"), which broke a pre-existing test
+        // (check_onesided.js item 5) that reads a row's plain text. Join with '\n' instead
+        // to keep that separator, matching marked's own convention.
+        shell.innerHTML = bc.map((c, i) => HtmlDiff.execute(c.outerHTML, ac[i].outerHTML)).join('\n');
+        return shell.outerHTML;
+      };
+
       const rowsOf = (sec) => (sec ? Array.from(sec.children).filter((el) => el.tagName === 'TR') : []);
       const build = (tag, bSec, aSec) => {
         if (!bSec && !aSec) return '';
         const parts = [];
         mdPairSequence(
           rowsOf(bSec), rowsOf(aSec), mdRowSimilarity,
-          (bTr, aTr) => parts.push(HtmlDiff.execute(bTr.outerHTML, aTr.outerHTML)),
+          (bTr, aTr) => parts.push(pairRow(bTr, aTr)),
           (bTr) => parts.push(HtmlDiff.execute(markMdOnly(bTr, 'del'), '')),
           (aTr) => parts.push(HtmlDiff.execute('', markMdOnly(aTr, 'ins'))));
         return '<' + tag + '>' + parts.join('\n') + '</' + tag + '>';
