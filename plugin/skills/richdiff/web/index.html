@@ -2813,10 +2813,31 @@ a[data-diff-nolink]{ cursor: pointer; }
       // whole-row diff. Named mdCellsOf, not cellsOf, since cellsOf (used by the HTML View
       // engine) excludes already-marked cells, which doesn't apply to this raw pre-diff row.
       const mdCellsOf = (tr) => Array.from(tr.children).filter((c) => c.tagName === 'TD' || c.tagName === 'TH');
+      // Numbers each paired row within this table (thead and tbody share the counter, so
+      // a value is unique within the table). alignSplitPanes reads this back as
+      // data-md-row to find a paired row's two sides and equalize their heights -- see
+      // the comment there. One-sided rows (see delOne/insOne below) never go through
+      // pairRow, so they never get this attribute, which is how alignSplitPanes tells
+      // "paired" from "one-sided" apart.
+      let rowCounter = 0;
       const pairRow = (bTr, aTr) => {
         const bc = mdCellsOf(bTr), ac = mdCellsOf(aTr);
-        if (!bc.length || bc.length !== ac.length) return HtmlDiff.execute(bTr.outerHTML, aTr.outerHTML);
+        const rowId = String(++rowCounter);
+        if (!bc.length || bc.length !== ac.length) {
+          // Whole-row fallback. Stamping data-md-row by giving bTr/aTr the attribute
+          // before diffing would make the two opening <tr> tags textually differ, and
+          // HtmlDiff diffs tags as tokens too (see the tag-balance comment above) --
+          // it would likely mark the tag itself as changed. So diff first, then parse
+          // the merged markup back into a node to stamp the attribute. innerHTML is set
+          // on a <tbody> (not a bare element) so the fragment parser stays in "in table
+          // body" mode and accepts a bare <tr>, instead of foster-parenting it away.
+          const tmp = document.createElement('tbody');
+          tmp.innerHTML = HtmlDiff.execute(bTr.outerHTML, aTr.outerHTML);
+          if (tmp.firstElementChild) tmp.firstElementChild.setAttribute('data-md-row', rowId);
+          return tmp.innerHTML;
+        }
         const shell = aTr.cloneNode(false); // keep the row's own attributes
+        shell.setAttribute('data-md-row', rowId);
         // marked's own table output separates adjacent <td>/<th> with a newline text node
         // (e.g. "<td>A</td>\n<td>1</td>"), so joining the diffed cells with '' here would
         // drop that separator and merge two cells' textContent together (measured: a row's
@@ -3995,6 +4016,52 @@ a[data-diff-nolink]{ cursor: pointer; }
       function alignSplitPanes(leftPane, rightPane, divider) {
         clearAlignSpacers(leftPane);
         clearAlignSpacers(rightPane);
+
+        // Equalize paired markdown-table row heights, before any block-level measurement
+        // below. mdTableDiff stamps data-md-row="<n>" on every row it paired (thead and
+        // tbody share one counter, so a value is unique within its table -- see the
+        // mdTableDiff comment); the same merged <tr> feeds both panes, so the same value
+        // shows up on both sides with nothing to correlate by hand here. A paired row's
+        // two sides land at the same top (a <table> is a top-level block, and those are
+        // already aligned by the pass below) but can differ in height when one side's
+        // cell text wraps to more lines than the other's. Measured on col_before.md /
+        // col_after.md (前提条件 changes from 未認証ユーザー to Okta 認証済みアナリスト, which
+        // wraps to more lines): row 12-1 left h=315 vs right h=517, a 202px gap that
+        // otherwise carries into every row below it in that table (12-2, 13-1, 13-2 were
+        // each ~201px apart before this fix).
+        //
+        // This never inserts filler rows. A row that exists on only one side has no
+        // data-md-row (see markMdOnly / pairRow's delOne/insOne callers) and is
+        // deliberately left alone here, simply pushing whatever follows it down -- e.g.
+        // tbl_before.md / tbl_after.md, where a row is deleted from the middle and the
+        // rows below it stay offset by design.
+        //
+        // Must run before the block-level pass below: changing a row's height changes
+        // its table's height, and that pass measures each top-level block's height to
+        // size its own spacers, so if it ran first it would measure the table before
+        // this fix landed (the HTML View aligner has this same row-then-block ordering
+        // constraint, for the same reason).
+        [leftPane, rightPane].forEach(pane => {
+          // Reset heights a previous run set. This function reruns on width change, font
+          // size change, and explicit realign, and a stale height would corrupt this
+          // run's measurement (e.g. a row that needs to shrink back down would not).
+          pane.querySelectorAll('tr[data-md-row]').forEach(tr => { tr.style.height = ''; });
+        });
+        const leftRowsByKey = new Map();
+        leftPane.querySelectorAll('tr[data-md-row]').forEach(tr => {
+          const table = tr.closest('table');
+          if (!table || table.dataset.syncIndex === undefined) return; // can't key a nested/unindexed table -- skip rather than guess
+          leftRowsByKey.set(table.dataset.syncIndex + ':' + tr.dataset.mdRow, tr);
+        });
+        rightPane.querySelectorAll('tr[data-md-row]').forEach(tr => {
+          const table = tr.closest('table');
+          if (!table || table.dataset.syncIndex === undefined) return;
+          const l = leftRowsByKey.get(table.dataset.syncIndex + ':' + tr.dataset.mdRow);
+          if (!l) return; // present in this pane only -- shouldn't happen for a paired row, but don't guess
+          const lh = l.getBoundingClientRect().height, rh = tr.getBoundingClientRect().height;
+          if (lh > rh + ALIGN_EPS) tr.style.height = lh + 'px';
+          else if (rh > lh + ALIGN_EPS) l.style.height = rh + 'px';
+        });
 
         // The running index markSyncIndex assigned before filtering directly becomes
         // the correspondence table. A block removed entirely by stripMarked leaves that
