@@ -264,8 +264,24 @@
        option to tint it lightly to signal "there's no matching content
        here", but a large one-sided addition would then turn half the screen
        into a tinted box, which draws more attention than it deserves. That
-       nothing is there is already obvious by looking at the other side. */
-    .md-split-pane [data-align-spacer] { background-color: transparent; }
+       nothing is there is already obvious by looking at the other side.
+
+       .markdown-body is repeated in the selector purely to raise specificity.
+       Row spacers live inside a table, and github-markdown-css stripes tables
+       with .markdown-body table tr:nth-child(2n) { background-color:
+       var(--color-canvas-subtle) } -- specificity (0,2,2). A plain
+       .md-split-pane [data-align-spacer] is only (0,2,0), so every
+       even-positioned spacer lost and got painted with the stripe color,
+       putting a visible block in the middle of what should be an empty gap.
+       Naming both classes on the pane (it carries md-split-pane and
+       markdown-body) makes this (0,3,0) and keeps the whole gap the
+       background color. */
+    .md-split-pane.markdown-body [data-align-spacer] {
+      background-color: transparent;
+      /* github-markdown-css also gives every tr a border-top, which would leave
+         a row separator floating in the middle of the empty gap. */
+      border-top: none;
+    }
 
     /* ===== HTML View (rich-html-diff engine) ===== */
     .html-diff-frame { display: none; width: 100%; height: 100%; border: none; background-color: #ffffff; }
@@ -4061,6 +4077,95 @@ a[data-diff-nolink]{ cursor: pointer; }
           const lh = l.getBoundingClientRect().height, rh = tr.getBoundingClientRect().height;
           if (lh > rh + ALIGN_EPS) tr.style.height = lh + 'px';
           else if (rh > lh + ALIGN_EPS) l.style.height = rh + 'px';
+        });
+
+        // ---- One-sided table rows: open a matching gap in the other pane ----
+        // A one-sided row (data-md-only, stamped by mdTableDiff's delOne/insOne) never
+        // gets data-md-row above, so the equalization loop just skipped it -- it is
+        // present in exactly one pane (the pane filter in openMarkdownView drops
+        // [data-md-only="ins"] from the left and [data-md-only="del"] from the right).
+        // Left alone, that row just pushes every row below it down on its own side
+        // while the other side stays put, so paired rows below the change drift apart.
+        // Measured on tbl_before.md / tbl_after.md before this fix: the row-13 pair
+        // (below a deleted row) sat 113.75px apart. Insert a spacer row of the same
+        // height at the same position in the other pane so both sides' row grids stay
+        // in lockstep past the one-sided row.
+        //
+        // Height must be measured after the paired-row equalization above, not before,
+        // so the number is final (equalization can still grow a paired row taller).
+        // Must also run before the block-level pass below, for the same reason as that
+        // equalization: inserting a row changes its <table>'s height, and the
+        // block-level pass sizes its own spacers off each top-level block's measured
+        // height, so it has to see the table's final height.
+        //
+        // The spacer is deliberately borderless and background-less (padding:0,
+        // border:none, background-color:transparent on the td; pointer-events:none on
+        // the tr so the host stylesheet's row-hover rule doesn't light it up) so it
+        // reads as the table breaking open rather than as an empty row of data. The tr
+        // is cleared by the stylesheet's [data-align-spacer] rule -- see the comment
+        // there for why that selector has to out-specify the nth-child stripe.
+        //
+        // Only tables with data-sync-index participate (same restriction as the
+        // equalization above) -- markSyncIndex only stamps top-level pane children, so
+        // a table nested inside e.g. a blockquote has no index to key by and is left
+        // alone. A table missing from one pane entirely (a wholly added/removed table)
+        // is skipped too: the block-level pass below already pads that case as one
+        // block. thead and tbody are walked as two independent cursors so a row never
+        // crosses from one section into the other.
+        const tableColCount = (table) => {
+          let max = 1;
+          table.querySelectorAll('tr').forEach(tr => {
+            let n = 0;
+            Array.from(tr.children).forEach(c => { n += c.colSpan || 1; });
+            if (n > max) max = n;
+          });
+          return max;
+        };
+        const makeRowSpacer = (height, colCount) => {
+          const spacerTr = document.createElement('tr');
+          spacerTr.setAttribute('data-align-spacer', '');
+          spacerTr.style.pointerEvents = 'none';
+          const td = document.createElement('td');
+          td.colSpan = colCount;
+          td.style.cssText = 'height:' + height + 'px;padding:0;border:none;background-color:transparent;';
+          spacerTr.appendChild(td);
+          return spacerTr;
+        };
+        const leftTablesByIndex = new Map();
+        leftPane.querySelectorAll('table[data-sync-index]').forEach(t => leftTablesByIndex.set(t.dataset.syncIndex, t));
+        const rightTablesByIndex = new Map();
+        rightPane.querySelectorAll('table[data-sync-index]').forEach(t => rightTablesByIndex.set(t.dataset.syncIndex, t));
+        leftTablesByIndex.forEach((lTable, key) => {
+          const rTable = rightTablesByIndex.get(key);
+          if (!rTable) return; // wholly added/removed table -- handled by the block-level pass below
+          const lCols = tableColCount(lTable);
+          const rCols = tableColCount(rTable);
+          ['THEAD', 'TBODY'].forEach(tag => {
+            const lSec = Array.from(lTable.children).find(el => el.tagName === tag);
+            const rSec = Array.from(rTable.children).find(el => el.tagName === tag);
+            if (!lSec || !rSec) return; // section missing on one side -- nothing to key rows against
+            const lRows = Array.from(lSec.children).filter(el => el.tagName === 'TR');
+            const rRows = Array.from(rSec.children).filter(el => el.tagName === 'TR');
+            let i = 0, j = 0;
+            while (i < lRows.length || j < rRows.length) {
+              const a = lRows[i], b = rRows[j];
+              if (a && a.hasAttribute('data-md-only')) {
+                rSec.insertBefore(makeRowSpacer(a.getBoundingClientRect().height, rCols), b || null);
+                i++;
+              } else if (b && b.hasAttribute('data-md-only')) {
+                lSec.insertBefore(makeRowSpacer(b.getBoundingClientRect().height, lCols), a || null);
+                j++;
+              } else if (a && b) {
+                i++; j++;
+              } else if (a) {
+                rSec.appendChild(makeRowSpacer(a.getBoundingClientRect().height, rCols));
+                i++;
+              } else if (b) {
+                lSec.appendChild(makeRowSpacer(b.getBoundingClientRect().height, lCols));
+                j++;
+              }
+            }
+          });
         });
 
         // The running index markSyncIndex assigned before filtering directly becomes
