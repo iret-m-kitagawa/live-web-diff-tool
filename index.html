@@ -171,6 +171,49 @@
     [data-theme*="light"] .rich-diff-viewer ins.diffins, [data-theme*="light"] .rich-diff-viewer ins.diffmod { background-color: #e6ffec; color: #238636; }
     [data-theme*="light"] .rich-diff-viewer del.diffdel, [data-theme*="light"] .rich-diff-viewer del.diffmod { background-color: #ffebe9; color: #da3633; }
 
+    /* A slow, continuous pulse on every diff mark -- same rationale as the HTML View's
+       copy of this rule in buildDiffCss(): pasted documents often carry their own
+       green/red (status badges, warning rows), and a static highlight is easy to mistake
+       for content that was already that color. Nothing in the pasted document itself
+       moves, so a pulse makes the tool's own marks unmistakable.
+       box-shadow, not filter, for the same reason as the HTML View's copy of this rule:
+       filter has a documented side effect of establishing a new containing block on the
+       animated element, which can disable margin collapsing between its descendants and
+       its own box. box-shadow never participates in layout, and it paints behind the
+       element's own text/content instead of brightening the text itself, so legibility
+       is unaffected. The middle gray is chosen so it visibly darkens a light document
+       and visibly lightens a dark one, since either pure white or pure black would
+       vanish on one of the two.
+       That alone isn't sufficient for layout neutrality, though -- see the
+       html[data-align-pending] rule below, which is the part that actually addresses
+       the measured issue (same mechanism and same fix as the HTML View's
+       pausePulse/resumePulse: simply having the pulse active changes how the
+       alignSplitPanes height-alignment pass below converges, so it's paused for the
+       duration of each pass instead). */
+    .rich-diff-viewer ins.diffins, .rich-diff-viewer ins.diffmod, .rich-diff-viewer del.diffdel, .rich-diff-viewer del.diffmod {
+      animation: diffPulseBox 1.8s ease-in-out infinite;
+    }
+    @keyframes diffPulseBox {
+      0%, 100% { box-shadow: inset 0 0 0 100vmax rgba(127,127,127,0) }
+      50% { box-shadow: inset 0 0 0 100vmax rgba(127,127,127,.35) }
+    }
+    /* Suppress nesting, same reasoning as the HTML View: a marked element inside another
+       marked element shouldn't run its own out-of-phase animation. !important for the same
+       reason as the HTML View's copy of this rule: a nested match like del.diffmod can carry
+       its own tag+class selector at least as specific as this plain descendant selector, which
+       would otherwise let it keep animating regardless of source order. */
+    .rich-diff-viewer ins.diffins *, .rich-diff-viewer ins.diffmod *, .rich-diff-viewer del.diffdel *, .rich-diff-viewer del.diffmod * { animation: none !important; }
+    /* Paused for the duration of one alignSplitPanes() pass -- see that function's
+       try/finally wrapper, which toggles data-align-pending on <html> around it. Wins
+       by specificity over the plain rule above regardless of source order. */
+    html[data-align-pending] .rich-diff-viewer ins.diffins,
+    html[data-align-pending] .rich-diff-viewer ins.diffmod,
+    html[data-align-pending] .rich-diff-viewer del.diffdel,
+    html[data-align-pending] .rich-diff-viewer del.diffmod { animation: none; }
+    @media (prefers-reduced-motion: reduce) {
+      .rich-diff-viewer ins.diffins, .rich-diff-viewer ins.diffmod, .rich-diff-viewer del.diffdel, .rich-diff-viewer del.diffmod { animation: none; }
+    }
+
     /* Regular strikethrough coming from Markdown itself */
     .rich-diff-viewer del:not(.diffdel):not(.diffmod) { color: var(--text-muted); text-decoration: line-through; background-color: transparent; }
 
@@ -1100,7 +1143,7 @@
     // Diagnostic attributes we add ourselves are excluded from comparison.
     const DIFF_OWN_ATTRS = new Set([
       'data-diff', 'data-diff-block', 'data-diff-row', 'data-diff-attr', 'data-diff-nolink', 'data-diff-pad',
-      'data-diff-old-id'
+      'data-diff-old-id', 'data-diff-attr-old'
     ]);
 
     function attrMap(el){
@@ -1133,6 +1176,32 @@
 
       // Don't include the values (a style attribute or a long URL would break the display) -- keep only the names of the attributes that changed.
       newEl.setAttribute('data-diff-attr', Array.from(names).sort().join(','));
+
+      // The DOM this function annotates (newEl belongs to newDoc) is the one and only
+      // merged document: buildHtmlDiffOutput serializes newDoc once into the `single`
+      // string, and both the left and right panes are produced by reparsing that same
+      // string (see stripHtmlSide). So every attribute newEl carries already holds the
+      // *after* value -- the before pane has no source of its own for it and silently
+      // renders the after value too. Measured on
+      // diff-testcases/diagram-cases-{before,after}.html, case-02-svg-arrow:
+      //   source before: <path id="conn" d="M180,54 L100,106" ...>
+      //   source after : <path id="conn" d="M220,54 L320,106" ...>
+      // and, before this fix, BOTH the left (before) and right (after) rendered panes
+      // showed d="M220,54 L320,106" -- the same leak was confirmed for transform,
+      // viewBox/width/height, <use href>, class, and inline style. So stash each changed
+      // attribute's old value here, and restore it only on the before side, in
+      // stripHtmlSide. 'tagName' is a synthetic marker added above (h3 -> h2 has no real
+      // attribute to set), not restorable via setAttribute, so it's excluded. 'id' is
+      // excluded too -- data-diff-old-id already owns restoring id on the before side,
+      // and having two mechanisms write the same attribute would race each other.
+      const oldValues = {};
+      names.forEach(n => {
+        if (n === 'tagName' || n === 'id') return;
+        oldValues[n] = om.has(n) ? om.get(n) : null;
+      });
+      if (Object.keys(oldValues).length) {
+        newEl.setAttribute('data-diff-attr-old', JSON.stringify(oldValues));
+      }
       tally.attrs = (tally.attrs || 0) + 1;
     }
 
@@ -1166,7 +1235,30 @@
     const MAX_DIFF_DEPTH = 500;
 
     // Identity key for a subtree. Uses the full text, so a card matches up with a card.
-    function childKey(el){ return el.tagName + ' ' + norm(el.textContent); }
+    function childKey(el){
+      const t = norm(el.textContent);
+      if (t) return el.tagName + ' ' + t;
+      // Text-less elements (almost always SVG shapes) all reduce to the same
+      // key ("PATH "), so diffSeq can only align them by position -- inserting
+      // one <path> near the front of an <svg> then shifts every later shape
+      // by one slot and reports it as "attributes changed", even for shapes
+      // that are byte-identical in both documents. Measured on #c11 of
+      // all-cases-rich: a new arrow inserted near the front turned an
+      // untouched d="M270,170 V215" into a false attribute-diff, while the
+      // shape actually deleted (d="M330,240 H420 V172") got reported as
+      // changed rather than removed. Build identity instead from whichever
+      // attribute says *which* element this is.
+      if (el.id) return el.tagName + ' #' + el.id;
+      const idAttrs = ['d','points','x1','y1','x2','y2','cx','cy','r','rx','ry','x','y',
+        'width','height','viewBox','transform','href','xlink:href','src','alt','type','name','value'];
+      const parts = [];
+      for (const a of idAttrs){
+        if (el.hasAttribute(a)) parts.push(a + '=' + el.getAttribute(a));
+      }
+      if (parts.length) return el.tagName + ' ' + parts.join(' ');
+      // No id, no identifying attribute (a <br>, an <hr>, an empty <div>) -- key exactly as before.
+      return el.tagName + ' ' + t;
+    }
 
     function diffableChildren(el, blockOnly){
       const out = [];
@@ -1559,6 +1651,41 @@
       return false;
     }
 
+    // Body-column values for scoring a rename candidate (see the merge step in
+    // columnMap below): every row's cell at colIdx, except the header row,
+    // walked via firstElementChild directly (NOT cellsOf, which skips cells
+    // already marked as changed -- columnMap always runs before any marking
+    // happens, but this keeps the same raw walk the rest of the function uses).
+    function columnBodyValues(table, headerRow, colIdx, headCount){
+      const vals = [];
+      for (const tr of table.querySelectorAll('tr')){
+        if (tr === headerRow || tr.closest('table') !== table) continue;
+        const cells = [];
+        for (let c = tr.firstElementChild; c; c = c.nextElementSibling)
+          if (c.tagName === 'TD' || c.tagName === 'TH') cells.push(c);
+        if (cells.length !== headCount) continue; // a row whose cell count disagrees with the header can't be trusted to line up column-for-column
+        vals.push(norm(cells[colIdx].textContent));
+      }
+      return vals;
+    }
+
+    // Multiset overlap between two columns' body values: how much of the new
+    // column's values the old column's values can "cover", divided by the
+    // larger side's count. A plain positional (index-by-index) comparison
+    // would be thrown off by a table that also gained or lost rows
+    // independently of the column swap, so values are compared as a bag instead.
+    function columnOverlapScore(oldVals, newVals){
+      if (!oldVals.length || !newVals.length) return null; // nothing to disagree about -> treat it as a rename
+      const bag = new Map();
+      for (const v of oldVals) bag.set(v, (bag.get(v) || 0) + 1);
+      let hit = 0;
+      for (const v of newVals){
+        const n = bag.get(v) || 0;
+        if (n > 0){ hit++; bag.set(v, n - 1); }
+      }
+      return hit / Math.max(oldVals.length, newVals.length);
+    }
+
     // Build "the merged column order" from the header row's contents. Each
     // element is { o, n }, where o is the column index in the old table and
     // n is the column index in the new table (-1 for the side with no
@@ -1599,6 +1726,16 @@
           // Otherwise, rewriting a single heading would split the column
           // into deletion + addition, and an entire row of otherwise
           // identical data cells would get drawn twice.
+          // But a same-length run alone isn't enough evidence -- it also
+          // matches a column that was genuinely replaced by an unrelated one
+          // (same position, same run length, but different data). Require
+          // every candidate pair's body values to actually agree before
+          // treating it as a rename; otherwise leave it split into delete +
+          // insert. Measured on #c3 of all-cases-rich: メッセージ保持期間
+          // (values 14日/4日/14日) was replaced by an unrelated DLQ column
+          // (あり/あり/―) -- same run length, zero overlap in the data -- and
+          // used to get merged into a single renamed column, painting only
+          // the text as changed instead of the whole cell as delete+insert.
           const merged = [];
           for (let k = 0; k < cols.length; k++){
             let dEnd = k;
@@ -1608,9 +1745,18 @@
               let iEnd = dEnd;
               while (iEnd < cols.length && cols[iEnd].o < 0 && cols[iEnd].n >= 0) iEnd++;
               if (iEnd - dEnd === dLen){
-                for (let x = 0; x < dLen; x++) merged.push({ o: cols[k + x].o, n: cols[dEnd + x].n });
-                k = iEnd - 1;
-                continue;
+                let allRenamed = true;
+                for (let x = 0; x < dLen; x++){
+                  const oldVals = columnBodyValues(oldTable, oldHead, cols[k + x].o, ok.length);
+                  const newVals = columnBodyValues(newTable, newHead, cols[dEnd + x].n, nk.length);
+                  const score = columnOverlapScore(oldVals, newVals);
+                  if (score !== null && score < 0.5){ allRenamed = false; break; }
+                }
+                if (allRenamed){
+                  for (let x = 0; x < dLen; x++) merged.push({ o: cols[k + x].o, n: cols[dEnd + x].n });
+                  k = iEnd - 1;
+                  continue;
+                }
               }
             }
             merged.push(cols[k]);
@@ -2455,7 +2601,17 @@
     if (e.source !== window.parent) return;
     var data = e.data;
     if (!data || data.__htmlAlign !== true) return;
-    if (data.type === 'remeasure'){
+    if (data.type === 'pausePulse'){
+      // See requestHtmlRealign / finalizeHtmlAlign in the parent for why: a
+      // continuously animating box-shadow/filter repaints every frame, and that
+      // repainting measurably changes how the alignment settle loop below
+      // converges. Stop animating for the duration of a pass so measurement
+      // can't depend on it. data-align-pending on <html> is what the injected
+      // CSS (buildDiffCss) keys off of.
+      document.documentElement.setAttribute('data-align-pending', '');
+    } else if (data.type === 'resumePulse'){
+      document.documentElement.removeAttribute('data-align-pending');
+    } else if (data.type === 'remeasure'){
       // Flush out spacers from before only at the first stage of the cycle
       // (the parent sends starting from the deepest flow). Flushing on every
       // stage as it progresses would also wipe out spacers from deeper flows
@@ -2507,18 +2663,110 @@ del[data-diff="del"]{
 [data-diff-block="ins"]{ background:${INS} !important; color:${TEXT} !important; }
 [data-diff-block="del"]{ background:${DEL} !important; color:${TEXT} !important; }
 /* background has no effect inside SVG, so this is shown with an outline instead. Overriding
-   fill would break the shape's own color, so adding an outline does the least damage.
-   Without this, adding or removing shapes changed nothing visible on screen. The outline was
-   already close to opaque (.95/.8), so it's a plain solid color with no compositing. */
+   fill would break a shape's own color, so an outline does the least damage there -- but
+   <text> is the one case where fill *is* the text color, so a changed label still needs its
+   own fill override below or it gets a box around it and nothing else, staying exactly the
+   color it always was. The outline is a plain solid color with no compositing (dashed used
+   to be the only dashed diff mark anywhere in the tool, and read as a different kind of
+   change from everything else); data-diff-attr is kept solid but lighter than an outright
+   insertion so "attribute only" still reads as its own thing. */
 svg [data-diff-block="ins"]{ outline:2px solid rgb(26,159,71); outline-offset:1px; }
 svg [data-diff-block="del"]{ outline:2px solid rgb(229,50,45); outline-offset:1px; }
-svg [data-diff-attr]{ outline:2px dashed rgb(26,159,71); outline-offset:1px; }
+svg [data-diff-attr]{ outline:2px solid rgba(26,159,71,.55); outline-offset:1px; }
+/* SVG shapes keep the filter-based pulse (see diffPulseSvg below) instead of the
+   box-shadow one used for everything else: box-shadow doesn't paint on SVG shapes at
+   all, but that's moot anyway since SVG children aren't part of normal block flow, so
+   filter's margin-collapsing side effect (the whole reason box-shadow is used
+   elsewhere) has nothing to bite here. Specificity (svg-qualified, 0,1,1) beats the
+   bare attribute selector below (0,1,0), so this wins for these three selectors
+   regardless of source order. */
+svg [data-diff-block="ins"], svg [data-diff-block="del"], svg [data-diff-attr]{
+  animation: diffPulseSvg 1.8s ease-in-out infinite;
+}
+@keyframes diffPulseSvg{ 0%,100%{ filter:none } 50%{ filter:brightness(1.32) } }
+svg text[data-diff-block="ins"], svg text[data-diff-block="ins"] tspan, svg tspan[data-diff-block="ins"]{ fill:rgb(26,159,71) !important; }
+svg text[data-diff-block="del"], svg text[data-diff-block="del"] tspan, svg tspan[data-diff-block="del"]{ fill:rgb(229,50,45) !important; }
+svg text[data-diff-attr], svg text[data-diff-attr] tspan, svg tspan[data-diff-attr]{ fill:rgb(26,159,71) !important; }
 td[data-diff-pad], th[data-diff-pad]{ background:transparent; }
 a[data-diff-nolink]{ cursor: pointer; }
 /* An element where only an attribute or tag changed. It uses the same green as additions,
    in the sense that it has become a new state, but painted lighter to distinguish it from
    something added wholesale. */
 [data-diff-attr]{ background:${ATTR} !important; color:${TEXT} !important; }
+/* A slow, continuous pulse on every diff mark. Pasted documents frequently
+   contain their own green/red (status badges, warning rows), and a static
+   highlight is easy to mistake for content that was already that color.
+   Nothing in the pasted document itself moves, so a pulse makes the tool's
+   own marks unmistakable.
+   This animates box-shadow, not filter, even though filter (see diffPulseSvg
+   above) would look identical and was tried first. filter has a documented
+   side effect that has nothing to do with its own element: it establishes a
+   new containing block for the animated element, which can disable margin
+   collapsing between that element's descendants and its own box for as long
+   as the animation runs. box-shadow never participates in layout at all, so
+   using it here rules that specific mechanism out categorically, and it also
+   has the advantage that, unlike filter:brightness(), it paints behind the
+   element's own text/content instead of brightening the text itself, so
+   legibility is unaffected. rgba(127,127,127,*) is a middle gray, chosen so
+   the veil visibly darkens a light pasted document AND visibly lightens a
+   dark one -- a plain white veil (only lightens) or black veil (only
+   darkens) would have been invisible on whichever background it doesn't push
+   away from.
+   That said, box-shadow alone is NOT sufficient to make the pulse
+   layout-neutral -- see the data-align-pending rule below, which is the part
+   that actually fixes the measured issue. */
+ins[data-diff="ins"], del[data-diff="del"], [data-diff-block], [data-diff-attr]{
+  animation: diffPulseBox 1.8s ease-in-out infinite;
+}
+@keyframes diffPulseBox{
+  0%,100%{ box-shadow:inset 0 0 0 100vmax rgba(127,127,127,0) }
+  50%{ box-shadow:inset 0 0 0 100vmax rgba(127,127,127,.35) }
+}
+/* Without this, a marked <ins> inside a marked <td> (or any other nested
+   marked pair) would run its own animation out of phase with its ancestor,
+   pulsing to a different peak at the same moment. Only the outermost marked
+   element should visibly pulse. !important is required here: a descendant
+   like del[data-diff="del"] matches the pulse rule above via a tag+attribute
+   selector (specificity 0,1,1), which otherwise beats this plain descendant
+   selector (0,1,0) regardless of source order -- measured on
+   diagram-cases case-14 (#cell-tokyo-az, data-diff-attr="class" containing
+   a nested <del data-diff="del">): without !important the nested <del> kept
+   animating on its own instead of going still. */
+ins[data-diff="ins"] *, del[data-diff="del"] *, [data-diff-block] *, [data-diff-attr] *{ animation:none !important; }
+/* Neither diffPulseBox nor diffPulseSvg is layout-affecting by itself (box-shadow
+   never participates in layout; an SVG shape isn't part of normal block flow), but
+   simply having EITHER one actively running turns out to change how the split-pane
+   height-alignment protocol below (requestHtmlRealign / finalizeHtmlAlign) converges:
+   a continuously animating iframe repaints every frame, and that repainting is
+   measurably visible to the settle loop. Measured on
+   diff-testcases/edge-cases-{before,after}.html with the pulse left running
+   throughout every alignment pass: the split panes converged on a different, larger
+   padding (+42px document height, 115 of 410 elements shifted vertically), and this
+   was exactly and repeatably reproduced in both directions (pulse present vs
+   stripped from the CSS entirely) -- ruling out a pre-existing race as the
+   explanation, since a race would not reproduce the identical delta on every trial.
+   Reverse-engineering the settle loop's exact sensitivity isn't worth it when the
+   simpler fix is to make the pulse simply not exist while a measurement pass is in
+   flight: requestHtmlRealign posts 'pausePulse' to both iframes at the start of a
+   pass, and finalizeHtmlAlign posts 'resumePulse' once the pass has fully converged
+   (with a timeout-based safety net -- see pauseHtmlPulse/resumeHtmlPulse -- so a
+   dropped reply can never leave the pulse permanently stuck off). Each iframe just
+   toggles data-align-pending on its own <html> in response; this selector list wins
+   by specificity over the plain rules above regardless of source order. */
+html[data-align-pending] ins[data-diff="ins"],
+html[data-align-pending] del[data-diff="del"],
+html[data-align-pending] [data-diff-block],
+html[data-align-pending] [data-diff-attr]{ animation:none; }
+html[data-align-pending] svg [data-diff-block="ins"],
+html[data-align-pending] svg [data-diff-block="del"],
+html[data-align-pending] svg [data-diff-attr]{ animation:none; }
+@media (prefers-reduced-motion:reduce){
+  ins[data-diff="ins"], del[data-diff="del"], [data-diff-block], [data-diff-attr]{ animation:none; }
+  /* Needs its own line at matching specificity: the bare rule above (0,1,0) can't
+     override svg [data-diff-block="ins"] etc. (0,1,1) above, which would otherwise
+     keep running diffPulseSvg regardless of this media query. */
+  svg [data-diff-block="ins"], svg [data-diff-block="del"], svg [data-diff-attr]{ animation:none; }
+}
 #__diff_removed__{ margin-top:2rem; padding:1rem; }
 /* The marker for diff-only display. Blocks and attributes already have their own green/red
    border, so this is restricted to data-diff-row (elements with a character-level change
@@ -2529,9 +2777,18 @@ a[data-diff-nolink]{ cursor: pointer; }
 .diff-only p:not([data-diff-row]):not([data-diff-block]):not([data-diff-attr]),
 .diff-only pre:not([data-diff-row]):not([data-diff-block]):not([data-diff-attr]),
 .diff-only blockquote:not([data-diff-row]):not([data-diff-block]):not([data-diff-attr]){ display:none; }
-.diff-flash{ animation:diffFlash .8s ease-out; }
+/* !important because the flash target can itself be a marked (or nested-in-marked)
+   element -- e.g. a deleted block with an id -- and it needs to win over both the
+   diffPulseBox/diffPulseSvg rules above and the !important nested-suppression rule
+   right above them, for as long as the flash is applied. diffFlash and the pulses no
+   longer share a CSS property (diffFlash animates filter; diffPulseBox animates
+   box-shadow), but they still contend for the same animation shorthand -- only one
+   named animation can be bound per element -- so this still needs to win that contest
+   outright rather than layer on top; the pulse's box-shadow just has nothing declared
+   to fall back to while it's overridden, so it disappears cleanly, not stuck mid-fade. */
+.diff-flash{ animation:diffFlash .8s ease-out !important; }
 @keyframes diffFlash{ 0%{filter:brightness(1)} 35%{filter:brightness(2.1)} 100%{filter:brightness(1)} }
-@media (prefers-reduced-motion:reduce){ .diff-flash{ animation:none; outline:2px solid #c39a5f } }
+@media (prefers-reduced-motion:reduce){ .diff-flash{ animation:none !important; outline:2px solid #c39a5f } }
 `;
     }
     /* ===================== end ported rich-html-diff engine ===================== */
@@ -3330,6 +3587,34 @@ a[data-diff-nolink]{ cursor: pointer; }
         frame.contentWindow.postMessage(msg, '*');
       }
 
+      // Pause/resume the diff-mark pulse in both iframes around one alignment pass (see
+      // the data-align-pending CSS rule in buildDiffCss for why). htmlPulsePausedSeq
+      // tracks WHICH cycle asked for the pause, so a stale timer from an abandoned cycle
+      // can't wrongly resume a newer one that's still in flight, and vice versa.
+      let htmlPulsePausedSeq = 0;
+      let htmlPulseSafetyTimer = null;
+      function pauseHtmlPulse(seq) {
+        htmlPulsePausedSeq = seq;
+        postToHtmlFrame(htmlDiffFrameLeft, { type: 'pausePulse' });
+        postToHtmlFrame(htmlDiffFrameRight, { type: 'pausePulse' });
+        clearTimeout(htmlPulseSafetyTimer);
+        // Safety net: a lost reply (a frame that never finishes loading, a dropped
+        // message) must never leave the pulse paused forever -- that would be a worse,
+        // silent, permanent failure than the layout issue this is fixing. Force it back
+        // on if this specific cycle hasn't finished within a generous window.
+        htmlPulseSafetyTimer = setTimeout(() => {
+          if (htmlPulsePausedSeq === seq) resumeHtmlPulse();
+        }, 5000);
+      }
+      function resumeHtmlPulse() {
+        if (!htmlPulsePausedSeq) return;
+        htmlPulsePausedSeq = 0;
+        clearTimeout(htmlPulseSafetyTimer);
+        htmlPulseSafetyTimer = null;
+        postToHtmlFrame(htmlDiffFrameLeft, { type: 'resumePulse' });
+        postToHtmlFrame(htmlDiffFrameRight, { type: 'resumePulse' });
+      }
+
       // Tell both iframes to "clear any padding you have, remeasure, and report back," starting
       // a cycle that aligns from the deepest flow outward. Every scenario that "needs a
       // realign" -- width changed, theme changed, font size changed, an image finished lazy
@@ -3344,6 +3629,7 @@ a[data-diff-nolink]{ cursor: pointer; }
         htmlAlignTotals = null;
         htmlAlignPositions = null;
         htmlAlignRound = 0;
+        pauseHtmlPulse(htmlAlignSeq);
         postToHtmlFrame(htmlDiffFrameLeft, { type: 'remeasure', seq: htmlAlignSeq, level: htmlAlignLevel, first: true });
         postToHtmlFrame(htmlDiffFrameRight, { type: 'remeasure', seq: htmlAlignSeq, level: htmlAlignLevel, first: true });
       }
@@ -3402,6 +3688,12 @@ a[data-diff-nolink]{ cursor: pointer; }
         htmlDiffFrameLeft.style.height = '';
         htmlDiffFrameRight.style.height = '';
         htmlSplitDivider.style.height = '';
+        // No frame to actually message (srcdoc is being torn down right after this), but
+        // clear the local bookkeeping so a leftover safety timer from an abandoned cycle
+        // can't fire later and reference a pass that no longer means anything.
+        clearTimeout(htmlPulseSafetyTimer);
+        htmlPulseSafetyTimer = null;
+        htmlPulsePausedSeq = 0;
       }
 
       // Because of the sandbox, an incoming message's origin is always "null," so origin can't
@@ -3517,6 +3809,9 @@ a[data-diff-nolink]{ cursor: pointer; }
         htmlDiffFrameRight.style.height = h;
         htmlSplitDivider.style.height = h;
         htmlLastAlignWidth = htmlSplitContainer.clientWidth;
+        // The pass has fully converged (this is the one function that reaches a final
+        // height) -- safe to let the pulse resume in both iframes now.
+        resumeHtmlPulse();
       }
 
       // Each time it switches to side-by-side, the iframe reloads (renderHtmlView swaps out
@@ -3853,6 +4148,49 @@ a[data-diff-nolink]{ cursor: pointer; }
           });
         });
 
+        // <style> elements are entirely skipped by diffableChildren (see above: SCRIPT
+        // and STYLE are excluded), so nothing built by the recursive diff ever visits
+        // them, and the merged document (newDoc) keeps only newDoc's own <style> text --
+        // both panes then render with the after CSS. Measured on
+        // diff-testcases/diagram-cases-{before,after}.html: case-16's :root --accent goes
+        // #5b9dd9 (before) -> #d98b3f (after), and before this fix BOTH the left and
+        // right rendered panes computed --accent as #d98b3f; case-15's per-case <style>
+        // rule change never appeared on the before side at all.
+        // So pair up <style> elements between the two documents by position -- the Nth
+        // <style> in oldDoc with the Nth in newDoc. A <style> element has no text content
+        // usable as an identity key the way childKey() gives other elements one, so
+        // position is the only signal available; it's an acceptable trade here because
+        // <style> blocks are added/removed far less often than ordinary content, and a
+        // false pairing only costs a wrong "before" CSS snapshot, not a broken layout.
+        // If the counts differ, pair only the common prefix and leave any extra elements
+        // on either side alone -- there is nothing to pair them with. Wherever the paired
+        // text differs, stash the old text on the new element so the before side can put
+        // it back, the same idea as data-diff-attr-old above.
+        const oldStyleEls = oldDoc.querySelectorAll('style');
+        const newStyleEls = newDoc.querySelectorAll('style');
+        const pairedStyleCount = Math.min(oldStyleEls.length, newStyleEls.length);
+        for (let i = 0; i < pairedStyleCount; i++) {
+          const oldStyleText = oldStyleEls[i].textContent;
+          const newStyleEl = newStyleEls[i];
+          if (oldStyleText !== newStyleEl.textContent) {
+            newStyleEl.setAttribute('data-diff-old-style', oldStyleText);
+          }
+        }
+        // <script> is deliberately NOT given the same treatment, even though the same
+        // leak reproduces there too (confirmed: case-17's #case-17-output, whose value is
+        // computed by its own inline <script>, reads "..8" -- the after count -- in BOTH
+        // the left and right rendered panes; the display iframes are
+        // sandbox="allow-scripts allow-popups" and DO run the source document's scripts,
+        // same as any ordinary sandboxed-without-allow-same-origin srcdoc frame). What's
+        // different from an attribute or a <style> sheet is that a script isn't a
+        // swappable static value -- it's arbitrary code that runs once against whatever
+        // DOM exists at that moment, one already carrying this tool's own data-diff-*/
+        // data-sync-index bookkeeping, with side effects that can reach anywhere in the
+        // document. Restoring the old script text would mean executing a second
+        // author-written program against a document that was never built to be run
+        // twice, with no way to verify it wouldn't corrupt that bookkeeping or otherwise
+        // misbehave. So this stays a known, out-of-scope gap.
+
         // An about:srcdoc document inherits the base URL of its parent page (this tool
         // itself), so clicking a fragment-only link like href="#section" resolves to
         // <this tool's URL>#section, and the iframe ends up loading the entire tool
@@ -3904,25 +4242,48 @@ a[data-diff-nolink]{ cursor: pointer; }
         // [data-diff-attr] (elements whose attributes alone changed) is in neither
         // selector -- the element itself exists both before and after, so it stays on
         // both sides.
-        const left = stripHtmlSide(single, '[data-diff-block="ins"], ins[data-diff="ins"], [data-diff-pad]', true);
-        const right = stripHtmlSide(single, '[data-diff-block="del"], del[data-diff="del"], [data-diff-pad]', false);
+        const left = stripHtmlSide(single, '[data-diff-block="ins"], ins[data-diff="ins"], [data-diff-pad]', true /* isBeforeSide */);
+        const right = stripHtmlSide(single, '[data-diff-block="del"], del[data-diff="del"], [data-diff-pad]', false /* isBeforeSide */);
 
         return { single, left, right, maxFlowDepth };
       }
 
       // Reparse single and strip elements matching selector, using the same idea as
       // stripMarked (never remove a table cell on its own; only remove a row once it's
-      // entirely empty). Only when restoreOldId is true (i.e. when building the left,
-      // before, side) do we restore the id that was stashed in data-diff-old-id. A
-      // deleted block has ceded its id to the new (ins) side, so on the left, where we
-      // strip that ins side away, we must restore data-diff-old-id back to id on the
-      // remaining element, or the before side's in-page links break. The right (after)
-      // side keeps whichever element originally held the id, so no restoration is
-      // needed there.
-      function stripHtmlSide(html, selector, restoreOldId) {
+      // entirely empty). Only when isBeforeSide is true (i.e. when building the left,
+      // before, pane) do we restore whatever the merged document (newDoc, see
+      // buildHtmlDiffOutput) only holds in its after form. That covers three distinct
+      // stashes, restored in this order:
+      //  1. data-diff-attr-old (stashed in diffAttributes): any attribute whose value
+      //     changed exists on the merged element only as its after value; put the old
+      //     value back (or remove the attribute, for null) so the before pane doesn't
+      //     silently render after values. Excludes id (see #3).
+      //  2. data-diff-old-style (stashed above, pairing <style> elements by position):
+      //     a changed <style>'s text is put back so the before pane uses the before CSS.
+      //  3. data-diff-old-id: a deleted block has ceded its id to the new (ins) side, so
+      //     on the left, where we strip that ins side away, we must restore
+      //     data-diff-old-id back to id on the remaining element, or the before side's
+      //     in-page links break. Restored last (most specific rule wins) and kept as a
+      //     separate mechanism from #1, since data-diff-attr-old explicitly excludes id.
+      // The right (after) side keeps whichever value/element the merged document already
+      // holds for all three, so no restoration is needed there.
+      function stripHtmlSide(html, selector, isBeforeSide) {
         const doc = new DOMParser().parseFromString(html, 'text/html');
         stripMarked(doc.body, selector);
-        if (restoreOldId) {
+        if (isBeforeSide) {
+          doc.querySelectorAll('[data-diff-attr-old]').forEach(el => {
+            let oldValues;
+            try { oldValues = JSON.parse(el.getAttribute('data-diff-attr-old')); }
+            catch (e) { return; } // a malformed payload must not throw and abort the whole render
+            if (!oldValues || typeof oldValues !== 'object') return;
+            Object.keys(oldValues).forEach(name => {
+              const v = oldValues[name];
+              if (v === null) el.removeAttribute(name); else el.setAttribute(name, v);
+            });
+          });
+          doc.querySelectorAll('style[data-diff-old-style]').forEach(el => {
+            el.textContent = el.getAttribute('data-diff-old-style');
+          });
           doc.body.querySelectorAll('[data-diff-old-id]').forEach(el => {
             const oldId = el.getAttribute('data-diff-old-id');
             if (oldId) el.setAttribute('id', oldId);
@@ -4029,7 +4390,22 @@ a[data-diff-nolink]{ cursor: pointer; }
       // doesn't have it yet). When it is passed, we directly set the divider's own
       // height here to match the two aligned columns' height (see the CSS-side comment
       // for why align-items can't just be set to stretch).
+      // Wrapper: pause the diff-mark pulse for the duration of one alignment pass (see
+      // the matching html[data-align-pending] CSS rule and its comment, and the HTML
+      // View's pausePulse/resumePulse for the same idea applied across an iframe
+      // boundary). Unlike the HTML View, this all runs synchronously in the main
+      // document, so a plain try/finally is enough -- no postMessage round trip, and no
+      // risk of a dropped reply leaving the marker stuck (an exception thrown mid-pass
+      // still clears it via finally).
       function alignSplitPanes(leftPane, rightPane, divider) {
+        document.documentElement.setAttribute('data-align-pending', '');
+        try {
+          alignSplitPanesImpl(leftPane, rightPane, divider);
+        } finally {
+          document.documentElement.removeAttribute('data-align-pending');
+        }
+      }
+      function alignSplitPanesImpl(leftPane, rightPane, divider) {
         clearAlignSpacers(leftPane);
         clearAlignSpacers(rightPane);
 
