@@ -4249,6 +4249,32 @@ html[data-align-pending] svg [data-diff-attr]{ animation:none; }
           }
         }
 
+        // <template> is the third element whose contents the recursive diff never reaches,
+        // for a different reason than <script>/<style>: its children live in a separate
+        // DocumentFragment reachable only through .content, which firstElementChild and
+        // querySelectorAll do not descend into. So diffableChildren sees a template as an
+        // element with no children at all, the merged document keeps only newDoc's
+        // template, and whatever clones it at runtime stamps the after version into both
+        // panes. Measured on a two-document probe where the only difference was the text
+        // inside a <template> later cloned into the page: BOTH panes rendered the after
+        // text, with no marker anywhere.
+        // Same stash/restore as the two above, keyed on innerHTML (which on a template
+        // reads and writes .content). Marking up the fragment itself is deliberately not
+        // attempted: a template is a stencil, usually cloned more than once, so any ins/del
+        // placed inside it would be stamped out repeatedly at every use site.
+        // Templates nested inside another template's fragment are not reached here either,
+        // for the same DocumentFragment reason -- vanishingly rare, and left alone.
+        const oldTemplateEls = oldDoc.querySelectorAll('template');
+        const newTemplateEls = newDoc.querySelectorAll('template');
+        const pairedTemplateCount = Math.min(oldTemplateEls.length, newTemplateEls.length);
+        for (let i = 0; i < pairedTemplateCount; i++) {
+          const oldTemplateHtml = oldTemplateEls[i].innerHTML;
+          const newTemplateEl = newTemplateEls[i];
+          if (oldTemplateHtml !== newTemplateEl.innerHTML) {
+            newTemplateEl.setAttribute('data-diff-old-template', oldTemplateHtml);
+          }
+        }
+
         // An about:srcdoc document inherits the base URL of its parent page (this tool
         // itself), so clicking a fragment-only link like href="#section" resolves to
         // <this tool's URL>#section, and the iframe ends up loading the entire tool
@@ -4310,7 +4336,7 @@ html[data-align-pending] svg [data-diff-attr]{ animation:none; }
       // stripMarked (never remove a table cell on its own; only remove a row once it's
       // entirely empty). Only when isBeforeSide is true (i.e. when building the left,
       // before, pane) do we restore whatever the merged document (newDoc, see
-      // buildHtmlDiffOutput) only holds in its after form. That covers four distinct
+      // buildHtmlDiffOutput) only holds in its after form. That covers five distinct
       // stashes, restored in this order:
       //  1. data-diff-attr-old (stashed in diffAttributes): any attribute whose value
       //     changed exists on the merged element only as its after value; put the old
@@ -4322,13 +4348,16 @@ html[data-align-pending] svg [data-diff-attr]{ animation:none; }
       //     position): a changed script's text is put back so the before pane runs the
       //     before program. Inert here -- a DOMParser document has no browsing context --
       //     and only takes effect when this string is handed to the display iframe.
-      //  4. data-diff-old-id: a deleted block has ceded its id to the new (ins) side, so
+      //  4. data-diff-old-template (stashed above, pairing <template> elements by
+      //     position): a changed template's fragment is put back, so whatever clones it
+      //     at runtime stamps the before version into the before pane.
+      //  5. data-diff-old-id: a deleted block has ceded its id to the new (ins) side, so
       //     on the left, where we strip that ins side away, we must restore
       //     data-diff-old-id back to id on the remaining element, or the before side's
       //     in-page links break. Restored last (most specific rule wins) and kept as a
       //     separate mechanism from #1, since data-diff-attr-old explicitly excludes id.
       // The right (after) side keeps whichever value/element the merged document already
-      // holds for all four, so no restoration is needed there.
+      // holds for all five, so no restoration is needed there.
       function stripHtmlSide(html, selector, isBeforeSide) {
         const doc = new DOMParser().parseFromString(html, 'text/html');
         stripMarked(doc.body, selector);
@@ -4348,6 +4377,9 @@ html[data-align-pending] svg [data-diff-attr]{ animation:none; }
           });
           doc.querySelectorAll('script[data-diff-old-script]').forEach(el => {
             el.textContent = el.getAttribute('data-diff-old-script');
+          });
+          doc.querySelectorAll('template[data-diff-old-template]').forEach(el => {
+            el.innerHTML = el.getAttribute('data-diff-old-template');
           });
           doc.body.querySelectorAll('[data-diff-old-id]').forEach(el => {
             const oldId = el.getAttribute('data-diff-old-id');
