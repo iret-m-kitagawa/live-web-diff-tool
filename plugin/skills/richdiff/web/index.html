@@ -922,6 +922,23 @@
     }
 
     function norm(s){ return (s || '').replace(/\s+/g, ' ').trim(); }
+
+    // "Did the visible text change?" -- deliberately NOT norm(). HTML collapses runs of
+    // space/tab/CR/LF/FF when rendering, so a change in how many of those there are is
+    // invisible and must not be marked. That reasoning does not extend to the rest of the
+    // whitespace class: &nbsp; (U+00A0) and the ideographic space (U+3000) do not collapse,
+    // so a run of 2 renders visibly narrower than a run of 4. ES2018's \s matches both, so
+    // norm() folded them together and the change disappeared -- measured on
+    // text-hazards-{before,after}.html (#row-monitoring-policy, 2 -> 4 &nbsp;): BOTH panes
+    // rendered 4 with no marker at all, so the before pane showed the after document's
+    // spacing. Trimming is likewise restricted to the collapsible characters, since a
+    // leading or trailing &nbsp; is visible where a leading or trailing space is not.
+    // norm() itself is left alone on purpose: it also feeds identity matching (childKey,
+    // identityText, row and column pairing), and loosening it there would move pairing
+    // decisions all over the engine for no reason connected to this bug.
+    function visibleNorm(s){
+      return (s || '').replace(/[ \t\n\r\f]+/g, ' ').replace(/^ | $/g, '');
+    }
     // The inline text held directly by that element (excludes the contents of nested blocks)
     function ownText(el){ return textNodes(el).map(n => n.data).join(''); }
 
@@ -1053,7 +1070,7 @@
       // shifted, leaving empty ins/del elements dangling. pre / code are
       // excluded from this though, since whitespace itself carries meaning there.
       const ws = newEl.tagName === 'PRE' || newEl.tagName === 'CODE' || !!newEl.closest('pre');
-      if (!ws && norm(oldText) === norm(newText)) return false;
+      if (!ws && visibleNorm(oldText) === visibleNorm(newText)) return false;
 
       const oldToks = tokenize(oldText), newToks = tokenize(newText);
       const ops = diffSeq(oldToks, newToks);
@@ -1458,13 +1475,32 @@
     // mark it as reformatted. Same procedure as wrapRange -- cutting the
     // tail first, then the head, avoids offset drift caused by the splitText
     // calls in between.
-    function markUnwrapped(hitText, needle){
+    // The span this creates is a fresh marker, so it carries none of the removed
+    // wrapper's attributes -- and since both panes are filtered out of this one merged
+    // document, the before pane was left rendering the phrase with no styling at all,
+    // not the styling it actually had. Measured on utility-soup-{before,after}.html
+    // (#sec-plan-comparison, the 対応 cell): before is
+    // <td class="..."><span class="...8 utility classes making a green pill...">対応</span></td>
+    // and after moves those classes onto the <td> and drops the span; the surviving span
+    // had class === null in BOTH panes, computed border-radius 0px, and rendered as a flat
+    // rectangle beside two untouched sibling columns that were still proper pills.
+    // So stash the removed wrapper's attributes in data-diff-attr-old, the same mechanism
+    // diffAttributes uses, and let stripHtmlSide put them back on the before side only --
+    // the after document genuinely has no wrapper there, so the bare marker span is right
+    // for that pane. id is excluded for the same reason it is in diffAttributes:
+    // data-diff-old-id owns restoring id, and two mechanisms writing it would race.
+    function markUnwrapped(hitText, needle, oldWrapper){
       const idx = hitText.data.indexOf(needle);
       let node = hitText;
       if (idx + needle.length < node.data.length) node.splitText(idx + needle.length);
       if (idx > 0) node = node.splitText(idx);
       const span = node.ownerDocument.createElement('span');
       span.setAttribute('data-diff-attr', 'tagName');
+      if (oldWrapper){
+        const oldValues = {};
+        attrMap(oldWrapper).forEach((v, k) => { if (k !== 'id') oldValues[k] = v; });
+        if (Object.keys(oldValues).length) span.setAttribute('data-diff-attr-old', JSON.stringify(oldValues));
+      }
       node.parentNode.insertBefore(span, node);
       span.appendChild(node);
     }
@@ -1490,7 +1526,7 @@
         const needle = norm(oldKid.textContent);
         if (needle){
           const hit = findUnwrapTarget(newParent, needle);
-          if (hit) markUnwrapped(hit, needle);
+          if (hit) markUnwrapped(hit, needle, oldKid);
           // Even when it can't be pinned down uniquely, still avoid showing
           // a phrase that hasn't actually disappeared as a deleted
           // duplicate. Prioritize not falsely showing "deleted" over showing
@@ -4176,20 +4212,42 @@ html[data-align-pending] svg [data-diff-attr]{ animation:none; }
             newStyleEl.setAttribute('data-diff-old-style', oldStyleText);
           }
         }
-        // <script> is deliberately NOT given the same treatment, even though the same
-        // leak reproduces there too (confirmed: case-17's #case-17-output, whose value is
-        // computed by its own inline <script>, reads "..8" -- the after count -- in BOTH
-        // the left and right rendered panes; the display iframes are
-        // sandbox="allow-scripts allow-popups" and DO run the source document's scripts,
-        // same as any ordinary sandboxed-without-allow-same-origin srcdoc frame). What's
-        // different from an attribute or a <style> sheet is that a script isn't a
-        // swappable static value -- it's arbitrary code that runs once against whatever
-        // DOM exists at that moment, one already carrying this tool's own data-diff-*/
-        // data-sync-index bookkeeping, with side effects that can reach anywhere in the
-        // document. Restoring the old script text would mean executing a second
-        // author-written program against a document that was never built to be run
-        // twice, with no way to verify it wouldn't corrupt that bookkeeping or otherwise
-        // misbehave. So this stays a known, out-of-scope gap.
+        // <script> gets the same positional pairing and stash, restricted to inline
+        // scripts. The leak is the same one, and worse: the display iframes are
+        // sandbox="allow-scripts allow-popups" and DO run the pasted document's scripts,
+        // but the merged document carries only newDoc's script text, so both panes run
+        // the AFTER program. Measured on scripted-dom-{before,after}.html
+        // (tbody#alerts-body, rows built from an inline array at load): BOTH panes
+        // rendered the after array -- AL-1004, a before-only row, appeared nowhere, and
+        // AL-1003 read its after severity on both sides -- with zero diff markers.
+        // Restoring the old text is safe, and is not the "run a second program against a
+        // document never built to be run twice" hazard an earlier version of this comment
+        // worried about: stripHtmlSide reparses with DOMParser, which per spec yields a
+        // document with no browsing context, so scripting is disabled there and setting
+        // .textContent on a <script> is as inert as on any other node. The text only
+        // matters once the serialized string is assigned to the display iframe's srcdoc,
+        // where it is parsed fresh and run exactly once -- the same single execution every
+        // srcdoc load already performs, not an extra one.
+        // Scripts with a src are left unpaired: the browser ignores a <script src>'s inline
+        // text entirely, so there is nothing here to stash, and folding them into the same
+        // positional index would risk pairing an inline script against an unrelated
+        // external one purely by counting.
+        // What this does NOT achieve: a script that builds its own region of the DOM
+        // generates elements the recursive diff never saw, so there was nothing there to
+        // attach data-diff-* to. A script-generated region carries no marks even after this
+        // fix, and the reader has to compare the two panes by eye. That is the honest limit
+        // of a DOM diff over generated content -- but each pane now tells the truth about
+        // its own document instead of both agreeing on the after document's data.
+        const oldScriptEls = oldDoc.querySelectorAll('script:not([src])');
+        const newScriptEls = newDoc.querySelectorAll('script:not([src])');
+        const pairedScriptCount = Math.min(oldScriptEls.length, newScriptEls.length);
+        for (let i = 0; i < pairedScriptCount; i++) {
+          const oldScriptText = oldScriptEls[i].textContent;
+          const newScriptEl = newScriptEls[i];
+          if (oldScriptText !== newScriptEl.textContent) {
+            newScriptEl.setAttribute('data-diff-old-script', oldScriptText);
+          }
+        }
 
         // An about:srcdoc document inherits the base URL of its parent page (this tool
         // itself), so clicking a fragment-only link like href="#section" resolves to
@@ -4252,7 +4310,7 @@ html[data-align-pending] svg [data-diff-attr]{ animation:none; }
       // stripMarked (never remove a table cell on its own; only remove a row once it's
       // entirely empty). Only when isBeforeSide is true (i.e. when building the left,
       // before, pane) do we restore whatever the merged document (newDoc, see
-      // buildHtmlDiffOutput) only holds in its after form. That covers three distinct
+      // buildHtmlDiffOutput) only holds in its after form. That covers four distinct
       // stashes, restored in this order:
       //  1. data-diff-attr-old (stashed in diffAttributes): any attribute whose value
       //     changed exists on the merged element only as its after value; put the old
@@ -4260,13 +4318,17 @@ html[data-align-pending] svg [data-diff-attr]{ animation:none; }
       //     silently render after values. Excludes id (see #3).
       //  2. data-diff-old-style (stashed above, pairing <style> elements by position):
       //     a changed <style>'s text is put back so the before pane uses the before CSS.
-      //  3. data-diff-old-id: a deleted block has ceded its id to the new (ins) side, so
+      //  3. data-diff-old-script (stashed above, pairing inline <script> elements by
+      //     position): a changed script's text is put back so the before pane runs the
+      //     before program. Inert here -- a DOMParser document has no browsing context --
+      //     and only takes effect when this string is handed to the display iframe.
+      //  4. data-diff-old-id: a deleted block has ceded its id to the new (ins) side, so
       //     on the left, where we strip that ins side away, we must restore
       //     data-diff-old-id back to id on the remaining element, or the before side's
       //     in-page links break. Restored last (most specific rule wins) and kept as a
       //     separate mechanism from #1, since data-diff-attr-old explicitly excludes id.
       // The right (after) side keeps whichever value/element the merged document already
-      // holds for all three, so no restoration is needed there.
+      // holds for all four, so no restoration is needed there.
       function stripHtmlSide(html, selector, isBeforeSide) {
         const doc = new DOMParser().parseFromString(html, 'text/html');
         stripMarked(doc.body, selector);
@@ -4283,6 +4345,9 @@ html[data-align-pending] svg [data-diff-attr]{ animation:none; }
           });
           doc.querySelectorAll('style[data-diff-old-style]').forEach(el => {
             el.textContent = el.getAttribute('data-diff-old-style');
+          });
+          doc.querySelectorAll('script[data-diff-old-script]').forEach(el => {
+            el.textContent = el.getAttribute('data-diff-old-script');
           });
           doc.body.querySelectorAll('[data-diff-old-id]').forEach(el => {
             const oldId = el.getAttribute('data-diff-old-id');
