@@ -983,28 +983,115 @@
       }
     }
 
-    function insertDeleted(root, at, text){
+    // The new side's text for an element, as the after document has it: text inside a
+    // <del> we inserted is not part of it, text inside an <ins> is. Used to ask whether a
+    // wrapper's own text was edited, which earlier edits in the same pass would otherwise
+    // muddy.
+    function cleanNewText(el){
+      let t = '';
+      const walk = n => {
+        for (let c = n.firstChild; c; c = c.nextSibling){
+          if (c.nodeType === 3) t += c.data;
+          else if (c.nodeType === 1){
+            if (c.getAttribute && c.getAttribute('data-diff') === 'del') continue;
+            walk(c);
+          }
+        }
+      };
+      walk(el);
+      return t;
+    }
+
+    // The element in oldEl that sits at the same position as `el` does under `root`,
+    // found by walking the same chain of element-child indexes. Returns null the moment
+    // the two shapes disagree, so a caller only ever gets a counterpart it can trust.
+    // Depth is capped because this runs per deletion and the answer stops being meaningful
+    // once the nesting is deep enough for the two documents to have diverged structurally.
+    const COUNTERPART_MAX_DEPTH = 4;
+    function oldCounterpart(root, oldRoot, el){
+      if (!oldRoot) return null;
+      const path = [];
+      for (let n = el; n && n !== root; n = n.parentNode){
+        if (!n.parentNode) return null;
+        let i = 0;
+        for (let sib = n.parentNode.firstElementChild; sib && sib !== n; sib = sib.nextElementSibling) i++;
+        path.unshift({ i: i, tag: n.tagName });
+        if (path.length > COUNTERPART_MAX_DEPTH) return null;
+      }
+      let o = oldRoot;
+      for (const step of path){
+        let c = o.firstElementChild, k = 0;
+        while (c && k < step.i){ c = c.nextElementSibling; k++; }
+        if (!c || c.tagName !== step.tag) return null;
+        o = c;
+      }
+      return o;
+    }
+
+    function insertDeleted(root, at, text, oldRoot){
       if (!text) return;
       const doc = root.ownerDocument;
       const mk = () => { const d = doc.createElement('del'); d.dataset.diff = 'del'; d.textContent = text; return d; };
-      // Deleted text belongs to "the flow of the unit itself", so when the
-      // insertion position lands exactly on the boundary of an inline
-      // element (<a>/<span>/<code>/<strong> etc.), place it outside that
-      // element rather than "inside" it. Naively inserting into n.parentNode
-      // here would, for example, put the <del> inside the preceding <a> when
-      // the trailing item is deleted, and it would inherit that <a>'s look
-      // and layout (the same line, if display:block) -- even though the
-      // deleted content isn't actually part of that <a>.
+
+      // Deleted text belongs to "the flow of the unit itself", so when the insertion
+      // position lands exactly on the boundary of an inline element (<a>/<span>/<code>/
+      // <strong> etc.), place it outside that element rather than inside it. Naively
+      // inserting into n.parentNode would, for example, put the <del> inside the preceding
+      // <a> when the trailing item is deleted, and it would inherit that <a>'s look and
+      // layout -- even though the deleted content was never part of that <a>.
+      //
+      // That reasoning only holds when the deleted text really did come from outside the
+      // wrapper, and the new DOM alone cannot tell: <a>foobar</a> -> <a>bar</a> and
+      // foo<a>bar</a> -> <a>bar</a> both leave "bar" inside an <a> with "foo" deleted at
+      // its leading boundary. The old DOM does tell them apart -- in the first the
+      // wrapper's own text was edited and the deleted string is its old prefix, in the
+      // second the wrapper is untouched. So ask the old side, at the specific edge the
+      // deletion sits on.
+      // Without this the deletion escaped the element entirely. Measured on
+      // web-platform-{before,after}.html (#sec-status-badge, the 一括操作バー row,
+      // 開発中 -> レビュー中 inside <status-badge tone="warn">), the merged document read
+      //   <del data-diff="del">開発</del><status-badge tone="warn">中</status-badge>
+      // -- a sibling of the badge rather than inside it, so it never reached the
+      // component's <slot> and rendered as loose text beside a pill reading only 中,
+      // while the matching <ins> sat correctly inside the badge.
+      const absorbs = (x, edge) => {
+        if (!x || x.nodeType !== 1) return false;
+        const o = oldCounterpart(root, oldRoot, x);
+        if (!o) return false;
+        const oldText = o.textContent;
+        if (oldText === cleanNewText(x)) return false;  // the wrapper's own text is untouched
+        return edge === 'start' ? oldText.indexOf(text) === 0
+                                : oldText.lastIndexOf(text) === oldText.length - text.length;
+      };
       const hoistAfter = (node) => {
         let x = node;
-        while (x.parentNode && x.parentNode !== root && x.parentNode.lastChild === x) x = x.parentNode;
+        while (x.parentNode && x.parentNode !== root && x.parentNode.lastChild === x
+               && !absorbs(x.parentNode, 'end')) x = x.parentNode;
         return x;
       };
       const hoistBefore = (node) => {
         let x = node;
-        while (x.parentNode && x.parentNode !== root && x.parentNode.firstChild === x) x = x.parentNode;
+        while (x.parentNode && x.parentNode !== root && x.parentNode.firstChild === x
+               && !absorbs(x.parentNode, 'start')) x = x.parentNode;
         return x;
       };
+      // The mirror of the hoist. The insertion point can also land on the boundary of the
+      // NEIGHBOURING element rather than an ancestor -- 状態: <b>開発中</b> -> 状態:
+      // <b>レビュー中</b> puts it at the end of the "状態: " text node, with the edited <b>
+      // sitting next to it -- and there the deletion has to move in, not stay out. Descends
+      // while the edge child keeps absorbing, so a deletion out of <span><b>..</b></span>
+      // lands in the <b> rather than merely inside the <span>.
+      const putInsideStart = (el) => {
+        let x = el;
+        while (x.firstChild && x.firstChild.nodeType === 1 && absorbs(x.firstChild, 'start')) x = x.firstChild;
+        x.insertBefore(mk(), x.firstChild);
+      };
+      const putInsideEnd = (el) => {
+        let x = el;
+        while (x.lastChild && x.lastChild.nodeType === 1 && absorbs(x.lastChild, 'end')) x = x.lastChild;
+        x.appendChild(mk());
+      };
+
       const nodes = textNodes(root);
       let acc = 0;
       for (const n of nodes){
@@ -1013,12 +1100,16 @@
           const local = at - s;
           if (local >= n.data.length){
             const t = hoistAfter(n);
+            const nxt = t.nextSibling;
+            if (absorbs(nxt, 'start')){ putInsideStart(nxt); return; }
             t.parentNode.insertBefore(mk(), t.nextSibling);
             return;
           }
           let node = n;
           if (local > 0) node = n.splitText(local);
           const t = hoistBefore(node);
+          const prv = t.previousSibling;
+          if (absorbs(prv, 'end')){ putInsideEnd(prv); return; }
           t.parentNode.insertBefore(mk(), t);
           return;
         }
@@ -1142,7 +1233,7 @@
       edits.sort((x, y) => (y.k === 'ins' ? y.s : y.at) - (x.k === 'ins' ? x.s : x.at));
       for (const ed of edits){
         if (ed.k === 'ins') wrapRange(newEl, ed.s, ed.e, 'ins');
-        else insertDeleted(newEl, ed.at, ed.text);
+        else insertDeleted(newEl, ed.at, ed.text, oldEl);
       }
       if (edits.length){ newEl.setAttribute('data-diff-row', 'changed'); tally.blocks++; }
       return edits.length > 0;
@@ -1406,6 +1497,19 @@
 
     function nodeSimilarity(a, b){
       if (!sameTagFamily(a, b)) return 0;
+      // An id carried by both sides names the same element in both documents. That is the
+      // strongest identity signal available and it outranks any amount of text overlap --
+      // the rest of the engine already treats id this way (data-diff-old-id hands a
+      // duplicated id to the surviving element so links and the document's own scripts
+      // resolve to it). Without this, candidates that tie on text are settled by scoring
+      // order alone: measured on deletion-placement-{before,after}.html, three paragraphs
+      // whose after-text happened to be identical were each paired against the wrong
+      // before-paragraph, so <p id="out-leading"> ended up holding the deletion belonging
+      // to <p id="in-prefix">, even though every id matched exactly.
+      // Only an id present on BOTH sides counts, so this can never invent a pairing that
+      // similarity would otherwise have rejected -- it only decides between candidates.
+      const aid = a.getAttribute && a.getAttribute('id');
+      if (aid && b.getAttribute && aid === b.getAttribute('id')) return 1;
       // Between table rows, identity text and full-text overlap are counted
       // using only the columns that remain in both tables. For a table whose
       // column count didn't change, "remaining columns" equals "all
