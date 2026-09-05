@@ -2011,9 +2011,35 @@
 
     const visitedPairs = new WeakMap();
 
+    // Past MAX_DIFF_DEPTH, stop descending -- but say so. Returning silently was worse
+    // than the limit itself: the merged document is newDoc, so a subtree the diff never
+    // visited renders as the AFTER document on BOTH sides. Measured on a paragraph nested
+    // 520 <div> deep with different text on each side: the before pane showed the after
+    // text with no ins/del, no data-diff-attr, nothing at all -- the tool stating a
+    // falsehood about its input, which is the one thing it must never do. (The code's own
+    // note on the limit calls 150 levels of nested wrapper divs "not unusual in generated
+    // HTML", so this is reachable.) Put the old subtree back beside the new one as a
+    // deleted block instead. Deliberately coarse: at this depth the goal is to stop being
+    // wrong, not to be precise about where inside it the change was.
+    function markTooDeep(oldEl, newEl, tally){
+      if (!oldEl || !newEl || oldEl.nodeType !== 1 || newEl.nodeType !== 1) return;
+      if (norm(oldEl.textContent) === norm(newEl.textContent)) return;
+      const parent = newEl.parentNode;
+      if (parent && parent.nodeType === 1 && canHold(parent.tagName, oldEl.tagName)){
+        const clone = newEl.ownerDocument.importNode(oldEl, true);
+        markDeleted(clone, tally);
+        parent.insertBefore(clone, newEl);
+        markInserted(newEl, tally);
+      } else {
+        // Nowhere legal to put the old subtree -- a row won't take an extra cell. Marking
+        // the element is all that's left, but an imprecise mark beats an invisible change.
+        newEl.setAttribute('data-diff-row', 'changed');
+      }
+    }
+
     function diffNode(oldEl, newEl, tally, depth){
       depth = depth || 0;
-      if (depth > MAX_DIFF_DEPTH) return;
+      if (depth > MAX_DIFF_DEPTH){ markTooDeep(oldEl, newEl, tally); return; }
       let seen = visitedPairs.get(oldEl);
       if (!seen){ seen = new WeakSet(); visitedPairs.set(oldEl, seen); }
       if (seen.has(newEl)) return;
@@ -4278,11 +4304,21 @@ html[data-align-pending] svg [data-diff-attr]{ animation:none; }
           if (!byId.has(k)) byId.set(k, []);
           byId.get(k).push(el);
         });
+        // Only a deleted clone ever gives up its id. The collision this step exists to
+        // resolve is one we created ourselves, and stripping live elements too punished
+        // documents that simply shipped a duplicate id -- invalid HTML, but common, and
+        // the browser renders both. Measured on a byte-identical before/after pair holding
+        // two <div id="notice-box"> with a #notice-box border rule: the AFTER pane's
+        // second div came back with id null and border-top-width 0px, so the pasted
+        // document's own CSS silently stopped applying to it, on a document with no edits
+        // in it at all. (Only the before pane escaped, and only because stripHtmlSide puts
+        // data-diff-old-id back on that side.) A source-level duplicate is the document's
+        // business, and both panes should render it the way the browser would.
         byId.forEach(list => {
           if (list.length < 2) return;
           const keep = list.find(el => !dead(el)) || list[0];
           list.forEach(el => {
-            if (el === keep) return;
+            if (el === keep || !dead(el)) return;
             el.setAttribute('data-diff-old-id', el.getAttribute('id'));
             el.removeAttribute('id');
           });
