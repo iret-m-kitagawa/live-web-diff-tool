@@ -2855,10 +2855,21 @@ svg text[data-diff-block="del"], svg text[data-diff-block="del"] tspan, svg tspa
 svg text[data-diff-attr], svg text[data-diff-attr] tspan, svg tspan[data-diff-attr]{ fill:rgb(26,159,71) !important; }
 td[data-diff-pad], th[data-diff-pad]{ background:transparent; }
 a[data-diff-nolink]{ cursor: pointer; }
-/* An element where only an attribute or tag changed. It uses the same green as additions,
-   in the sense that it has become a new state, but painted lighter to distinguish it from
-   something added wholesale. */
-[data-diff-attr]{ background:${ATTR} !important; color:${TEXT} !important; }
+/* An element where only an attribute or tag changed. The same green as additions, in the
+   sense that it has become a new state, but lighter to distinguish it from something added
+   wholesale.
+   Painted as a translucent LAYER (background-image) rather than by replacing
+   background-color, and the element's own text color is left alone. Replacing the
+   background destroyed the very change being reported whenever that change was itself a
+   color: measured on bootstrap-style-{before,after}.html (#sec-alerts, first alert,
+   class="alert alert-warning" -> "alert alert-danger"), the raw documents render
+   rgb(255,243,205) amber and rgb(248,215,218) red, and both panes came back
+   rgb(212,233,221) -- the marker's own green, identical on the two sides, with the
+   document's palette gone and the reader told "the class changed" but shown nothing about
+   what it changed to. A layer tints whatever is underneath instead, so the amber still
+   reads as amber and the red as red. Kept translucent on purpose (not flattened against
+   the ground like INS/DEL) because it has to composite over colors we don't know. */
+[data-diff-attr]{ background-image: linear-gradient(rgba(26,159,71,.22), rgba(26,159,71,.22)) !important; }
 /* A slow, continuous pulse on every diff mark. Pasted documents frequently
    contain their own green/red (status badges, warning rows), and a static
    highlight is easy to mistake for content that was already that color.
