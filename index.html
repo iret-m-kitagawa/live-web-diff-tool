@@ -2324,17 +2324,35 @@
   // container that produced that flow itself ([data-sync-flow-root]).
   // Spilling outside the container and eating into the next sibling would
   // misjudge the container's own height.
+  var pristineBlocks = null, pristineSeq = -1;
+
   function measureLevelBlocks(level){
     var nodes = document.querySelectorAll('[data-sync-depth="' + level + '"]');
-    var byFlow = {};
+    var byFlow = {}, empties = {};
     for (var i = 0; i < nodes.length; i++){
       var el = nodes[i];
       var flow = el.getAttribute('data-sync-flow');
       var idx = Number(el.getAttribute('data-sync-index'));
       if (!byFlow[flow]) byFlow[flow] = [];
+      if (!empties[flow]) empties[flow] = [];
+      // An element that generates no box at all -- display:none, the hidden attribute, a
+      // collapsed tab panel or accordion body -- reports a rect of all zeros, top
+      // included. Feeding that into the sort below put it at the head of the flow and
+      // turned "this block's height = the next block's top - my top" into "the distance
+      // from the top of the document", so a collapsed panel measured thousands of pixels
+      // tall and the opposite pane was padded to match. Measured on
+      // tabs-{before,after}.html: the two source documents render ~4,200px tall, and both
+      // panes came out 64,239px -- 94% of the right pane was spacer, including two single
+      // spacers of 14,483px, each taller than the whole document. edge-cases, the other
+      // fixture with hidden content, was inflated 5.1x the same way.
+      // Record it as occupying zero height (which is the truth, and lets the opposite side
+      // still pad for a panel that IS open over there) but keep it out of the neighbour
+      // chain, since it has no position to chain from.
+      if (!el.getClientRects().length){ empties[flow].push(idx); continue; }
       byFlow[flow].push({ index: idx, top: el.getBoundingClientRect().top });
     }
     var blocks = {};
+    for (var flow in empties){ if (!byFlow[flow]) byFlow[flow] = []; }
     for (var flow in byFlow){
       var items = byFlow[flow];
       items.sort(function(a, b){ return a.top - b.top; });
@@ -2343,13 +2361,16 @@
         boundary = document.documentElement.scrollHeight;
       } else {
         var root = document.querySelector('[data-sync-flow-root="' + flow + '"]');
-        boundary = root ? root.getBoundingClientRect().bottom : items[items.length - 1].top;
+        boundary = root ? root.getBoundingClientRect().bottom
+                        : (items.length ? items[items.length - 1].top : 0);
       }
       var flowBlocks = {};
       for (var j = 0; j < items.length; j++){
         var next = (j + 1 < items.length) ? items[j + 1].top : boundary;
         flowBlocks[items[j].index] = Math.max(0, next - items[j].top);
       }
+      var none = empties[flow] || [];
+      for (var z = 0; z < none.length; z++) flowBlocks[none[z]] = 0;
       blocks[flow] = flowBlocks;
     }
     return blocks;
@@ -2718,6 +2739,17 @@
     var out = {}, nodes = document.querySelectorAll('[data-sync-index]');
     for (var i = 0; i < nodes.length; i++){
       var el = nodes[i];
+      // Skip anything that generates no box -- a collapsed tab panel, an accordion body,
+      // anything display:none or carrying the hidden attribute. getBoundingClientRect()
+      // returns all zeros for those, and a top of 0 is not "at the top of the document",
+      // it is "nowhere". The parent compares the two panes' tops for the same block and
+      // asks the shorter side to make up the difference, so a panel closed on one side and
+      // open on the other produced a correction the size of the whole document. Measured on
+      // tabs-{before,after}.html, whose sources render ~4,200px tall: both panes came out
+      // 63,014px, 93% of the right pane spacer, with two single spacers of 14,483px each --
+      // sitting immediately before div.panel-n and div#aria-panel-1, both display:none.
+      // An element with no box has nothing to align to, so leave it out entirely.
+      if (!el.getClientRects().length) continue;
       out[el.getAttribute('data-sync-flow') + ':' + el.getAttribute('data-sync-index')]
         = el.getBoundingClientRect().top + (window.scrollY || 0);
     }
@@ -2756,6 +2788,9 @@
       var c = list[i];
       var el = document.querySelector('[data-sync-flow="' + c.flow + '"][data-sync-index="' + c.index + '"]');
       if (!el || !el.parentNode) continue;
+      // Same reason as collectTops: padding in front of something that isn't rendered
+      // pushes real content down for nothing.
+      if (!el.getClientRects().length) continue;
       placeAlignSpacer(el.parentNode, el, c.delta, el);
     }
   }
@@ -2778,14 +2813,36 @@
     } else if (data.type === 'resumePulse'){
       document.documentElement.removeAttribute('data-align-pending');
     } else if (data.type === 'remeasure'){
-      // Flush out spacers from before only at the first stage of the cycle
-      // (the parent sends starting from the deepest flow). Flushing on every
-      // stage as it progresses would also wipe out spacers from deeper flows
-      // that have already been aligned, and would mismeasure the height of
-      // shallower flow containers.
-      if (data.first) clearAlignSpacers();
+      // Flush out spacers from before only at the first stage of the cycle (the parent
+      // sends starting from the deepest flow). Flushing on every stage as it progresses
+      // would also wipe out spacers from deeper flows that have already been aligned.
+      //
+      // But that left the later stages measuring a document this cycle had already padded,
+      // and measuring is all differences: a block's height is the next block's top minus
+      // its own, and the last block of the outermost flow runs to
+      // document.scrollHeight. A spacer inserted for a deep flow therefore inflates the
+      // height of whichever shallower block encloses it, the opposite pane pads to match
+      // that inflated figure, and the error multiplies once per level of depth -- inside a
+      // single cycle, so it is stable and repeatable rather than visibly runaway.
+      // Measured on tabs-{before,after}.html, whose source documents render ~4,200px tall:
+      // both panes came out 63,016px, 93% of the right pane being spacer, with single
+      // spacers of 14,483px -- taller than the whole document. edge-cases was inflated
+      // 5.1x by the same mechanism.
+      // applyLevelAlign's contract already says the counterpart figures it works from are
+      // "a value from a pristine state with no spacer ever inserted yet" -- that was true
+      // of the other side's numbers and quietly false of our own. So snapshot every level
+      // while the document is genuinely pristine, and answer the later stages from that.
+      // Keyed on seq so a snapshot can never be served to a different cycle.
+      if (data.first){
+        clearAlignSpacers();
+        pristineBlocks = {};
+        pristineSeq = data.seq;
+        for (var lv = data.level; lv >= 0; lv--) pristineBlocks[lv] = measureLevelBlocks(lv);
+      }
+      var levelBlocks = (pristineSeq === data.seq && pristineBlocks && pristineBlocks[data.level])
+        ? pristineBlocks[data.level] : measureLevelBlocks(data.level);
       postToParent({ type: 'measured', seq: data.seq, level: data.level,
-        total: document.documentElement.scrollHeight, blocks: measureLevelBlocks(data.level) });
+        total: document.documentElement.scrollHeight, blocks: levelBlocks });
     } else if (data.type === 'apply'){
       applyLevelAlign(data.level, data.counterpart || {});
       postToParent({ type: 'aligned', seq: data.seq, level: data.level, total: document.documentElement.scrollHeight });
