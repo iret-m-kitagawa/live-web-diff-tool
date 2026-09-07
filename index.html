@@ -3409,44 +3409,78 @@ html[data-align-pending] svg [data-diff-attr]{ animation:none; }
       return shell.outerHTML;
     }
 
-    // ---- Don't interleave a block that was rewritten wholesale ----
-    // htmldiff-js emits a token-level diff and has no notion of "this was replaced, don't
-    // mix it". The HTML View engine has had REPLACE_RATIO for exactly that since early on;
-    // Markdown View had nothing, and it matters more here than it would in English. Japanese
-    // has no word boundaries, so the tokenizer works per character and the shared particles
-    // (の, 、, する, 設定) match all over a sentence that was in fact replaced outright,
-    // leaving the changed text chopped into fragments with unmarked islands between them.
-    // Measured on md-cases/kms-{before,after}.md, the second bullet's paragraph:
-    //     before side: 10 separate <del> runs covering 66 of 152 characters
-    //     after side : 10 separate <ins> runs covering 161 of 245 characters
-    //     the runs read "未確認" "まま" "ただし" "有効/" "どちらでも同じ" "で動作" ...
-    // for what any reader would call one rewritten sentence. So measure the result and, when
-    // it comes back this shredded, throw it away and emit the pair the way a one-sided block
-    // is emitted -- the whole old block in red, the whole new block in green.
-    // Two conditions, because either alone misses a case: a majority rewrite is a rewrite no
-    // matter how few runs it took, and many small runs are unreadable even at a lower share.
-    const MD_SHRED_SHARE = 0.5;      // over half of one side's characters marked
-    const MD_SHRED_RUNS = 4;         // this many separate runs...
-    const MD_SHRED_RUN_SHARE = 0.3;  // ...covering at least this share
-    function mdShredded(mergedHtml) {
+    // ---- Coalesce a shredded run of marks back into one replacement ----
+    // htmldiff-js emits a token-level diff with no notion of "this was replaced, don't mix
+    // it". The HTML View engine has had REPLACE_RATIO for that since early on; Markdown View
+    // had nothing, and it costs more here than it would in English. Japanese has no word
+    // boundaries, so the tokenizer works per character and the shared particles match all
+    // over a sentence that was in fact rewritten. Measured on md-cases/kms-{before,after}.md,
+    // the second bullet's paragraph came back as 10 separate <del> runs covering 66 of 152
+    // characters and 10 <ins> runs covering 161 of 245, the runs reading "未確認" "まま"
+    // "ただし" "有効/" "どちらでも同じ" "で動作" -- one rewritten sentence shown as a dozen
+    // fragments with unmarked particles stranded between them.
+    //
+    // Replacing the whole block instead was worse, and measurably so: that paragraph also
+    // holds a 55-character span that is byte-identical in both documents
+    // (「：cust112のソース・デスティネーションバケットでS3 Bucket Key（SSE-KMSのコスト削減
+    // オプション）が有効かどうかは」), and painting the block wholesale threw it away --
+    // the reader could no longer see what had been preserved.
+    //
+    // So neither extreme: widen each replacement over the SHORT gaps only. An unmarked gap
+    // of a few characters between two marks is tokenizer noise and belongs inside the
+    // replacement; a long unmarked span is real shared content and must stay visible. The
+    // gap text is copied into BOTH sides, because unmarked text is present in both documents
+    // -- moving it into the <del> alone would delete it from the after pane.
+    const MD_GAP_MAX = 8;      // an unmarked gap this short is noise, and gets absorbed
+    const MD_MARK_SEL = 'del.diffdel, del.diffmod, ins.diffins, ins.diffmod';
+    function mdCoalesceMarks(mergedHtml) {
       const holder = document.createElement('div');
       holder.innerHTML = mergedHtml;
-      const measure = (sel) => {
-        const runs = Array.from(holder.querySelectorAll(sel));
-        return { runs: runs.length, chars: runs.reduce((n, r) => n + norm(r.textContent).length, 0) };
-      };
-      const del = measure('del.diffdel, del.diffmod');
-      const ins = measure('ins.diffins, ins.diffmod');
-      if (!del.runs && !ins.runs) return false;
-      // The merged block holds both sides, so each side's own length is the total minus the
-      // other side's marked characters.
-      const total = norm(holder.textContent).length;
-      const bLen = total - ins.chars, aLen = total - del.chars;
-      const bad = (m, len) => {
-        const share = len > 0 ? m.chars / len : 0;
-        return share > MD_SHRED_SHARE || (m.runs >= MD_SHRED_RUNS && share > MD_SHRED_RUN_SHARE);
-      };
-      return bad(del, bLen) || bad(ins, aLen);
+      // A mark holding an element (a <code> chip, say) is left alone: rebuilding it from
+      // textContent would drop that formatting, and formatting is content here.
+      const plainMark = (n) => n.nodeType === 1 && n.matches(MD_MARK_SEL) && !n.firstElementChild;
+      const shortGap = (n) => n.nodeType === 3 && norm(n.data).length <= MD_GAP_MAX;
+      const sideOf = (n) => (n.tagName === 'DEL' ? 'del' : 'ins');
+
+      const parents = [holder].concat(Array.from(holder.querySelectorAll('*')));
+      for (const parent of parents) {
+        let kids = Array.from(parent.childNodes);
+        for (let i = 0; i < kids.length; i++) {
+          if (!plainMark(kids[i])) continue;
+          // Extend while the run stays "marks and noise". The end must be a mark, so
+          // remember the last one seen rather than stopping wherever the scan ran out.
+          let j = i, lastMark = i, marks = 1;
+          for (let k = i + 1; k < kids.length; k++) {
+            if (plainMark(kids[k])) { lastMark = k; marks++; j = k; continue; }
+            if (shortGap(kids[k])) { j = k; continue; }
+            break;
+          }
+          j = lastMark;
+          if (marks < 2) continue;   // a lone mark is already as coalesced as it gets
+          let bText = '', aText = '';
+          for (let k = i; k <= j; k++) {
+            const n = kids[k];
+            if (n.nodeType === 3) { bText += n.data; aText += n.data; continue; }
+            if (sideOf(n) === 'del') bText += n.textContent; else aText += n.textContent;
+          }
+          const made = [];
+          if (norm(bText)) {
+            const d = document.createElement('del');
+            d.className = 'diffdel'; d.textContent = bText; made.push(d);
+          }
+          if (norm(aText)) {
+            const a = document.createElement('ins');
+            a.className = 'diffins'; a.textContent = aText; made.push(a);
+          }
+          parent.insertBefore(made[0] || document.createTextNode(''), kids[i]);
+          for (let k = 1; k < made.length; k++) parent.insertBefore(made[k], kids[i]);
+          for (let k = i; k <= j; k++) parent.removeChild(kids[k]);
+          kids = Array.from(parent.childNodes);
+          i = kids.indexOf(made[made.length - 1] || null);
+          if (i < 0) i = 0;
+        }
+      }
+      return holder.innerHTML;
     }
 
     // ---- For lists, decide item correspondence before running HtmlDiff ----
@@ -3533,11 +3567,7 @@ html[data-align-pending] svg [data-diff-attr]{ animation:none; }
       const pairUnit = (x, y) => {
         if (isMdList(x.node) && isMdList(y.node)) return mdListDiff(x.node, y.node, (depth || 0) + 1);
         if (x.node.tagName === 'TABLE' && y.node.tagName === 'TABLE') return mdTableDiff(x.node, y.node);
-        const merged = HtmlDiff.execute(x.html, y.html);
-        // oneSided is declared just below; it is only ever called from here at diff time,
-        // by which point it is initialized.
-        if (mdShredded(merged)) return oneSided(x, 'del') + '\n' + oneSided(y, 'ins');
-        return merged;
+        return mdCoalesceMarks(HtmlDiff.execute(x.html, y.html));
       };
       const oneSided = (u, side) =>
         u.inline ? HtmlDiff.execute(side === 'del' ? u.html : '', side === 'del' ? '' : u.html)
@@ -3588,10 +3618,7 @@ html[data-align-pending] svg [data-diff-attr]{ animation:none; }
       const pairOne = (bEl, aEl) => {
         if (bEl.tagName === 'TABLE' && aEl.tagName === 'TABLE') { out.push(mdTableDiff(bEl, aEl)); return; }
         if (isMdList(bEl) && isMdList(aEl)) { out.push(mdListDiff(bEl, aEl, 0)); return; }
-        const merged = HtmlDiff.execute(bEl.outerHTML, aEl.outerHTML);
-        // Shredded past legibility -- show the two versions whole instead of interleaved.
-        if (mdShredded(merged)) { delOne(bEl); insOne(aEl); return; }
-        out.push(merged);
+        out.push(mdCoalesceMarks(HtmlDiff.execute(bEl.outerHTML, aEl.outerHTML)));
       };
       // Blocks with no text of their own never get an ins/del wrapper from HtmlDiff (see
       // markMdOnly above) -- tag them here, the one place that already knows a top-level
