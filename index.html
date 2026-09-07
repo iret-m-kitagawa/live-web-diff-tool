@@ -215,6 +215,19 @@
       .rich-diff-viewer ins.diffins, .rich-diff-viewer ins.diffmod, .rich-diff-viewer del.diffdel, .rich-diff-viewer del.diffmod { animation: none; }
     }
 
+    /* github-markdown-css renders a nested ordered list as lower-roman, and the level below
+       that as lower-alpha -- which is what GitHub itself does. It surprises anyone whose
+       reference is their editor's preview: the source says "1." and "2." and the render says
+       "i." and "ii.". This viewer's job is to show what the author wrote, so keep the
+       author's numbering at every depth. Selector carries both of the viewer's own classes so
+       it outranks github-markdown-css's `.markdown-body ul ol` without needing !important. */
+    .rich-diff-viewer.markdown-body ol ol,
+    .rich-diff-viewer.markdown-body ul ol,
+    .rich-diff-viewer.markdown-body ol ol ol,
+    .rich-diff-viewer.markdown-body ul ol ol,
+    .rich-diff-viewer.markdown-body ol ul ol,
+    .rich-diff-viewer.markdown-body ul ul ol { list-style-type: decimal; }
+
     /* Regular strikethrough coming from Markdown itself */
     .rich-diff-viewer del:not(.diffdel):not(.diffmod) { color: var(--text-muted); text-decoration: line-through; background-color: transparent; }
 
