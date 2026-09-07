@@ -3409,6 +3409,46 @@ html[data-align-pending] svg [data-diff-attr]{ animation:none; }
       return shell.outerHTML;
     }
 
+    // ---- Don't interleave a block that was rewritten wholesale ----
+    // htmldiff-js emits a token-level diff and has no notion of "this was replaced, don't
+    // mix it". The HTML View engine has had REPLACE_RATIO for exactly that since early on;
+    // Markdown View had nothing, and it matters more here than it would in English. Japanese
+    // has no word boundaries, so the tokenizer works per character and the shared particles
+    // (の, 、, する, 設定) match all over a sentence that was in fact replaced outright,
+    // leaving the changed text chopped into fragments with unmarked islands between them.
+    // Measured on md-cases/kms-{before,after}.md, the second bullet's paragraph:
+    //     before side: 10 separate <del> runs covering 66 of 152 characters
+    //     after side : 10 separate <ins> runs covering 161 of 245 characters
+    //     the runs read "未確認" "まま" "ただし" "有効/" "どちらでも同じ" "で動作" ...
+    // for what any reader would call one rewritten sentence. So measure the result and, when
+    // it comes back this shredded, throw it away and emit the pair the way a one-sided block
+    // is emitted -- the whole old block in red, the whole new block in green.
+    // Two conditions, because either alone misses a case: a majority rewrite is a rewrite no
+    // matter how few runs it took, and many small runs are unreadable even at a lower share.
+    const MD_SHRED_SHARE = 0.5;      // over half of one side's characters marked
+    const MD_SHRED_RUNS = 4;         // this many separate runs...
+    const MD_SHRED_RUN_SHARE = 0.3;  // ...covering at least this share
+    function mdShredded(mergedHtml) {
+      const holder = document.createElement('div');
+      holder.innerHTML = mergedHtml;
+      const measure = (sel) => {
+        const runs = Array.from(holder.querySelectorAll(sel));
+        return { runs: runs.length, chars: runs.reduce((n, r) => n + norm(r.textContent).length, 0) };
+      };
+      const del = measure('del.diffdel, del.diffmod');
+      const ins = measure('ins.diffins, ins.diffmod');
+      if (!del.runs && !ins.runs) return false;
+      // The merged block holds both sides, so each side's own length is the total minus the
+      // other side's marked characters.
+      const total = norm(holder.textContent).length;
+      const bLen = total - ins.chars, aLen = total - del.chars;
+      const bad = (m, len) => {
+        const share = len > 0 ? m.chars / len : 0;
+        return share > MD_SHRED_SHARE || (m.runs >= MD_SHRED_RUNS && share > MD_SHRED_RUN_SHARE);
+      };
+      return bad(del, bLen) || bad(ins, aLen);
+    }
+
     // ---- For lists, decide item correspondence before running HtmlDiff ----
     // The same problem tables have, and for the same reason: block-level pairing stops at the
     // top level, so a paired <ul>/<ol> went to HtmlDiff whole and its inside stayed one token
@@ -3493,7 +3533,11 @@ html[data-align-pending] svg [data-diff-attr]{ animation:none; }
       const pairUnit = (x, y) => {
         if (isMdList(x.node) && isMdList(y.node)) return mdListDiff(x.node, y.node, (depth || 0) + 1);
         if (x.node.tagName === 'TABLE' && y.node.tagName === 'TABLE') return mdTableDiff(x.node, y.node);
-        return HtmlDiff.execute(x.html, y.html);
+        const merged = HtmlDiff.execute(x.html, y.html);
+        // oneSided is declared just below; it is only ever called from here at diff time,
+        // by which point it is initialized.
+        if (mdShredded(merged)) return oneSided(x, 'del') + '\n' + oneSided(y, 'ins');
+        return merged;
       };
       const oneSided = (u, side) =>
         u.inline ? HtmlDiff.execute(side === 'del' ? u.html : '', side === 'del' ? '' : u.html)
@@ -3541,10 +3585,14 @@ html[data-align-pending] svg [data-diff-attr]{ animation:none; }
       // Tables and lists get their inside correspondence decided first too -- they are the
       // two places Markdown nests blocks (see mdTableDiff / mdListDiff). Everything else has
       // no nested block structure to protect, so it goes to HtmlDiff whole.
-      const pairOne = (bEl, aEl) => out.push(
-        bEl.tagName === 'TABLE' && aEl.tagName === 'TABLE' ? mdTableDiff(bEl, aEl)
-          : isMdList(bEl) && isMdList(aEl) ? mdListDiff(bEl, aEl, 0)
-          : HtmlDiff.execute(bEl.outerHTML, aEl.outerHTML));
+      const pairOne = (bEl, aEl) => {
+        if (bEl.tagName === 'TABLE' && aEl.tagName === 'TABLE') { out.push(mdTableDiff(bEl, aEl)); return; }
+        if (isMdList(bEl) && isMdList(aEl)) { out.push(mdListDiff(bEl, aEl, 0)); return; }
+        const merged = HtmlDiff.execute(bEl.outerHTML, aEl.outerHTML);
+        // Shredded past legibility -- show the two versions whole instead of interleaved.
+        if (mdShredded(merged)) { delOne(bEl); insOne(aEl); return; }
+        out.push(merged);
+      };
       // Blocks with no text of their own never get an ins/del wrapper from HtmlDiff (see
       // markMdOnly above) -- tag them here, the one place that already knows a top-level
       // block is one-sided, so the pane filter can drop them.
