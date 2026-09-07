@@ -202,7 +202,8 @@
        reason as the HTML View's copy of this rule: a nested match like del.diffmod can carry
        its own tag+class selector at least as specific as this plain descendant selector, which
        would otherwise let it keep animating regardless of source order. */
-    .rich-diff-viewer ins.diffins *, .rich-diff-viewer ins.diffmod *, .rich-diff-viewer del.diffdel *, .rich-diff-viewer del.diffmod * { animation: none !important; }
+    :where(:is(.rich-diff-viewer ins.diffins, .rich-diff-viewer ins.diffmod, .rich-diff-viewer del.diffdel, .rich-diff-viewer del.diffmod)
+            :is(.rich-diff-viewer ins.diffins, .rich-diff-viewer ins.diffmod, .rich-diff-viewer del.diffdel, .rich-diff-viewer del.diffmod)) { animation-name: none !important; }
     /* Paused for the duration of one alignSplitPanes() pass -- see that function's
        try/finally wrapper, which toggles data-align-pending on <html> around it. Wins
        by specificity over the plain rule above regardless of source order. */
@@ -1163,9 +1164,28 @@
       const ws = newEl.tagName === 'PRE' || newEl.tagName === 'CODE' || !!newEl.closest('pre');
       if (!ws && visibleNorm(oldText) === visibleNorm(newText)) return false;
 
+      // "Replace the whole element" is only honest when the element's own text IS its
+      // content. ownText() deliberately stops at nested blocks, so for a wrapper holding
+      // sections it returns just whatever inline text sits directly inside -- a status
+      // badge, a revision number, a date. When that little string is rewritten the change
+      // ratio hits 1.0, the wholesale-replacement path below fires, and markBlock stamps
+      // data-diff-block="ins" on the WHOLE wrapper, declaring every section inside it new.
+      // The before pane then strips the wrapper and loses the entire document.
+      // Measured on a wrapper holding an <h1>, a <span class="status">, and two <section>s
+      // where only the badge changed (承認 -> 差し替え済み): the merged .sheet came back
+      // data-diff-block="del" with its innerHTML reduced to the span alone, and the before
+      // pane rendered no <section> at all -- 0 of 2 -- while the after pane rendered both.
+      // A wrapper with a small inline badge among block children is an ordinary shape, so
+      // this was easy to hit. Where the element holds blocks, keep the edit local.
+      const holdsBlocks = (() => {
+        for (let c = newEl.firstElementChild; c; c = c.nextElementSibling) if (isBlockEl(c)) return true;
+        return false;
+      })();
+
       const oldToks = tokenize(oldText), newToks = tokenize(newText);
       const ops = diffSeq(oldToks, newToks);
       if (!ops){ // too large -> treat as a whole-block replacement
+        if (holdsBlocks){ newEl.setAttribute('data-diff-row', 'changed'); return true; }
         markBlock(newEl, 'ins', tally, newText.length);
         return true;
       }
@@ -1212,7 +1232,7 @@
         return true;
       }
       const ratio = HEADING_TAGS.has(newEl.tagName) ? HEADING_REPLACE_RATIO : REPLACE_RATIO;
-      if (canSplit && oldToks.length && newToks.length && totalToks > 0
+      if (canSplit && !holdsBlocks && oldToks.length && newToks.length && totalToks > 0
           && changedToks / totalToks > ratio){
         const clone = ownTextClone(oldEl, newEl.ownerDocument);
         clone.setAttribute('data-diff-block', 'del');
@@ -2909,24 +2929,31 @@ svg [data-diff-block="ins"], svg [data-diff-block="del"], svg [data-diff-attr]{
 @keyframes diffPulseSvg{ 0%,100%{ filter:none } 50%{ filter:brightness(1.32) } }
 svg text[data-diff-block="ins"], svg text[data-diff-block="ins"] tspan, svg tspan[data-diff-block="ins"]{ fill:rgb(26,159,71) !important; }
 svg text[data-diff-block="del"], svg text[data-diff-block="del"] tspan, svg tspan[data-diff-block="del"]{ fill:rgb(229,50,45) !important; }
-svg text[data-diff-attr], svg text[data-diff-attr] tspan, svg tspan[data-diff-attr]{ fill:rgb(26,159,71) !important; }
+/* No fill override for an attribute-only change: the outline above already marks it, and
+   forcing fill made two documents whose difference IS the fill render the same color --
+   the same mistake the background-color marker made. ins/del above keep their override:
+   a label that is entirely gone, or entirely new, should read as gone or new. */
 td[data-diff-pad], th[data-diff-pad]{ background:transparent; }
 a[data-diff-nolink]{ cursor: pointer; }
 /* An element where only an attribute or tag changed. The same green as additions, in the
    sense that it has become a new state, but lighter to distinguish it from something added
    wholesale.
-   Painted as a translucent LAYER (background-image) rather than by replacing
-   background-color, and the element's own text color is left alone. Replacing the
-   background destroyed the very change being reported whenever that change was itself a
-   color: measured on bootstrap-style-{before,after}.html (#sec-alerts, first alert,
-   class="alert alert-warning" -> "alert alert-danger"), the raw documents render
-   rgb(255,243,205) amber and rgb(248,215,218) red, and both panes came back
-   rgb(212,233,221) -- the marker's own green, identical on the two sides, with the
-   document's palette gone and the reader told "the class changed" but shown nothing about
-   what it changed to. A layer tints whatever is underneath instead, so the amber still
-   reads as amber and the red as red. Kept translucent on purpose (not flattened against
-   the ground like INS/DEL) because it has to composite over colors we don't know. */
-[data-diff-attr]{ background-image: linear-gradient(rgba(26,159,71,.22), rgba(26,159,71,.22)) !important; }
+   Drawn as an OUTLINE, which is the only marker that paints nothing the document might
+   already be using. This started as a replaced background-color and each attempt to keep
+   the wash cost something the document owned:
+     - background-color, the original: it destroyed the very change being reported whenever
+       that change was itself a color. Measured on bootstrap-style (#sec-alerts, first
+       alert, class "alert alert-warning" -> "alert alert-danger"): the raw documents render
+       rgb(255,243,205) amber and rgb(248,215,218) red, and both panes came back
+       rgb(212,233,221) -- the marker's own green, identical on the two sides.
+     - background-image as a translucent layer: fixed background-color, but deletes the
+       element's own background-image, including when the reported change IS that image.
+   An outline touches background-color, background-image, box-shadow and color alike --
+   none of them. outline-offset is negative so it sits inside the border box and cannot
+   overlap a neighbour or add to the element's ink extent. Whole-block add/remove still
+   paints over everything on purpose: a block that is entirely gone should be
+   unmistakable, where an attribute change should be a hint. */
+[data-diff-attr]{ outline:2px solid rgba(26,159,71,.55); outline-offset:-2px; }
 /* A slow, continuous pulse on every diff mark. Pasted documents frequently
    contain their own green/red (status badges, warning rows), and a static
    highlight is easy to mistake for content that was already that color.
@@ -2966,7 +2993,16 @@ ins[data-diff="ins"], del[data-diff="del"], [data-diff-block], [data-diff-attr]{
    diagram-cases case-14 (#cell-tokyo-az, data-diff-attr="class" containing
    a nested <del data-diff="del">): without !important the nested <del> kept
    animating on its own instead of going still. */
-ins[data-diff="ins"] *, del[data-diff="del"] *, [data-diff-block] *, [data-diff-attr] *{ animation:none !important; }
+/* Only a mark nested inside another mark goes still. This used to be a bare universal
+   selector, which
+   also stopped every animation the PASTED DOCUMENT was running anywhere below a marked
+   element -- its own spinners, transitions and keyframes -- for no reason connected to
+   the diff. */
+:where(:is(ins[data-diff="ins"], del[data-diff="del"], [data-diff-block], [data-diff-attr])
+        :is(ins[data-diff="ins"], del[data-diff="del"], [data-diff-block], [data-diff-attr])){ animation-name:none !important; }
+/* :where() so the whole thing carries zero specificity: .diff-flash below is also
+   !important and must still win on a nested element, and a two-part selector would
+   otherwise outrank its single class regardless of source order. */
 /* Neither diffPulseBox nor diffPulseSvg is layout-affecting by itself (box-shadow
    never participates in layout; an SVG shape isn't part of normal block flow), but
    simply having EITHER one actively running turns out to change how the split-pane
