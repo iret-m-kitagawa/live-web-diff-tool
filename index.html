@@ -3409,6 +3409,127 @@ html[data-align-pending] svg [data-diff-attr]{ animation:none; }
       return shell.outerHTML;
     }
 
+    // ---- For lists, decide item correspondence before running HtmlDiff ----
+    // The same problem tables have, and for the same reason: block-level pairing stops at the
+    // top level, so a paired <ul>/<ol> went to HtmlDiff whole and its inside stayed one token
+    // stream. <li>, <p> and <ol> are just tag tokens there, and the diff splices across them
+    // freely. Measured on md-cases/kms-{before,after}.md, where the before side has a bullet
+    // holding <p> + <ol>(2 items) + <p> and the after side has three plain bullets and no <ol>
+    // at all:
+    //   marked alone   before: 1 <ol>, 2 items / after: 0 <ol>, 3 top-level bullets
+    //   through here   before pane: 1 <ol>, 6 <li> / after pane: 1 <ol>, 4 <li>
+    // The after pane rendered an ordered list its document does not contain, and the merged
+    // DOM held a <strong> reading 「実装対象外とするよう、判」 -- the first half from the after
+    // document, the second from the before one, a string in neither. Lists and tables are the
+    // only two places Markdown nests blocks, so leaving lists out left half the problem open.
+    //
+    // So: pair <li> against <li> first (mdPairSequence, the same machinery the table rows and
+    // the top-level blocks use), then split each paired item into its own block units and
+    // diff those separately. HtmlDiff never again sees a token stream that spans a block
+    // boundary, which is what makes the splice impossible rather than unlikely.
+    const MD_LIST_TAGS = { UL: 1, OL: 1 };
+    const isMdList = (el) => !!MD_LIST_TAGS[el.tagName];
+    // How deep to keep descending. A list nested past this is diffed whole, which is coarse
+    // but never wrong; the cap only exists so a pathological document can't recurse forever.
+    const MD_LIST_MAX_DEPTH = 6;
+
+    // A list item's children are not uniformly elements: marked emits a "loose" item as
+    // <li><p>text</p><ol>..</ol></li> but a "tight" one as <li>text<ol>..</ol></li>, with the
+    // leading text as a bare text node. So walk childNodes and group each run of non-block
+    // nodes into one unit alongside the block elements. `node` is what similarity is measured
+    // on (a detached holder for an inline run); `html` is what actually gets emitted.
+    const MD_UNIT_BLOCK = /^(P|UL|OL|PRE|BLOCKQUOTE|TABLE|DIV|DL|FIGURE|HR|H[1-6])$/;
+    function mdUnitsOf(li) {
+      const units = [];
+      let run = null;
+      const flushRun = () => {
+        if (!run) return;
+        // Whitespace-only runs are marked's own separators between blocks. They carry
+        // nothing, and the parts are rejoined with a newline anyway.
+        if (run.holder.textContent.trim() || run.holder.querySelector('img,br,input'))
+          units.push({ node: run.holder, html: run.html, inline: true });
+        run = null;
+      };
+      for (const n of Array.from(li.childNodes)) {
+        if (n.nodeType === 1 && MD_UNIT_BLOCK.test(n.tagName)) {
+          flushRun();
+          units.push({ node: n, html: n.outerHTML, inline: false });
+          continue;
+        }
+        if (!run) run = { holder: li.ownerDocument.createElement('span'), html: '' };
+        run.holder.appendChild(n.cloneNode(true));
+        run.html += n.nodeType === 3 ? n.data : (n.outerHTML || '');
+      }
+      flushRun();
+      return units;
+    }
+
+    // Units are compared on text alone, deliberately not through nodeSimilarity: a "loose"
+    // item's <p> has to be able to pair with a "tight" item's bare text run, and
+    // nodeSimilarity would score that 0 on the tag family alone. What must never pair is a
+    // list against a paragraph, or a table against either -- pairing across those would put
+    // us right back to splicing one structure's text into another's.
+    function mdUnitSimilarity(x, y) {
+      const a = x.node, b = y.node;
+      if (isMdList(a) !== isMdList(b)) return 0;
+      if ((a.tagName === 'TABLE') !== (b.tagName === 'TABLE')) return 0;
+      return tokenOverlap(norm(a.textContent), norm(b.textContent));
+    }
+
+    function mdListDiff(bList, aList, depth) {
+      const whole = () => HtmlDiff.execute(bList.outerHTML, aList.outerHTML);
+      if ((depth || 0) >= MD_LIST_MAX_DEPTH) return whole();
+      const itemsOf = (l) => {
+        const out = [];
+        for (const el of Array.from(l.children)) {
+          if (el.tagName !== 'LI') return null; // not marked's output; don't guess at it
+          out.push(el);
+        }
+        return out;
+      };
+      const bItems = itemsOf(bList), aItems = itemsOf(aList);
+      if (!bItems || !aItems || !bItems.length || !aItems.length) return whole();
+
+      const pairUnit = (x, y) => {
+        if (isMdList(x.node) && isMdList(y.node)) return mdListDiff(x.node, y.node, (depth || 0) + 1);
+        if (x.node.tagName === 'TABLE' && y.node.tagName === 'TABLE') return mdTableDiff(x.node, y.node);
+        return HtmlDiff.execute(x.html, y.html);
+      };
+      const oneSided = (u, side) =>
+        u.inline ? HtmlDiff.execute(side === 'del' ? u.html : '', side === 'del' ? '' : u.html)
+                 : HtmlDiff.execute(side === 'del' ? markMdOnly(u.node, 'del') : '',
+                                    side === 'del' ? '' : markMdOnly(u.node, 'ins'));
+
+      const pairItem = (bLi, aLi) => {
+        const bU = mdUnitsOf(bLi), aU = mdUnitsOf(aLi);
+        const shell = aLi.cloneNode(false); // keep the item's own attributes
+        // Nothing to split: an item that is a single run of inline content on both sides is
+        // exactly the case HtmlDiff already handles well, and wrapping it changes nothing.
+        if (bU.length <= 1 && aU.length <= 1) {
+          shell.innerHTML = HtmlDiff.execute(bLi.innerHTML, aLi.innerHTML);
+          return shell.outerHTML;
+        }
+        const parts = [];
+        mdPairSequence(bU, aU, mdUnitSimilarity,
+          (x, y) => parts.push(pairUnit(x, y)),
+          (x) => parts.push(oneSided(x, 'del')),
+          (y) => parts.push(oneSided(y, 'ins')));
+        shell.innerHTML = parts.join('\n');
+        return shell.outerHTML;
+      };
+
+      const parts = [];
+      mdPairSequence(bItems, aItems, nodeSimilarity,
+        (bLi, aLi) => parts.push(pairItem(bLi, aLi)),
+        (bLi) => parts.push(HtmlDiff.execute(markMdOnly(bLi, 'del'), '')),
+        (aLi) => parts.push(HtmlDiff.execute('', markMdOnly(aLi, 'ins'))));
+      // The shell is a clone of the after side's list, attributes included (an <ol start="3">
+      // would otherwise lose its start).
+      const shell = aList.cloneNode(false);
+      shell.innerHTML = parts.join('\n');
+      return shell.outerHTML;
+    }
+
     function blockPairedHtmlDiff(bHtml, aHtml) {
       const bodyOf = (html) => new DOMParser().parseFromString(html, 'text/html').body;
       const bEls = Array.from(bodyOf(bHtml).children);
@@ -3417,10 +3538,12 @@ html[data-align-pending] svg [data-diff-attr]{ animation:none; }
       if (!bEls.length || !aEls.length) return HtmlDiff.execute(bHtml, aHtml);
 
       const out = [];
-      // Only tables get row correspondence decided first too (see the mdTableDiff comment).
+      // Tables and lists get their inside correspondence decided first too -- they are the
+      // two places Markdown nests blocks (see mdTableDiff / mdListDiff). Everything else has
+      // no nested block structure to protect, so it goes to HtmlDiff whole.
       const pairOne = (bEl, aEl) => out.push(
-        bEl.tagName === 'TABLE' && aEl.tagName === 'TABLE'
-          ? mdTableDiff(bEl, aEl)
+        bEl.tagName === 'TABLE' && aEl.tagName === 'TABLE' ? mdTableDiff(bEl, aEl)
+          : isMdList(bEl) && isMdList(aEl) ? mdListDiff(bEl, aEl, 0)
           : HtmlDiff.execute(bEl.outerHTML, aEl.outerHTML));
       // Blocks with no text of their own never get an ins/del wrapper from HtmlDiff (see
       // markMdOnly above) -- tag them here, the one place that already knows a top-level
