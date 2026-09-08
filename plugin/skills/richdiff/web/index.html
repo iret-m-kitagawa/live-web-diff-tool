@@ -171,50 +171,6 @@
     [data-theme*="light"] .rich-diff-viewer ins.diffins, [data-theme*="light"] .rich-diff-viewer ins.diffmod { background-color: #e6ffec; color: #238636; }
     [data-theme*="light"] .rich-diff-viewer del.diffdel, [data-theme*="light"] .rich-diff-viewer del.diffmod { background-color: #ffebe9; color: #da3633; }
 
-    /* A slow, continuous pulse on every diff mark -- same rationale as the HTML View's
-       copy of this rule in buildDiffCss(): pasted documents often carry their own
-       green/red (status badges, warning rows), and a static highlight is easy to mistake
-       for content that was already that color. Nothing in the pasted document itself
-       moves, so a pulse makes the tool's own marks unmistakable.
-       box-shadow, not filter, for the same reason as the HTML View's copy of this rule:
-       filter has a documented side effect of establishing a new containing block on the
-       animated element, which can disable margin collapsing between its descendants and
-       its own box. box-shadow never participates in layout, and it paints behind the
-       element's own text/content instead of brightening the text itself, so legibility
-       is unaffected. The middle gray is chosen so it visibly darkens a light document
-       and visibly lightens a dark one, since either pure white or pure black would
-       vanish on one of the two.
-       That alone isn't sufficient for layout neutrality, though -- see the
-       html[data-align-pending] rule below, which is the part that actually addresses
-       the measured issue (same mechanism and same fix as the HTML View's
-       pausePulse/resumePulse: simply having the pulse active changes how the
-       alignSplitPanes height-alignment pass below converges, so it's paused for the
-       duration of each pass instead). */
-    .rich-diff-viewer ins.diffins, .rich-diff-viewer ins.diffmod, .rich-diff-viewer del.diffdel, .rich-diff-viewer del.diffmod {
-      animation: diffPulseBox 1.8s ease-in-out infinite;
-    }
-    @keyframes diffPulseBox {
-      0%, 100% { box-shadow: inset 0 0 0 100vmax rgba(127,127,127,0) }
-      50% { box-shadow: inset 0 0 0 100vmax rgba(127,127,127,.35) }
-    }
-    /* Suppress nesting, same reasoning as the HTML View: a marked element inside another
-       marked element shouldn't run its own out-of-phase animation. !important for the same
-       reason as the HTML View's copy of this rule: a nested match like del.diffmod can carry
-       its own tag+class selector at least as specific as this plain descendant selector, which
-       would otherwise let it keep animating regardless of source order. */
-    :where(:is(.rich-diff-viewer ins.diffins, .rich-diff-viewer ins.diffmod, .rich-diff-viewer del.diffdel, .rich-diff-viewer del.diffmod)
-            :is(.rich-diff-viewer ins.diffins, .rich-diff-viewer ins.diffmod, .rich-diff-viewer del.diffdel, .rich-diff-viewer del.diffmod)) { animation-name: none !important; }
-    /* Paused for the duration of one alignSplitPanes() pass -- see that function's
-       try/finally wrapper, which toggles data-align-pending on <html> around it. Wins
-       by specificity over the plain rule above regardless of source order. */
-    html[data-align-pending] .rich-diff-viewer ins.diffins,
-    html[data-align-pending] .rich-diff-viewer ins.diffmod,
-    html[data-align-pending] .rich-diff-viewer del.diffdel,
-    html[data-align-pending] .rich-diff-viewer del.diffmod { animation: none; }
-    @media (prefers-reduced-motion: reduce) {
-      .rich-diff-viewer ins.diffins, .rich-diff-viewer ins.diffmod, .rich-diff-viewer del.diffdel, .rich-diff-viewer del.diffmod { animation: none; }
-    }
-
     /* github-markdown-css renders a nested ordered list as lower-roman, and the level below
        that as lower-alpha -- which is what GitHub itself does. It surprises anyone whose
        reference is their editor's preview: the source says "1." and "2." and the render says
@@ -2357,6 +2313,23 @@
   // container that produced that flow itself ([data-sync-flow-root]).
   // Spilling outside the container and eating into the next sibling would
   // misjudge the container's own height.
+  // An element laid out BY a side-by-side container is not something to align against.
+  // Its position is decided by the container -- a flex row, a grid, a table row -- not by
+  // the block flow, so "make this one taller so its counterpart lines up" has no meaning,
+  // and placeAlignSpacer's only way to honour the request there is to grow the item
+  // itself. For a table or grid cell that is fine; for a small decorated item it is
+  // destructive. Measured on a flex-wrap row of pill-shaped chips where the after side
+  // gained one chip: three 43px spacers were appended INSIDE <span class="fchip"> spans,
+  // which are display:flex/column, so a 39px pill rendered 171px tall and its row went
+  // from 103px to 235px. Skipping these here removes the demand from both directions, and
+  // the container's own ancestor -- the row, the cell, the block -- is still aligned, which
+  // is the level where alignment means something.
+  function isAlignItemOfRow(el){
+    var parent = el ? el.parentElement : null;
+    if (!parent) return false;
+    return isAlignSideBySide(parent, alignDisplayOf(parent));
+  }
+
   var pristineBlocks = null, pristineSeq = -1;
 
   function measureLevelBlocks(level){
@@ -2382,6 +2355,7 @@
       // still pad for a panel that IS open over there) but keep it out of the neighbour
       // chain, since it has no position to chain from.
       if (!el.getClientRects().length){ empties[flow].push(idx); continue; }
+      if (isAlignItemOfRow(el)){ empties[flow].push(idx); continue; }
       byFlow[flow].push({ index: idx, top: el.getBoundingClientRect().top });
     }
     var blocks = {};
@@ -2783,6 +2757,9 @@
       // sitting immediately before div.panel-n and div#aria-panel-1, both display:none.
       // An element with no box has nothing to align to, so leave it out entirely.
       if (!el.getClientRects().length) continue;
+      // Same reason as measureLevelBlocks: an item inside a flex row, a grid or a table
+      // row has no independently alignable position.
+      if (isAlignItemOfRow(el)) continue;
       out[el.getAttribute('data-sync-flow') + ':' + el.getAttribute('data-sync-index')]
         = el.getBoundingClientRect().top + (window.scrollY || 0);
     }
@@ -2822,8 +2799,10 @@
       var el = document.querySelector('[data-sync-flow="' + c.flow + '"][data-sync-index="' + c.index + '"]');
       if (!el || !el.parentNode) continue;
       // Same reason as collectTops: padding in front of something that isn't rendered
-      // pushes real content down for nothing.
+      // pushes real content down for nothing, and an item of a side-by-side container has
+      // no position of its own to correct.
       if (!el.getClientRects().length) continue;
+      if (isAlignItemOfRow(el)) continue;
       placeAlignSpacer(el.parentNode, el, c.delta, el);
     }
   }
@@ -2835,17 +2814,7 @@
     if (e.source !== window.parent) return;
     var data = e.data;
     if (!data || data.__htmlAlign !== true) return;
-    if (data.type === 'pausePulse'){
-      // See requestHtmlRealign / finalizeHtmlAlign in the parent for why: a
-      // continuously animating box-shadow/filter repaints every frame, and that
-      // repainting measurably changes how the alignment settle loop below
-      // converges. Stop animating for the duration of a pass so measurement
-      // can't depend on it. data-align-pending on <html> is what the injected
-      // CSS (buildDiffCss) keys off of.
-      document.documentElement.setAttribute('data-align-pending', '');
-    } else if (data.type === 'resumePulse'){
-      document.documentElement.removeAttribute('data-align-pending');
-    } else if (data.type === 'remeasure'){
+    if (data.type === 'remeasure'){
       // Flush out spacers from before only at the first stage of the cycle (the parent
       // sends starting from the deepest flow). Flushing on every stage as it progresses
       // would also wipe out spacers from deeper flows that have already been aligned.
@@ -2929,17 +2898,13 @@ del[data-diff="del"]{
 svg [data-diff-block="ins"]{ outline:2px solid rgb(26,159,71); outline-offset:1px; }
 svg [data-diff-block="del"]{ outline:2px solid rgb(229,50,45); outline-offset:1px; }
 svg [data-diff-attr]{ outline:2px solid rgba(26,159,71,.55); outline-offset:1px; }
-/* SVG shapes keep the filter-based pulse (see diffPulseSvg below) instead of the
-   box-shadow one used for everything else: box-shadow doesn't paint on SVG shapes at
-   all, but that's moot anyway since SVG children aren't part of normal block flow, so
-   filter's margin-collapsing side effect (the whole reason box-shadow is used
-   elsewhere) has nothing to bite here. Specificity (svg-qualified, 0,1,1) beats the
-   bare attribute selector below (0,1,0), so this wins for these three selectors
-   regardless of source order. */
-svg [data-diff-block="ins"], svg [data-diff-block="del"], svg [data-diff-attr]{
-  animation: diffPulseSvg 1.8s ease-in-out infinite;
-}
-@keyframes diffPulseSvg{ 0%,100%{ filter:none } 50%{ filter:brightness(1.32) } }
+html[data-diff-side="before"] svg [data-diff-attr]{ outline-color:rgba(229,50,45,.6); }
+/* Background has no effect inside SVG, so an added or removed shape is shown with an
+   outline instead. Overriding fill would break the shape's own color, so an outline does
+   the least damage; without this, adding or removing a shape changed nothing visible. */
+svg [data-diff-block="ins"]{ outline:2px solid rgb(26,159,71); outline-offset:1px; }
+svg [data-diff-block="del"]{ outline:2px solid rgb(229,50,45); outline-offset:1px; }
+svg [data-diff-attr]{ outline:2px solid rgba(26,159,71,.55); outline-offset:1px; }
 svg text[data-diff-block="ins"], svg text[data-diff-block="ins"] tspan, svg tspan[data-diff-block="ins"]{ fill:rgb(26,159,71) !important; }
 svg text[data-diff-block="del"], svg text[data-diff-block="del"] tspan, svg tspan[data-diff-block="del"]{ fill:rgb(229,50,45) !important; }
 /* No fill override for an attribute-only change: the outline above already marks it, and
@@ -2967,89 +2932,10 @@ a[data-diff-nolink]{ cursor: pointer; }
    paints over everything on purpose: a block that is entirely gone should be
    unmistakable, where an attribute change should be a hint. */
 [data-diff-attr]{ outline:2px solid rgba(26,159,71,.55); outline-offset:-2px; }
-/* A slow, continuous pulse on every diff mark. Pasted documents frequently
-   contain their own green/red (status badges, warning rows), and a static
-   highlight is easy to mistake for content that was already that color.
-   Nothing in the pasted document itself moves, so a pulse makes the tool's
-   own marks unmistakable.
-   This animates box-shadow, not filter, even though filter (see diffPulseSvg
-   above) would look identical and was tried first. filter has a documented
-   side effect that has nothing to do with its own element: it establishes a
-   new containing block for the animated element, which can disable margin
-   collapsing between that element's descendants and its own box for as long
-   as the animation runs. box-shadow never participates in layout at all, so
-   using it here rules that specific mechanism out categorically, and it also
-   has the advantage that, unlike filter:brightness(), it paints behind the
-   element's own text/content instead of brightening the text itself, so
-   legibility is unaffected. rgba(127,127,127,*) is a middle gray, chosen so
-   the veil visibly darkens a light pasted document AND visibly lightens a
-   dark one -- a plain white veil (only lightens) or black veil (only
-   darkens) would have been invisible on whichever background it doesn't push
-   away from.
-   That said, box-shadow alone is NOT sufficient to make the pulse
-   layout-neutral -- see the data-align-pending rule below, which is the part
-   that actually fixes the measured issue. */
-ins[data-diff="ins"], del[data-diff="del"], [data-diff-block], [data-diff-attr]{
-  animation: diffPulseBox 1.8s ease-in-out infinite;
-}
-@keyframes diffPulseBox{
-  0%,100%{ box-shadow:inset 0 0 0 100vmax rgba(127,127,127,0) }
-  50%{ box-shadow:inset 0 0 0 100vmax rgba(127,127,127,.35) }
-}
-/* Without this, a marked <ins> inside a marked <td> (or any other nested
-   marked pair) would run its own animation out of phase with its ancestor,
-   pulsing to a different peak at the same moment. Only the outermost marked
-   element should visibly pulse. !important is required here: a descendant
-   like del[data-diff="del"] matches the pulse rule above via a tag+attribute
-   selector (specificity 0,1,1), which otherwise beats this plain descendant
-   selector (0,1,0) regardless of source order -- measured on
-   diagram-cases case-14 (#cell-tokyo-az, data-diff-attr="class" containing
-   a nested <del data-diff="del">): without !important the nested <del> kept
-   animating on its own instead of going still. */
-/* Only a mark nested inside another mark goes still. This used to be a bare universal
-   selector, which
-   also stopped every animation the PASTED DOCUMENT was running anywhere below a marked
-   element -- its own spinners, transitions and keyframes -- for no reason connected to
-   the diff. */
-:where(:is(ins[data-diff="ins"], del[data-diff="del"], [data-diff-block], [data-diff-attr])
-        :is(ins[data-diff="ins"], del[data-diff="del"], [data-diff-block], [data-diff-attr])){ animation-name:none !important; }
-/* :where() so the whole thing carries zero specificity: .diff-flash below is also
-   !important and must still win on a nested element, and a two-part selector would
-   otherwise outrank its single class regardless of source order. */
-/* Neither diffPulseBox nor diffPulseSvg is layout-affecting by itself (box-shadow
-   never participates in layout; an SVG shape isn't part of normal block flow), but
-   simply having EITHER one actively running turns out to change how the split-pane
-   height-alignment protocol below (requestHtmlRealign / finalizeHtmlAlign) converges:
-   a continuously animating iframe repaints every frame, and that repainting is
-   measurably visible to the settle loop. Measured on
-   diff-testcases/edge-cases-{before,after}.html with the pulse left running
-   throughout every alignment pass: the split panes converged on a different, larger
-   padding (+42px document height, 115 of 410 elements shifted vertically), and this
-   was exactly and repeatably reproduced in both directions (pulse present vs
-   stripped from the CSS entirely) -- ruling out a pre-existing race as the
-   explanation, since a race would not reproduce the identical delta on every trial.
-   Reverse-engineering the settle loop's exact sensitivity isn't worth it when the
-   simpler fix is to make the pulse simply not exist while a measurement pass is in
-   flight: requestHtmlRealign posts 'pausePulse' to both iframes at the start of a
-   pass, and finalizeHtmlAlign posts 'resumePulse' once the pass has fully converged
-   (with a timeout-based safety net -- see pauseHtmlPulse/resumeHtmlPulse -- so a
-   dropped reply can never leave the pulse permanently stuck off). Each iframe just
-   toggles data-align-pending on its own <html> in response; this selector list wins
-   by specificity over the plain rules above regardless of source order. */
-html[data-align-pending] ins[data-diff="ins"],
-html[data-align-pending] del[data-diff="del"],
-html[data-align-pending] [data-diff-block],
-html[data-align-pending] [data-diff-attr]{ animation:none; }
-html[data-align-pending] svg [data-diff-block="ins"],
-html[data-align-pending] svg [data-diff-block="del"],
-html[data-align-pending] svg [data-diff-attr]{ animation:none; }
-@media (prefers-reduced-motion:reduce){
-  ins[data-diff="ins"], del[data-diff="del"], [data-diff-block], [data-diff-attr]{ animation:none; }
-  /* Needs its own line at matching specificity: the bare rule above (0,1,0) can't
-     override svg [data-diff-block="ins"] etc. (0,1,1) above, which would otherwise
-     keep running diffPulseSvg regardless of this media query. */
-  svg [data-diff-block="ins"], svg [data-diff-block="del"], svg [data-diff-attr]{ animation:none; }
-}
+/* On the before side the restored OLD value is what is on screen, so the ring takes the
+   deletion hue there and the addition hue on the after side -- the same reading as every
+   other mark in the tool. */
+html[data-diff-side="before"] [data-diff-attr]{ outline-color:rgba(229,50,45,.6); }
 #__diff_removed__{ margin-top:2rem; padding:1rem; }
 /* The marker for diff-only display. Blocks and attributes already have their own green/red
    border, so this is restricted to data-diff-row (elements with a character-level change
@@ -3060,15 +2946,8 @@ html[data-align-pending] svg [data-diff-attr]{ animation:none; }
 .diff-only p:not([data-diff-row]):not([data-diff-block]):not([data-diff-attr]),
 .diff-only pre:not([data-diff-row]):not([data-diff-block]):not([data-diff-attr]),
 .diff-only blockquote:not([data-diff-row]):not([data-diff-block]):not([data-diff-attr]){ display:none; }
-/* !important because the flash target can itself be a marked (or nested-in-marked)
-   element -- e.g. a deleted block with an id -- and it needs to win over both the
-   diffPulseBox/diffPulseSvg rules above and the !important nested-suppression rule
-   right above them, for as long as the flash is applied. diffFlash and the pulses no
-   longer share a CSS property (diffFlash animates filter; diffPulseBox animates
-   box-shadow), but they still contend for the same animation shorthand -- only one
-   named animation can be bound per element -- so this still needs to win that contest
-   outright rather than layer on top; the pulse's box-shadow just has nothing declared
-   to fall back to while it's overridden, so it disappears cleanly, not stuck mid-fade. */
+/* !important because the flash target can itself be a marked element -- a deleted block
+   with an id, say -- and the flash must win for as long as it is applied. */
 .diff-flash{ animation:diffFlash .8s ease-out !important; }
 @keyframes diffFlash{ 0%{filter:brightness(1)} 35%{filter:brightness(2.1)} 100%{filter:brightness(1)} }
 @media (prefers-reduced-motion:reduce){ .diff-flash{ animation:none !important; outline:2px solid #c39a5f } }
@@ -4068,34 +3947,6 @@ html[data-align-pending] svg [data-diff-attr]{ animation:none; }
         frame.contentWindow.postMessage(msg, '*');
       }
 
-      // Pause/resume the diff-mark pulse in both iframes around one alignment pass (see
-      // the data-align-pending CSS rule in buildDiffCss for why). htmlPulsePausedSeq
-      // tracks WHICH cycle asked for the pause, so a stale timer from an abandoned cycle
-      // can't wrongly resume a newer one that's still in flight, and vice versa.
-      let htmlPulsePausedSeq = 0;
-      let htmlPulseSafetyTimer = null;
-      function pauseHtmlPulse(seq) {
-        htmlPulsePausedSeq = seq;
-        postToHtmlFrame(htmlDiffFrameLeft, { type: 'pausePulse' });
-        postToHtmlFrame(htmlDiffFrameRight, { type: 'pausePulse' });
-        clearTimeout(htmlPulseSafetyTimer);
-        // Safety net: a lost reply (a frame that never finishes loading, a dropped
-        // message) must never leave the pulse paused forever -- that would be a worse,
-        // silent, permanent failure than the layout issue this is fixing. Force it back
-        // on if this specific cycle hasn't finished within a generous window.
-        htmlPulseSafetyTimer = setTimeout(() => {
-          if (htmlPulsePausedSeq === seq) resumeHtmlPulse();
-        }, 5000);
-      }
-      function resumeHtmlPulse() {
-        if (!htmlPulsePausedSeq) return;
-        htmlPulsePausedSeq = 0;
-        clearTimeout(htmlPulseSafetyTimer);
-        htmlPulseSafetyTimer = null;
-        postToHtmlFrame(htmlDiffFrameLeft, { type: 'resumePulse' });
-        postToHtmlFrame(htmlDiffFrameRight, { type: 'resumePulse' });
-      }
-
       // Tell both iframes to "clear any padding you have, remeasure, and report back," starting
       // a cycle that aligns from the deepest flow outward. Every scenario that "needs a
       // realign" -- width changed, theme changed, font size changed, an image finished lazy
@@ -4110,7 +3961,6 @@ html[data-align-pending] svg [data-diff-attr]{ animation:none; }
         htmlAlignTotals = null;
         htmlAlignPositions = null;
         htmlAlignRound = 0;
-        pauseHtmlPulse(htmlAlignSeq);
         postToHtmlFrame(htmlDiffFrameLeft, { type: 'remeasure', seq: htmlAlignSeq, level: htmlAlignLevel, first: true });
         postToHtmlFrame(htmlDiffFrameRight, { type: 'remeasure', seq: htmlAlignSeq, level: htmlAlignLevel, first: true });
       }
@@ -4172,9 +4022,6 @@ html[data-align-pending] svg [data-diff-attr]{ animation:none; }
         // No frame to actually message (srcdoc is being torn down right after this), but
         // clear the local bookkeeping so a leftover safety timer from an abandoned cycle
         // can't fire later and reference a pass that no longer means anything.
-        clearTimeout(htmlPulseSafetyTimer);
-        htmlPulseSafetyTimer = null;
-        htmlPulsePausedSeq = 0;
       }
 
       // Because of the sandbox, an incoming message's origin is always "null," so origin can't
@@ -4292,7 +4139,6 @@ html[data-align-pending] svg [data-diff-attr]{ animation:none; }
         htmlLastAlignWidth = htmlSplitContainer.clientWidth;
         // The pass has fully converged (this is the one function that reaches a final
         // height) -- safe to let the pulse resume in both iframes now.
-        resumeHtmlPulse();
       }
 
       // Each time it switches to side-by-side, the iframe reloads (renderHtmlView swaps out
@@ -4841,6 +4687,14 @@ html[data-align-pending] svg [data-diff-attr]{ animation:none; }
             if (oldId) el.setAttribute('id', oldId);
           });
         }
+        // Stamp which pane this is. The two panes are filtered out of one merged document
+        // and share one injected stylesheet, so without this a marker cannot know which
+        // side it is being painted on. An attribute change has no direction of its own --
+        // the element exists on both sides -- and painting it the addition green in BOTH
+        // panes read as "added" twice over. On the before side it is the OLD value being
+        // shown, so it belongs in the deletion hue. The single-column view gets no stamp
+        // and keeps the neutral green, which is right: there are no sides there.
+        doc.documentElement.setAttribute('data-diff-side', isBeforeSide ? 'before' : 'after');
         return '<!DOCTYPE html>\n' + doc.documentElement.outerHTML;
       }
 
@@ -4942,22 +4796,7 @@ html[data-align-pending] svg [data-diff-attr]{ animation:none; }
       // doesn't have it yet). When it is passed, we directly set the divider's own
       // height here to match the two aligned columns' height (see the CSS-side comment
       // for why align-items can't just be set to stretch).
-      // Wrapper: pause the diff-mark pulse for the duration of one alignment pass (see
-      // the matching html[data-align-pending] CSS rule and its comment, and the HTML
-      // View's pausePulse/resumePulse for the same idea applied across an iframe
-      // boundary). Unlike the HTML View, this all runs synchronously in the main
-      // document, so a plain try/finally is enough -- no postMessage round trip, and no
-      // risk of a dropped reply leaving the marker stuck (an exception thrown mid-pass
-      // still clears it via finally).
       function alignSplitPanes(leftPane, rightPane, divider) {
-        document.documentElement.setAttribute('data-align-pending', '');
-        try {
-          alignSplitPanesImpl(leftPane, rightPane, divider);
-        } finally {
-          document.documentElement.removeAttribute('data-align-pending');
-        }
-      }
-      function alignSplitPanesImpl(leftPane, rightPane, divider) {
         clearAlignSpacers(leftPane);
         clearAlignSpacers(rightPane);
 
