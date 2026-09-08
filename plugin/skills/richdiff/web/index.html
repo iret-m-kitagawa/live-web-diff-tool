@@ -2282,10 +2282,21 @@
   // single-column display (#htmlDiffFrame), but it does nothing unless the
   // parent sends instructions (it just listens, with no side effects).
   var ALIGN_ATTR = 'data-align-spacer';
+  // A row that was grown from the inside rather than followed by a spacer element -- see
+  // growRowBottom. The recorded value is how much padding-bottom we added, so it can be
+  // taken back off without disturbing whatever the document had there.
+  var ALIGN_PAD_ATTR = 'data-align-pad';
 
   function clearAlignSpacers(){
     var list = document.querySelectorAll('[' + ALIGN_ATTR + ']');
     for (var i = 0; i < list.length; i++){ list[i].parentNode.removeChild(list[i]); }
+    var padded = document.querySelectorAll('[' + ALIGN_PAD_ATTR + ']');
+    for (var j = 0; j < padded.length; j++){
+      var el = padded[j];
+      el.style.paddingBottom = el.getAttribute(ALIGN_PAD_ATTR + '-was') || '';
+      el.removeAttribute(ALIGN_PAD_ATTR);
+      el.removeAttribute(ALIGN_PAD_ATTR + '-was');
+    }
   }
 
   // The correspondence table is split by "flow" (data-sync-flow). A container
@@ -2631,9 +2642,43 @@
     return spacer;
   }
 
+  // When the block that has to grow is itself a container that lays its children out side
+  // by side -- a grid row, a horizontal flex row, a table row -- adding a sibling spacer
+  // after it opens a band that belongs to no row. Inside a bordered, rounded container
+  // whose rows each draw their own rules, that band has no borders of its own and the
+  // table reads as cut open. Measured on a div-based grid table (.fout / .fout-row) where
+  // the after side's middle row wraps to a second line: the two documents render that row
+  // 111px and 158px on their own, and the before pane kept its row at 111px with a
+  // borderless 48px gap wedged between it and the next row.
+  // Growing the row from the inside instead moves the row's own bottom rule down, which is
+  // exactly what the taller side looks like. The spacer goes into one of the row's cells --
+  // whichever last cell is an ordinary block, since appending into a flex or grid cell
+  // would make the spacer another item in THAT row. If the row has no such cell, fall back
+  // to the sibling gap, which is still better than nothing.
+  // Grow the row itself by its own padding-bottom, and record how much was added so
+  // clearAlignSpacers can take exactly that back off. Padding is part of the box, so the
+  // row's background and its neighbour's rule both move down with it -- which is precisely
+  // what the taller side looks like. Appending a spacer INTO one of the row's cells was
+  // tried first and does not work: a grid or flex row is as tall as its tallest item, and
+  // the cell picked was not that item, so the row's measured height did not budge (111px
+  // before and after, with the gap still opening outside it).
+  function growRowBottom(row, height){
+    if (row.getAttribute(ALIGN_PAD_ATTR + '-was') === null)
+      row.setAttribute(ALIGN_PAD_ATTR + '-was', row.style.paddingBottom || '');
+    var added = parseFloat(row.getAttribute(ALIGN_PAD_ATTR) || '0') + height;
+    row.setAttribute(ALIGN_PAD_ATTR, String(added));
+    var base = parseFloat(window.getComputedStyle(row).paddingBottom) || 0;
+    row.style.paddingBottom = (base - (added - height) + added) + 'px';
+    return row;
+  }
+  function isAlignRowContainer(el){
+    return !!el && el.nodeType === 1 && isAlignSideBySide(el, alignDisplayOf(el));
+  }
+
   function insertSpacerAfter(afterEl, height, boundary){
     if (afterEl && afterEl.parentNode){
       var target = boundary ? climbLastChildChain(afterEl, boundary) : afterEl;
+      if (isAlignRowContainer(target)) return growRowBottom(target, height);
       return placeAlignSpacer(target.parentNode, target.nextSibling, height, target);
     } else if (boundary){
       // The head of the flow. Insert right before the outermost element
@@ -2885,8 +2930,19 @@ ins[data-diff="ins"]{
 del[data-diff="del"]{
   background:${DEL} !important; color:${TEXT} !important; text-decoration:none; border-radius:2px;
 }
-[data-diff-block="ins"]{ background:${INS} !important; color:${TEXT} !important; }
-[data-diff-block="del"]{ background:${DEL} !important; color:${TEXT} !important; }
+/* A whole element added or removed. The line drawn here: <ins>/<del> above are wrappers
+   this tool created, so they own no styling and can be painted outright. Everything
+   carrying data-diff-block or data-diff-attr is the DOCUMENT's own element -- a card, a
+   chip, a row -- and it is only tinted. That is why the two used to disagree about text
+   colour: the block marks forced ${TEXT} onto the element, so a chip's own blue label went
+   white while an attribute-changed chip beside it kept its blue, for no reason a reader
+   could see. Nothing forces a colour now.
+   Translucent inset shadow rather than background, for the same reason as the attribute
+   mark below: it leaves background-color, background-image and the element's own text
+   colour alone, and paints under the text so legibility is unaffected. Stronger than the
+   attribute tint, because added or removed wholesale should read louder than edited. */
+[data-diff-block="ins"]{ box-shadow: inset 0 0 0 100vmax rgba(26,159,71,.42) !important; }
+[data-diff-block="del"]{ box-shadow: inset 0 0 0 100vmax rgba(229,50,45,.42) !important; }
 /* background has no effect inside SVG, so this is shown with an outline instead. Overriding
    fill would break a shape's own color, so an outline does the least damage there -- but
    <text> is the one case where fill *is* the text color, so a changed label still needs its
