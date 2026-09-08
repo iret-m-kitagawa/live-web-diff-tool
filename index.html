@@ -2913,29 +2913,26 @@ svg text[data-diff-block="del"], svg text[data-diff-block="del"] tspan, svg tspa
    a label that is entirely gone, or entirely new, should read as gone or new. */
 td[data-diff-pad], th[data-diff-pad]{ background:transparent; }
 a[data-diff-nolink]{ cursor: pointer; }
-/* An element where only an attribute or tag changed. The same green as additions, in the
-   sense that it has become a new state, but lighter to distinguish it from something added
-   wholesale.
-   Drawn as an OUTLINE, which is the only marker that paints nothing the document might
-   already be using. This started as a replaced background-color and each attempt to keep
-   the wash cost something the document owned:
-     - background-color, the original: it destroyed the very change being reported whenever
-       that change was itself a color. Measured on bootstrap-style (#sec-alerts, first
-       alert, class "alert alert-warning" -> "alert alert-danger"): the raw documents render
-       rgb(255,243,205) amber and rgb(248,215,218) red, and both panes came back
-       rgb(212,233,221) -- the marker's own green, identical on the two sides.
-     - background-image as a translucent layer: fixed background-color, but deletes the
-       element's own background-image, including when the reported change IS that image.
-   An outline touches background-color, background-image, box-shadow and color alike --
-   none of them. outline-offset is negative so it sits inside the border box and cannot
-   overlap a neighbour or add to the element's ink extent. Whole-block add/remove still
-   paints over everything on purpose: a block that is entirely gone should be
-   unmistakable, where an attribute change should be a hint. */
-[data-diff-attr]{ outline:2px solid rgba(26,159,71,.55); outline-offset:-2px; }
-/* On the before side the restored OLD value is what is on screen, so the ring takes the
-   deletion hue there and the addition hue on the after side -- the same reading as every
-   other mark in the tool. */
-html[data-diff-side="before"] [data-diff-attr]{ outline-color:rgba(229,50,45,.6); }
+/* An element where only an attribute or tag changed. Same vocabulary as every other mark
+   -- a fill, in the deletion hue on the before side and the addition hue on the after one
+   -- because a second visual language was the problem: a bare ring around an element whose
+   text is identical on both sides reads as "why is this circled?" rather than "this
+   changed". One kind of mark, learnable once.
+   Painted as a translucent INSET SHADOW rather than by setting background. Each of the
+   three ways to fill a box costs something the document may own, and this is the cheapest:
+     - background-color would erase the element's own colour, and the reported change is
+       very often that colour. Measured on bootstrap-style (#sec-alerts, first alert,
+       class "alert alert-warning" -> "alert alert-danger"): the documents render
+       rgb(255,243,205) amber and rgb(248,215,218) red on their own, and painting the
+       background gave both panes the marker's own colour instead.
+     - a background-image layer fixed that and deleted the element's own background-image.
+     - an inset shadow touches neither, and paints under the element's own text so
+       legibility is unaffected. It does replace the element's own box-shadow, which is the
+       one thing given up here.
+   Lighter than the add/remove fills on purpose: this element was edited, not added or
+   removed wholesale, and the document's own colour has to stay readable underneath. */
+[data-diff-attr]{ box-shadow: inset 0 0 0 100vmax rgba(26,159,71,.26) !important; }
+html[data-diff-side="before"] [data-diff-attr]{ box-shadow: inset 0 0 0 100vmax rgba(229,50,45,.26) !important; }
 #__diff_removed__{ margin-top:2rem; padding:1rem; }
 /* The marker for diff-only display. Blocks and attributes already have their own green/red
    border, so this is restricted to data-diff-row (elements with a character-level change
