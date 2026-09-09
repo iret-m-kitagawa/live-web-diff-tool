@@ -2282,21 +2282,10 @@
   // single-column display (#htmlDiffFrame), but it does nothing unless the
   // parent sends instructions (it just listens, with no side effects).
   var ALIGN_ATTR = 'data-align-spacer';
-  // A row that was grown from the inside rather than followed by a spacer element -- see
-  // growRowBottom. The recorded value is how much padding-bottom we added, so it can be
-  // taken back off without disturbing whatever the document had there.
-  var ALIGN_PAD_ATTR = 'data-align-pad';
 
   function clearAlignSpacers(){
     var list = document.querySelectorAll('[' + ALIGN_ATTR + ']');
     for (var i = 0; i < list.length; i++){ list[i].parentNode.removeChild(list[i]); }
-    var padded = document.querySelectorAll('[' + ALIGN_PAD_ATTR + ']');
-    for (var j = 0; j < padded.length; j++){
-      var el = padded[j];
-      el.style.paddingBottom = el.getAttribute(ALIGN_PAD_ATTR + '-was') || '';
-      el.removeAttribute(ALIGN_PAD_ATTR);
-      el.removeAttribute(ALIGN_PAD_ATTR + '-was');
-    }
   }
 
   // The correspondence table is split by "flow" (data-sync-flow). A container
@@ -2336,9 +2325,23 @@
   // the container's own ancestor -- the row, the cell, the block -- is still aligned, which
   // is the level where alignment means something.
   function isAlignItemOfRow(el){
-    var parent = el ? el.parentElement : null;
-    if (!parent) return false;
-    return isAlignSideBySide(parent, alignDisplayOf(parent));
+    if (!el) return false;
+    var parent = el.parentElement;
+    if (parent && isAlignSideBySide(parent, alignDisplayOf(parent))) return true;
+    // And the row ITSELF, when it is a grid or flex row rather than a real table row.
+    // Honouring "make this row taller" there means padding inside it, and inside a
+    // bordered container whose rows each draw their own rules that reads as a blank patch
+    // carved out of the table -- whether the padding lands between the rows or inside one.
+    // A real <table> is the exception: an empty <tr> can be inserted there (see
+    // makeAlignRowSpacer), which reads as "a row is missing here" rather than as damage.
+    // Measured on a div-based grid table where the after side's middle row wraps to a
+    // second line: the two documents render that row 111px and 158px on their own, and
+    // every attempt to make the before side match it left a blank the reader had to
+    // explain to themselves. The table as a whole is still aligned -- it is a block in its
+    // parent's flow -- so what follows it still lines up; only the rows inside are left at
+    // whatever height their own content gives them.
+    var display = alignDisplayOf(el);
+    return isAlignSideBySide(el, display) && display !== 'table-row';
   }
 
   var pristineBlocks = null, pristineSeq = -1;
@@ -2655,30 +2658,9 @@
   // whichever last cell is an ordinary block, since appending into a flex or grid cell
   // would make the spacer another item in THAT row. If the row has no such cell, fall back
   // to the sibling gap, which is still better than nothing.
-  // Grow the row itself by its own padding-bottom, and record how much was added so
-  // clearAlignSpacers can take exactly that back off. Padding is part of the box, so the
-  // row's background and its neighbour's rule both move down with it -- which is precisely
-  // what the taller side looks like. Appending a spacer INTO one of the row's cells was
-  // tried first and does not work: a grid or flex row is as tall as its tallest item, and
-  // the cell picked was not that item, so the row's measured height did not budge (111px
-  // before and after, with the gap still opening outside it).
-  function growRowBottom(row, height){
-    if (row.getAttribute(ALIGN_PAD_ATTR + '-was') === null)
-      row.setAttribute(ALIGN_PAD_ATTR + '-was', row.style.paddingBottom || '');
-    var added = parseFloat(row.getAttribute(ALIGN_PAD_ATTR) || '0') + height;
-    row.setAttribute(ALIGN_PAD_ATTR, String(added));
-    var base = parseFloat(window.getComputedStyle(row).paddingBottom) || 0;
-    row.style.paddingBottom = (base - (added - height) + added) + 'px';
-    return row;
-  }
-  function isAlignRowContainer(el){
-    return !!el && el.nodeType === 1 && isAlignSideBySide(el, alignDisplayOf(el));
-  }
-
   function insertSpacerAfter(afterEl, height, boundary){
     if (afterEl && afterEl.parentNode){
       var target = boundary ? climbLastChildChain(afterEl, boundary) : afterEl;
-      if (isAlignRowContainer(target)) return growRowBottom(target, height);
       return placeAlignSpacer(target.parentNode, target.nextSibling, height, target);
     } else if (boundary){
       // The head of the flow. Insert right before the outermost element
