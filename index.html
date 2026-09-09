@@ -2395,6 +2395,23 @@
     return blocks;
   }
 
+  // A container that draws its own frame -- a border on any side, or a clipped overflow.
+  // Worth recognising because a spacer belongs INSIDE one of these: lifted out past it,
+  // the frame closes wherever the shorter side's content happens to end and the missing
+  // content becomes blank space below the box, so the box reads as cut off partway.
+  // Counting rows was tried first and is not enough: a table showing a single row on the
+  // shorter side is still a table, and the count said otherwise.
+  function isFramedContainer(el){
+    if (!el || el.nodeType !== 1) return false;
+    try {
+      var cs = window.getComputedStyle(el);
+      if ((parseFloat(cs.borderTopWidth) || 0) > 0 || (parseFloat(cs.borderBottomWidth) || 0) > 0
+        || (parseFloat(cs.borderLeftWidth) || 0) > 0 || (parseFloat(cs.borderRightWidth) || 0) > 0) return true;
+      if (cs.overflowY && cs.overflowY !== 'visible') return true;
+    } catch (e) {}
+    return false;
+  }
+
   // While afterEl is "the last child of its parent," walk up the ancestors and
   // return the outermost one in that chain. Naively inserting a spacer right
   // after afterEl breaks the margin collapse-through that afterEl's (or an
@@ -2405,10 +2422,18 @@
   // an ul/li's bottom margin was passing through to the section's bottom
   // margin, inserting a spacer inside it opened up about 10px more than
   // intended). Never go outside boundary (this flow's container).
+  // Never climb out of a container that draws its own frame, though. Lifting the spacer
+  // past it closes the frame wherever the shorter side's content ends, and the content the
+  // other side has becomes blank space below the box -- it reads as cut off partway.
+  // Measured on a two-row table whose second row exists only on the after side: the before
+  // pane's table ended at y=103 against y=166 on the other pane, with 63px sitting outside
+  // it. Whatever margin collapse-through is lost by staying inside is worth less than the
+  // frame closing in the wrong place.
   function climbLastChildChain(el, boundary){
     var cur = el;
     while (cur !== boundary && cur.parentNode && cur.parentNode !== boundary
-      && cur.parentNode.lastElementChild === cur){
+      && cur.parentNode.lastElementChild === cur
+      && !isFramedContainer(cur.parentNode)){
       cur = cur.parentNode;
     }
     return cur;
@@ -2639,6 +2664,34 @@
       return tbody;
     }
     spacer = makeGapAwareSpacer(parent, height);
+    // Borrow the rule the neighbouring row draws above itself, so a gap standing in for a
+    // missing row reads as an empty row rather than as an unexplained band. This is the
+    // div-based counterpart of makeAlignRowSpacer's empty <tr>; where the neighbour has no
+    // rule, nothing is borrowed and the spacer stays invisible as before.
+    {
+      // Prefer a sibling that actually draws a top rule: the first row of a table often
+      // has border-top:none, and copying that would borrow nothing.
+      var model = null;
+      for (var sib = parent.firstElementChild; sib; sib = sib.nextElementSibling){
+        if (sib === spacer || sib.hasAttribute(ALIGN_ATTR)) continue;
+        try { if ((parseFloat(window.getComputedStyle(sib).borderTopWidth) || 0) > 0){ model = sib; break; } }
+        catch (e) {}
+      }
+      if (model && model !== spacer){
+        try {
+          var cs = window.getComputedStyle(model);
+          var bw = parseFloat(cs.borderTopWidth) || 0;
+          if (bw > 0){
+            spacer.style.borderTop = cs.borderTopWidth + ' ' + cs.borderTopStyle + ' ' + cs.borderTopColor;
+            // Take the rule's own thickness back out of the height, or the stand-in row
+            // ends up a pixel taller than the row it stands in for and the two panes end
+            // up off by that much (measured 149 against 148).
+            var h = parseFloat(spacer.style.height) || 0;
+            spacer.style.height = Math.max(0, h - bw) + 'px';
+          }
+        } catch (e) {}
+      }
+    }
     parent.insertBefore(spacer, beforeNode);
     return spacer;
   }
@@ -2684,10 +2737,10 @@
     return isAlignSideBySide(el, display) && display !== 'table-row';
   }
 
-  function insertSpacerAfter(afterEl, height, boundary){
+  function insertSpacerAfter(afterEl, height, boundary, growRow){
     if (afterEl && afterEl.parentNode){
       var target = boundary ? climbLastChildChain(afterEl, boundary) : afterEl;
-      if (isGrowableRow(target)) return growRowBottom(target, height);
+      if (growRow && isGrowableRow(target)) return growRowBottom(target, height);
       return placeAlignSpacer(target.parentNode, target.nextSibling, height, target);
     } else if (boundary){
       // The head of the flow. Insert right before the outermost element
@@ -2755,12 +2808,18 @@
         if (el){
           if (otherH !== undefined){
             var diff = otherH - mine[idx];
-            if (diff > 1) insertSpacerAfter(el, diff, boundary);
+            // This block exists on both sides and is simply shorter here -- grow it.
+            if (diff > 1) insertSpacerAfter(el, diff, boundary, true);
           }
           cursor = el;
         } else if (otherH !== undefined){
-          // Doesn't exist on my side (a block that exists only on the counterpart's): insert a spacer of the counterpart's height at the same position
-          cursor = insertSpacerAfter(cursor, otherH, boundary);
+          // Doesn't exist on my side (a block that exists only on the counterpart's):
+          // insert a spacer of the counterpart's height at the same position. Deliberately
+          // NOT grown into the preceding row: this stands in for a whole missing block, so
+          // it has to be its own element sitting where that block would have been. Growing
+          // the row before it instead made a single row 112px tall where the other pane had
+          // two rows of 63 and 48 -- "row one is enormous" rather than "a row is missing".
+          cursor = insertSpacerAfter(cursor, otherH, boundary, false);
         }
         // When it exists on neither side (a block made up of only ins/del
         // that vanished from both), there's nothing to fill, so do nothing.
