@@ -2328,20 +2328,28 @@
     if (!el) return false;
     var parent = el.parentElement;
     if (parent && isAlignSideBySide(parent, alignDisplayOf(parent))) return true;
-    // And the row ITSELF, when it is a grid or flex row rather than a real table row.
-    // Honouring "make this row taller" there means padding inside it, and inside a
-    // bordered container whose rows each draw their own rules that reads as a blank patch
-    // carved out of the table -- whether the padding lands between the rows or inside one.
-    // A real <table> is the exception: an empty <tr> can be inserted there (see
+    // And the element ITSELF, but only when it is one ROW of a stack of them -- a grid or
+    // flex row with siblings laid out the same way, i.e. a hand-built table. Honouring
+    // "make this row taller" there means padding inside a bordered container whose rows
+    // each draw their own rules, and the blank reads as the table being carved into,
+    // whether it lands between the rows or inside one. Section-level alignment is enough;
+    // a table not matching its counterpart row for row is fine.
+    // Deliberately NOT every grid or flex container: a lone grid is usually a major block
+    // of the document -- a swimlane diagram, a card deck -- and skipping those left their
+    // height difference uncompensated anywhere, so both panes drifted apart down the whole
+    // page. Only a row among rows is skipped; a container standing on its own is still a
+    // block in its parent's flow and is still aligned there.
+    // A real <table> is exempt as well: an empty <tr> can be inserted into it (see
     // makeAlignRowSpacer), which reads as "a row is missing here" rather than as damage.
-    // Measured on a div-based grid table where the after side's middle row wraps to a
-    // second line: the two documents render that row 111px and 158px on their own, and
-    // every attempt to make the before side match it left a blank the reader had to
-    // explain to themselves. The table as a whole is still aligned -- it is a block in its
-    // parent's flow -- so what follows it still lines up; only the rows inside are left at
-    // whatever height their own content gives them.
     var display = alignDisplayOf(el);
-    return isAlignSideBySide(el, display) && display !== 'table-row';
+    if (!isAlignSideBySide(el, display) || display === 'table-row') return false;
+    var same = 0;
+    for (var sib = el.parentElement ? el.parentElement.firstElementChild : null; sib; sib = sib.nextElementSibling){
+      if (sib === el || sib.hasAttribute(ALIGN_ATTR)) continue;
+      if (alignDisplayOf(sib) === display) same++;
+      if (same) break;
+    }
+    return same > 0;
   }
 
   var pristineBlocks = null, pristineSeq = -1;
