@@ -2282,10 +2282,21 @@
   // single-column display (#htmlDiffFrame), but it does nothing unless the
   // parent sends instructions (it just listens, with no side effects).
   var ALIGN_ATTR = 'data-align-spacer';
+  // How much padding-bottom we added to a row to make it taller -- see growRowBottom.
+  // Recorded so clearAlignSpacers can take exactly that back off and leave whatever the
+  // document had there.
+  var ALIGN_PAD_ATTR = 'data-align-pad';
 
   function clearAlignSpacers(){
     var list = document.querySelectorAll('[' + ALIGN_ATTR + ']');
     for (var i = 0; i < list.length; i++){ list[i].parentNode.removeChild(list[i]); }
+    var padded = document.querySelectorAll('[' + ALIGN_PAD_ATTR + ']');
+    for (var j = 0; j < padded.length; j++){
+      var el = padded[j];
+      el.style.paddingBottom = el.getAttribute(ALIGN_PAD_ATTR + '-was') || '';
+      el.removeAttribute(ALIGN_PAD_ATTR);
+      el.removeAttribute(ALIGN_PAD_ATTR + '-was');
+    }
   }
 
   // The correspondence table is split by "flow" (data-sync-flow). A container
@@ -2328,28 +2339,7 @@
     if (!el) return false;
     var parent = el.parentElement;
     if (parent && isAlignSideBySide(parent, alignDisplayOf(parent))) return true;
-    // And the element ITSELF, but only when it is one ROW of a stack of them -- a grid or
-    // flex row with siblings laid out the same way, i.e. a hand-built table. Honouring
-    // "make this row taller" there means padding inside a bordered container whose rows
-    // each draw their own rules, and the blank reads as the table being carved into,
-    // whether it lands between the rows or inside one. Section-level alignment is enough;
-    // a table not matching its counterpart row for row is fine.
-    // Deliberately NOT every grid or flex container: a lone grid is usually a major block
-    // of the document -- a swimlane diagram, a card deck -- and skipping those left their
-    // height difference uncompensated anywhere, so both panes drifted apart down the whole
-    // page. Only a row among rows is skipped; a container standing on its own is still a
-    // block in its parent's flow and is still aligned there.
-    // A real <table> is exempt as well: an empty <tr> can be inserted into it (see
-    // makeAlignRowSpacer), which reads as "a row is missing here" rather than as damage.
-    var display = alignDisplayOf(el);
-    if (!isAlignSideBySide(el, display) || display === 'table-row') return false;
-    var same = 0;
-    for (var sib = el.parentElement ? el.parentElement.firstElementChild : null; sib; sib = sib.nextElementSibling){
-      if (sib === el || sib.hasAttribute(ALIGN_ATTR)) continue;
-      if (alignDisplayOf(sib) === display) same++;
-      if (same) break;
-    }
-    return same > 0;
+    return false;
   }
 
   var pristineBlocks = null, pristineSeq = -1;
@@ -2377,7 +2367,7 @@
       // still pad for a panel that IS open over there) but keep it out of the neighbour
       // chain, since it has no position to chain from.
       if (!el.getClientRects().length){ empties[flow].push(idx); continue; }
-      if (isAlignItemOfRow(el)){ empties[flow].push(idx); continue; }
+      if (isAlignItemOfRow(el)) continue;
       byFlow[flow].push({ index: idx, top: el.getBoundingClientRect().top });
     }
     var blocks = {};
@@ -2666,9 +2656,38 @@
   // whichever last cell is an ordinary block, since appending into a flex or grid cell
   // would make the spacer another item in THAT row. If the row has no such cell, fall back
   // to the sibling gap, which is still better than nothing.
+  // When the block that has to grow is a row of a hand-built table -- a grid or flex row --
+  // a sibling spacer after it opens a band that belongs to no row, and inside a bordered
+  // container whose rows each draw their own rules that band has no borders and the table
+  // reads as cut open. Grow the row by its own padding-bottom instead: padding is part of
+  // the box, so the row's background and its neighbour's rule move down together, which is
+  // what the taller side actually looks like.
+  // Not skipping these rows altogether, which was tried and is worse: a plain container
+  // like <section class="group"> is flattened into its parent's flow, so the ROWS are the
+  // blocks -- drop them and the section's height difference has nothing to attach to. It
+  // landed on the preceding block instead, and a 5-row group whose after side wraps to two
+  // lines per row got a single 53px spacer before its first row, pushing every row down.
+  // A real <table> row is exempt: an empty <tr> can be inserted there instead (see
+  // makeAlignRowSpacer), which reads as "a row is missing here" rather than as damage.
+  function growRowBottom(row, height){
+    if (row.getAttribute(ALIGN_PAD_ATTR + '-was') === null)
+      row.setAttribute(ALIGN_PAD_ATTR + '-was', row.style.paddingBottom || '');
+    var already = parseFloat(row.getAttribute(ALIGN_PAD_ATTR) || '0');
+    var base = (parseFloat(window.getComputedStyle(row).paddingBottom) || 0) - already;
+    row.setAttribute(ALIGN_PAD_ATTR, String(already + height));
+    row.style.paddingBottom = (base + already + height) + 'px';
+    return row;
+  }
+  function isGrowableRow(el){
+    if (!el || el.nodeType !== 1) return false;
+    var display = alignDisplayOf(el);
+    return isAlignSideBySide(el, display) && display !== 'table-row';
+  }
+
   function insertSpacerAfter(afterEl, height, boundary){
     if (afterEl && afterEl.parentNode){
       var target = boundary ? climbLastChildChain(afterEl, boundary) : afterEl;
+      if (isGrowableRow(target)) return growRowBottom(target, height);
       return placeAlignSpacer(target.parentNode, target.nextSibling, height, target);
     } else if (boundary){
       // The head of the flow. Insert right before the outermost element
