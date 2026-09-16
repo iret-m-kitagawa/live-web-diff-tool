@@ -867,6 +867,7 @@
       'block','flow-root','flex','grid','list-item','table','table-row','table-cell',
       'table-header-group','table-row-group','table-footer-group','table-caption','none'
     ]);
+
     let boundaryEls = null;    // Set<Element> -- elements judged to be boundaries
     let classifiedDocs = null; // Set<Document> -- documents already classified
 
@@ -1736,7 +1737,20 @@
           const mate = pairedDel.get(key(gi, a));
           if (mate){ cursor = mate; continue; }
           let at = null;
-          if (cursor && cursor.parentNode === newParent) at = cursor.nextSibling;
+          // The deletion run and the addition run stand at the same place in the sequence, so
+          // the a-th deletion belongs where the a-th addition is. Take that first, ahead of
+          // the adjacency clue below: when nothing in the run paired up, the clue is the
+          // deletion inserted just before, and chaining off it packs the whole run together at
+          // the head. Measured on a chip whose two <span class="num"> both changed, inside an
+          // inline-flex parent (so the spans count as blocks and go through this path, while
+          // the text between them does not): the before pane rendered "カスタマー 13 32 件 /
+          // アナリスト 件" -- both numbers piled up at the first slot and the second slot left
+          // bare -- against "カスタマー 13 件 / アナリスト 32 件" in the before document.
+          for (let k = a; k < g.ins.length; k++){
+            if (g.ins[k] && g.ins[k].parentNode === newParent){ at = g.ins[k]; break; }
+          }
+          if (at){ /* positioned */ }
+          else if (cursor && cursor.parentNode === newParent) at = cursor.nextSibling;
           else {
             for (let k = a + 1; k < g.del.length; k++){
               const nxt = pairedDel.get(key(gi, k));
