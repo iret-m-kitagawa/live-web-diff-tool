@@ -2368,7 +2368,7 @@
       // chain, since it has no position to chain from.
       if (!el.getClientRects().length){ empties[flow].push(idx); continue; }
       if (isAlignItemOfRow(el)) continue;
-      byFlow[flow].push({ index: idx, top: el.getBoundingClientRect().top });
+      byFlow[flow].push({ index: idx, top: el.getBoundingClientRect().top, el: el });
     }
     var blocks = {};
     for (var flow in empties){ if (!byFlow[flow]) byFlow[flow] = []; }
@@ -2383,9 +2383,22 @@
         boundary = root ? root.getBoundingClientRect().bottom
                         : (items.length ? items[items.length - 1].top : 0);
       }
+      var boundaryEl = flowContainer(flow) || document.body;
       var flowBlocks = {};
       for (var j = 0; j < items.length; j++){
         var next = (j + 1 < items.length) ? items[j + 1].top : boundary;
+        // The last block inside a box stops at the bottom of that box. Measuring it across
+        // to whatever starts the next box charges it for the box's own bottom padding and
+        // the gap between boxes, and that bill differs between the panes whenever one side
+        // has an extra row: on the portal fixture the before pane's last row of a card ran
+        // all the way to the next card's header, the after pane's ran only as far as the row
+        // it gained, and the after pane was padded by the difference -- 65px of blank opened
+        // up inside a row whose text is identical on both sides.
+        var frame = nearestAlignFrame(items[j].el, boundaryEl);
+        if (frame && (j + 1 >= items.length || !frame.contains(items[j + 1].el))){
+          var fb = alignFrameContentBottom(frame);
+          if (fb < next) next = fb;
+        }
         flowBlocks[items[j].index] = Math.max(0, next - items[j].top);
       }
       var none = empties[flow] || [];
@@ -2410,6 +2423,64 @@
       if (cs.overflowY && cs.overflowY !== 'visible') return true;
     } catch (e) {}
     return false;
+  }
+
+  // The nearest ancestor that draws its own frame, searched no further out than boundary.
+  // Used to answer "which box does this block live in," which is what tells a gap standing
+  // in for a missing block whether it belongs inside that box or between boxes.
+  function nearestAlignFrame(el, boundary){
+    var cur = el;
+    while (cur && cur !== boundary && cur.parentNode && cur.parentNode !== boundary){
+      if (isFramedContainer(cur.parentNode)) return cur.parentNode;
+      cur = cur.parentNode;
+    }
+    return null;
+  }
+  // The bottom of a framed container's content -- its own bottom border and padding belong
+  // to the box, not to the last block inside it.
+  function alignFrameContentBottom(el){
+    var r = el.getBoundingClientRect();
+    try {
+      var cs = window.getComputedStyle(el);
+      return r.bottom - (parseFloat(cs.borderBottomWidth) || 0) - (parseFloat(cs.paddingBottom) || 0);
+    } catch (e) { return r.bottom; }
+  }
+
+  // Which blocks of this level open a box of their own, i.e. sit in a different framed
+  // container than the block before them. Sent to the opposite pane alongside the heights.
+  //
+  // Cards like <section class="group"> are not blocks in their own right: they are vertical
+  // containers, so collectHtmlSyncUnits descends straight through them and numbers their
+  // children into the surrounding flow. That makes "the after side grew one more row in this
+  // card" and "the after side grew a whole new card" look identical from here -- both are
+  // just indices this side does not have, sitting after the same preceding block. Measured on
+  // the portal fixture: a new card (VIEW 画面共通) was stood in for inside the previous card,
+  // which rendered 241px against 100px on the other pane and read as "the ログ参照 card has an
+  // enormous empty body". The flag below is the missing piece of information, and only the
+  // side that actually has the block can supply it.
+  function measureLevelFrames(level){
+    var nodes = document.querySelectorAll('[data-sync-depth="' + level + '"]');
+    var byFlow = {};
+    for (var i = 0; i < nodes.length; i++){
+      var el = nodes[i];
+      var flow = el.getAttribute('data-sync-flow');
+      if (!byFlow[flow]) byFlow[flow] = [];
+      byFlow[flow].push({ index: Number(el.getAttribute('data-sync-index')), el: el });
+    }
+    var out = {};
+    for (var flow in byFlow){
+      var items = byFlow[flow];
+      items.sort(function(a, b){ return a.index - b.index; });
+      var boundary = flowContainer(flow) || document.body;
+      var flags = {}, prev;
+      for (var j = 0; j < items.length; j++){
+        var frame = nearestAlignFrame(items[j].el, boundary);
+        flags[items[j].index] = (j > 0 && frame !== prev) ? 1 : 0;
+        prev = frame;
+      }
+      out[flow] = flags;
+    }
+    return out;
   }
 
   // While afterEl is "the last child of its parent," walk up the ancestors and
@@ -2625,7 +2696,7 @@
   // path that reconciles the actual rendered result and pushes in the
   // difference), we've confirmed by measurement that border-spacing's one
   // extra unit shows up directly as drift (see alignRowSpacingOf).
-  function placeAlignSpacer(parent, beforeNode, height, cellCandidate){
+  function placeAlignSpacer(parent, beforeNode, height, cellCandidate, noRule){
     var display = alignDisplayOf(parent);
     var spacer;
     if (isAlignSideBySide(parent, display)){
@@ -2668,7 +2739,40 @@
     // missing row reads as an empty row rather than as an unexplained band. This is the
     // div-based counterpart of makeAlignRowSpacer's empty <tr>; where the neighbour has no
     // rule, nothing is borrowed and the spacer stays invisible as before.
-    {
+    // Standing in for a whole box the other side has: the gap sits BETWEEN boxes, where a
+    // borrowed rule would draw a line across open space with nothing on the other pane to
+    // answer it. Only a gap standing in for a row inside a box wants the rule.
+    //
+    // A spacer landing right after another spacer is continuing a gap that is already open,
+    // so it takes that gap's answer rather than asking again: after a bare one (the between-
+    // the-boxes case) it stays bare, after a ruled one (a second missing row in the same
+    // table) it draws its own rule too. Without this, the 42px stand-in hoisted out from
+    // between two cards was followed by two more of 69px and 30px that each borrowed a rule
+    // from the nearest section, and two lines were drawn across the empty space where the
+    // other pane simply has a card.
+    // A gap of a pixel or two is a leftover from reconciliation, not a row: a rule on it is
+    // all you would see, so it never gets one.
+    if (noRule !== true){
+      if (height < 4) noRule = true;
+      else {
+        // Whatever will end up immediately above the spacer once it is in place -- which is
+        // the block we are being put after, or, when we are being put before something (the
+        // reconciliation path), whatever that something already follows.
+        var above = null, walk = beforeNode;
+        if (walk){
+          for (walk = walk.previousSibling; walk; walk = walk.previousSibling){
+            if (walk.nodeType === 1){ above = walk; break; }
+          }
+        } else {
+          above = parent.lastElementChild;
+        }
+        if (above && above.hasAttribute && above.hasAttribute(ALIGN_ATTR)){
+          try { noRule = (parseFloat(window.getComputedStyle(above).borderTopWidth) || 0) === 0; }
+          catch (e) {}
+        }
+      }
+    }
+    if (!noRule) {
       // Prefer a sibling that actually draws a top rule: the first row of a table often
       // has border-top:none, and copying that would borrow nothing.
       var model = null;
@@ -2676,6 +2780,21 @@
         if (sib === spacer || sib.hasAttribute(ALIGN_ATTR)) continue;
         try { if ((parseFloat(window.getComputedStyle(sib).borderTopWidth) || 0) > 0){ model = sib; break; } }
         catch (e) {}
+      }
+      // Nothing in this box draws a rule: a card holding a single row hits this, because the
+      // one row it has is also its first, and a first row normally has its rule suppressed
+      // (the header above it draws the boundary). The row the other pane gained is not a
+      // first row, so over there it DOES carry a rule, and leaving ours bare turns the gap
+      // into an unexplained empty band under the last row. Borrow from a row of the same
+      // kind elsewhere on the page instead -- same tag, same classes, so it is the same row
+      // style, just one that happens not to be sitting first.
+      if (!model && cellCandidate && cellCandidate.nodeType === 1 && cellCandidate.className){
+        var kin = document.getElementsByTagName(cellCandidate.tagName);
+        for (var m = 0; m < kin.length; m++){
+          if (kin[m] === cellCandidate || String(kin[m].className) !== String(cellCandidate.className)) continue;
+          try { if ((parseFloat(window.getComputedStyle(kin[m]).borderTopWidth) || 0) > 0){ model = kin[m]; break; } }
+          catch (e) {}
+        }
       }
       if (model && model !== spacer){
         try {
@@ -2737,10 +2856,28 @@
     return isAlignSideBySide(el, display) && display !== 'table-row';
   }
 
-  function insertSpacerAfter(afterEl, height, boundary, growRow){
+  function insertSpacerAfter(afterEl, height, boundary, growRow, escapeFrame){
     if (afterEl && afterEl.parentNode){
       var target = boundary ? climbLastChildChain(afterEl, boundary) : afterEl;
       if (growRow && isGrowableRow(target)) return growRowBottom(target, height);
+      // The block being stood in for opens a box of its own over there, so the gap belongs
+      // between the boxes, not inside the one the previous block happens to end in.
+      // climbLastChildChain deliberately refuses to climb out of a frame -- that is what
+      // keeps a missing ROW standing inside its table instead of hanging below it -- so the
+      // escape has to be made here, where we know the gap is not a row of this box at all.
+      // Escape the box the previous block sits in -- the innermost one, which is the box the
+      // counterpart says the missing block is NOT in. Climbing to the outermost instead lifts
+      // the gap clean out of the page's own wrapper: measured on edge-cases, a 31px stand-in
+      // was hoisted out of div.sheet and appended to body below the whole sheet, and the two
+      // panes ended 101px apart (6657 against 6758) where they had agreed before.
+      // Nothing following the box means there is no "between the boxes" to aim at either --
+      // the gap would hang off the end of the last box on the page -- so leave it inside.
+      if (escapeFrame && boundary){
+        var frame = nearestAlignFrame(target, boundary);
+        if (frame && frame.parentNode && frame.nextElementSibling){
+          return placeAlignSpacer(frame.parentNode, frame.nextSibling, height, frame, true);
+        }
+      }
       return placeAlignSpacer(target.parentNode, target.nextSibling, height, target);
     } else if (boundary){
       // The head of the flow. Insert right before the outermost element
@@ -2781,7 +2918,7 @@
   // Processed independently per flow -- mixing correspondence tables from
   // different flows together would collide indices (each flow renumbers from
   // 0).
-  function applyLevelAlign(level, counterpartByFlow){
+  function applyLevelAlign(level, counterpartByFlow, counterpartFramesByFlow){
     var mineByFlow = measureLevelBlocks(level);
     var flows = {}, f;
     for (f in mineByFlow) flows[f] = true;
@@ -2797,6 +2934,7 @@
 
       var mine = mineByFlow[flow] || {};
       var counterpart = counterpartByFlow[flow] || {};
+      var counterpartFrames = (counterpartFramesByFlow && counterpartFramesByFlow[flow]) || {};
       var maxIndex = -1, k;
       for (k in mine){ if (Number(k) > maxIndex) maxIndex = Number(k); }
       for (k in counterpart){ if (Number(k) > maxIndex) maxIndex = Number(k); }
@@ -2819,7 +2957,7 @@
           // it has to be its own element sitting where that block would have been. Growing
           // the row before it instead made a single row 112px tall where the other pane had
           // two rows of 63 and 48 -- "row one is enormous" rather than "a row is missing".
-          cursor = insertSpacerAfter(cursor, otherH, boundary, false);
+          cursor = insertSpacerAfter(cursor, otherH, boundary, false, !!counterpartFrames[idx]);
         }
         // When it exists on neither side (a block made up of only ins/del
         // that vanished from both), there's nothing to fill, so do nothing.
@@ -2957,9 +3095,10 @@
       var levelBlocks = (pristineSeq === data.seq && pristineBlocks && pristineBlocks[data.level])
         ? pristineBlocks[data.level] : measureLevelBlocks(data.level);
       postToParent({ type: 'measured', seq: data.seq, level: data.level,
-        total: document.documentElement.scrollHeight, blocks: levelBlocks });
+        total: document.documentElement.scrollHeight, blocks: levelBlocks,
+        frames: measureLevelFrames(data.level) });
     } else if (data.type === 'apply'){
-      applyLevelAlign(data.level, data.counterpart || {});
+      applyLevelAlign(data.level, data.counterpart || {}, data.counterpartFrames || {});
       postToParent({ type: 'aligned', seq: data.seq, level: data.level, total: document.documentElement.scrollHeight });
     } else if (data.type === 'positions'){
       postToParent({ type: 'positions', seq: data.seq, tops: collectTops() });
@@ -4172,16 +4311,21 @@ html[data-diff-side="before"] [data-diff-attr]{ box-shadow: inset 0 0 0 100vmax 
 
         if (data.type === 'measured') {
           if (!htmlAlignMeasured) return;
-          htmlAlignMeasured[side] = { total: data.total, blocks: data.blocks || {} };
+          htmlAlignMeasured[side] = { total: data.total, blocks: data.blocks || {}, frames: data.frames || {} };
           if (htmlAlignMeasured.left && htmlAlignMeasured.right) {
             // Both sides' measurements are in. Pass each side's values straight to its
             // counterpart, leaving the decision of exactly where to insert padding to each
             // iframe (applyLevelAlign).
             const leftBlocks = htmlAlignMeasured.left.blocks;
             const rightBlocks = htmlAlignMeasured.right.blocks;
+            // Alongside the heights, each side is told which of the counterpart's blocks open
+            // a box of their own, so a gap standing in for a whole missing card can be placed
+            // between the cards instead of inside the previous one.
+            const leftFrames = htmlAlignMeasured.left.frames;
+            const rightFrames = htmlAlignMeasured.right.frames;
             htmlAlignTotals = { left: null, right: null };
-            postToHtmlFrame(htmlDiffFrameLeft, { type: 'apply', seq: htmlAlignSeq, level: htmlAlignLevel, counterpart: rightBlocks });
-            postToHtmlFrame(htmlDiffFrameRight, { type: 'apply', seq: htmlAlignSeq, level: htmlAlignLevel, counterpart: leftBlocks });
+            postToHtmlFrame(htmlDiffFrameLeft, { type: 'apply', seq: htmlAlignSeq, level: htmlAlignLevel, counterpart: rightBlocks, counterpartFrames: rightFrames });
+            postToHtmlFrame(htmlDiffFrameRight, { type: 'apply', seq: htmlAlignSeq, level: htmlAlignLevel, counterpart: leftBlocks, counterpartFrames: leftFrames });
           }
         } else if (data.type === 'aligned') {
           if (!htmlAlignTotals) return;
@@ -4199,7 +4343,6 @@ html[data-diff-side="before"] [data-diff-attr]{ box-shadow: inset 0 0 0 100vmax 
             }
           }
         } else if (data.type === 'positions') {
-          console.log('DBG positions from ' + side, !!htmlAlignPositions);
           if (!htmlAlignPositions) return;
           htmlAlignPositions[side] = data.tops || {};
           if (htmlAlignPositions.left && htmlAlignPositions.right) {
