@@ -954,6 +954,14 @@
       'table-header-group','table-row-group','table-footer-group','table-caption','none'
     ]);
 
+    // Elements whose content the parser hands over as raw text. Putting an <ins> inside one
+    // does not mark anything: the browser has no markup to parse there, so the tag reaches
+    // the reader as characters. They are boundaries whatever their display says -- a
+    // <textarea> computes to inline-block, so without this its text counted as its PARENT's
+    // own text and the parent's own edit wrapped a range that fell inside the box. Measured
+    // on edge-cases: both panes rendered the literal string
+    // '<ins data-diff="ins">と部門コード</ins>' inside the <textarea>.
+    const RAW_TEXT_TAGS = new Set(['TEXTAREA', 'TITLE']);
     let boundaryEls = null;    // Set<Element> -- elements judged to be boundaries
     let classifiedDocs = null; // Set<Document> -- documents already classified
 
@@ -973,6 +981,7 @@
 
     function isBlockEl(el){
       if (!el || el.nodeType !== 1) return false;
+      if (RAW_TEXT_TAGS.has(el.tagName)) return true;
       // For an element in an already-classified document, trust that result (not present = inline)
       if (classifiedDocs && classifiedDocs.has(el.ownerDocument)) return boundaryEls.has(el);
       return BLOCK_TAGS.has(el.tagName);
@@ -1213,6 +1222,18 @@
       const oldText = oldEl ? ownText(oldEl) : '';
       const newText = ownText(newEl);
       if (oldText === newText) return false;
+      // Stash the old text for the before pane to put back, and tint the element rather
+      // than marking inside it -- the same shape as an attribute change: each pane shows
+      // its own value, and the tint says this is the one that differs.
+      if (RAW_TEXT_TAGS.has(newEl.tagName)){
+        newEl.setAttribute('data-diff-old-value', oldText);
+        newEl.setAttribute('data-diff-value', '');
+        newEl.setAttribute('data-diff-row', 'changed');
+        tally.del += norm(oldText).length;
+        tally.add += norm(newText).length;
+        tally.blocks++;
+        return true;
+      }
       // If only whitespace placement differs, there's no visible change, so
       // show nothing. When nesting depth changed, only the indentation
       // shifted, leaving empty ins/del elements dangling. pre / code are
@@ -3446,8 +3467,9 @@ a[data-diff-nolink]{ cursor: pointer; }
        one thing given up here.
    Lighter than the add/remove fills on purpose: this element was edited, not added or
    removed wholesale, and the document's own colour has to stay readable underneath. */
-[data-diff-attr]{ box-shadow: inset 0 0 0 100vmax rgba(26,159,71,.26) !important; }
-html[data-diff-side="before"] [data-diff-attr]{ box-shadow: inset 0 0 0 100vmax rgba(229,50,45,.26) !important; }
+[data-diff-attr],[data-diff-value]{ box-shadow: inset 0 0 0 100vmax rgba(26,159,71,.26) !important; }
+html[data-diff-side="before"] [data-diff-attr],
+html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax rgba(229,50,45,.26) !important; }
 #__diff_removed__{ margin-top:2rem; padding:1rem; }
 /* The marker for diff-only display. Blocks and attributes already have their own green/red
    border, so this is restricted to data-diff-row (elements with a character-level change
@@ -5225,6 +5247,9 @@ html[data-diff-side="before"] [data-diff-attr]{ box-shadow: inset 0 0 0 100vmax 
           });
           doc.querySelectorAll('script[data-diff-old-script]').forEach(el => {
             el.textContent = el.getAttribute('data-diff-old-script');
+          });
+          doc.querySelectorAll('[data-diff-old-value]').forEach(el => {
+            el.textContent = el.getAttribute('data-diff-old-value');
           });
           doc.querySelectorAll('template[data-diff-old-template]').forEach(el => {
             el.innerHTML = el.getAttribute('data-diff-old-template');
