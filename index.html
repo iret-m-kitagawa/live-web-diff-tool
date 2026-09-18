@@ -1444,14 +1444,29 @@
       return el.tagName + ' ' + t;
     }
 
+    // Does anything inside this element count as a block?
+    function holdsBlockDescendant(el){
+      for (let c = el.firstElementChild; c; c = c.nextElementSibling){
+        if (isBlockEl(c) || holdsBlockDescendant(c)) return true;
+      }
+      return false;
+    }
+
     function diffableChildren(el, blockOnly){
       const out = [];
       for (let c = el.firstElementChild; c; c = c.nextElementSibling){
         if (c.tagName === 'SCRIPT' || c.tagName === 'STYLE') continue;
         // Excluded: elements we inserted ourselves for the diff display
         if (c.hasAttribute('data-diff') || c.hasAttribute('data-diff-block')) continue;
-        // Excluded: inline elements already handled by the parent's text diff (see the explanation below)
-        if (blockOnly && !isBlockEl(c)) continue;
+        // Excluded: inline elements already handled by the parent's text diff (see the
+        // explanation below) -- but only when that is actually true. ownText() stops at
+        // blocks, so an inline element that CONTAINS blocks never had its content counted
+        // in the parent's text, and skipping it here loses everything inside it.
+        // An inline-flex chip is exactly this shape: the browser blockifies its children
+        // for being flex items while the chip itself stays inline, so with the parent's own
+        // text edited the chip was dropped and never descended into -- the before pane
+        // rendered the AFTER document's numbers with no marker anywhere.
+        if (blockOnly && !isBlockEl(c) && !holdsBlockDescendant(c)) continue;
         out.push(c);
       }
       return out;
