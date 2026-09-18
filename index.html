@@ -354,6 +354,31 @@
        hidden / normal / collapsed. updateMdToc() on the JS side is the sole
        writer). This variable is also folded into .rich-diff-viewer's left
        padding and .md-resizer's position calc above. */
+
+    /* Right-click menu for jumping from a block in a Rich View to the line that
+       produced it. Drawn in this document, never inside the HTML View's iframe: the
+       iframe is sandboxed without allow-same-origin, so it reports the click position
+       by postMessage and the menu is positioned over it from out here. */
+    .jump-menu {
+      position: fixed; z-index: 2100; display: none; min-width: 210px; padding: 4px;
+      background: var(--panel, #1c2128); color: var(--fg, #e6edf3);
+      border: 1px solid var(--border, #30363d); border-radius: 8px;
+      box-shadow: 0 8px 28px rgba(0,0,0,.45); font-size: 12px; user-select: none;
+    }
+    .jump-menu button {
+      display: block; width: 100%; padding: 7px 10px; text-align: left;
+      background: none; border: 0; border-radius: 5px; color: inherit;
+      font: inherit; cursor: pointer; white-space: nowrap;
+    }
+    .jump-menu button:hover:not(:disabled) { background: var(--hover, rgba(255,255,255,.08)); }
+    .jump-menu button:disabled { opacity: .38; cursor: default; }
+    .jump-menu .jump-menu-hint {
+      padding: 5px 10px 4px; opacity: .55; font-size: 11px; white-space: nowrap;
+      border-top: 1px solid var(--border, #30363d); margin-top: 4px;
+    }
+    /* The line landed on. Lives long enough to find with the eye, then goes away. */
+    .jump-flash-line { background: rgba(88,166,255,.22); }
+    .jump-flash-gutter { background: rgba(88,166,255,.45); }
     .md-toc {
       display: none; position: absolute; top: 0; bottom: 0; left: 0;
       width: var(--md-toc-w); overflow: hidden; z-index: 130;
@@ -672,6 +697,11 @@
       <div id="mdTocResizer" class="md-toc-resizer" title="目次の幅を変える"></div>
     </div>
     <div id="richDiffViewer" class="rich-diff-viewer markdown-body"></div>
+    <div id="jumpMenu" class="jump-menu" role="menu" aria-label="ソースへジャンプ">
+      <button type="button" id="jumpBefore" role="menuitem">変更前のソースへジャンプ</button>
+      <button type="button" id="jumpAfter" role="menuitem">変更後のソースへジャンプ</button>
+      <div class="jump-menu-hint">Shift + 右クリックで通常のメニュー</div>
+    </div>
     <!-- sandbox="allow-scripts allow-popups" is intentional (matches the source rich-html-diff tool):
          pasted HTML's own <script> tags are allowed to run inside this sandboxed iframe so that
          content restored from a shared Diff URL behaves exactly as authored, including its JS. -->
@@ -2993,6 +3023,105 @@
   // one-time load/error watcher only to <img> elements that are still
   // loading, and notify the parent once it fires. The parent uses this as the
   // cue to instruct both iframes to re-measure.
+  // Right-click inside the pasted document: report it so the parent can offer a jump to
+  // the line of source that produced this block. The menu itself cannot be drawn here --
+  // it would be clipped by the iframe and would have to be styled against the pasted
+  // document's own CSS -- so only the position and the text go out, and the parent puts
+  // the menu over the iframe. Shift is left alone so the browser's own menu stays
+  // reachable, and so is a click on anything we cannot name.
+  function jumpBlockText(el, side){
+    var clone = el.cloneNode(true);
+    var sel = side === 'before'
+      ? 'ins[data-diff="ins"], [data-diff-block="ins"]'
+      : 'del[data-diff="del"], [data-diff-block="del"]';
+    var drop = clone.querySelectorAll(sel + ', [data-align-spacer]');
+    for (var i = 0; i < drop.length; i++) if (drop[i].parentNode) drop[i].parentNode.removeChild(drop[i]);
+    return (clone.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+  }
+  // The innermost block under the pointer: the most specific thing we can name. Its
+  // position is pinned down on the parent's side within the span of its ancestors, so the
+  // deeper it is the tighter the answer.
+  function innermostBlock(el){
+    return el && el.closest ? el.closest('[data-sync-index]') : null;
+  }
+  // Every block, in document order, each pointing at its enclosing block. The parent needs
+  // the nesting: a child is placed inside the span its parent occupies, which is what keeps
+  // a match from wandering off, and what makes a deep block resolve precisely.
+  function jumpPayload(block){
+    var all = document.querySelectorAll('[data-sync-index]');
+    var index = new Map ? new Map() : null;
+    var ord = -1, before = [], after = [], parent = [];
+    for (var i = 0; i < all.length; i++){
+      if (index) index.set(all[i], i);
+      if (all[i] === block) ord = i;
+    }
+    if (ord < 0) return null;
+    for (var j = 0; j < all.length; j++){
+      before.push(jumpBlockText(all[j], 'before'));
+      after.push(jumpBlockText(all[j], 'after'));
+      var up = -1;
+      for (var q = all[j].parentElement; q; q = q.parentElement){
+        if (q.hasAttribute && q.hasAttribute('data-sync-index')){
+          up = index ? (index.has(q) ? index.get(q) : -1) : -1;
+          break;
+        }
+      }
+      parent.push(up);
+    }
+    return { ord: ord, before: before, after: after, parent: parent };
+  }
+  document.addEventListener('contextmenu', function(e){
+    if (e.shiftKey) return;
+    var block = innermostBlock(e.target);
+    if (!block) return;
+    var payload = jumpPayload(block);
+    if (!payload) return;
+    var sel = window.getSelection && window.getSelection();
+    payload.selText = sel && !sel.isCollapsed ? String(sel).replace(/\s+/g, ' ').trim() : '';
+    payload.type = 'jumpctx';
+    payload.x = e.clientX;
+    payload.y = e.clientY;
+    e.preventDefault();
+    postToParent(payload);
+  }, true);
+
+  // A selection inside the pasted document brings the menu up on its own. The menu is drawn
+  // by the parent, so the selection's box goes out in this document's coordinates and the
+  // parent adds the frame's own offset.
+  document.addEventListener('mousedown', function(){
+    postToParent({ type: 'jumpclose' });
+  }, true);
+  document.addEventListener('mouseup', function(e){
+    if (e.button !== 0) return;
+    setTimeout(function(){
+      var sel = window.getSelection && window.getSelection();
+      if (!sel || sel.isCollapsed || !sel.rangeCount){ postToParent({ type: 'jumpclose' }); return; }
+      var text = String(sel).replace(/\s+/g, ' ').trim();
+      if (text.length < 1) return;
+      var range = sel.getRangeAt(0);
+      // Where the selection starts, before its common ancestor: once a selection crosses a
+      // block boundary the common ancestor is a container above both, which may be no block
+      // at all, and the menu would simply never come up.
+      var block = null;
+      var cands = [range.startContainer, range.commonAncestorContainer, range.endContainer];
+      for (var c = 0; c < cands.length && !block; c++){
+        var node = cands[c];
+        if (node && node.nodeType === 3) node = node.parentElement;
+        block = innermostBlock(node);
+      }
+      if (!block) return;
+      var payload = jumpPayload(block);
+      if (!payload) return;
+      var r = range.getBoundingClientRect();
+      if (!r || (!r.width && !r.height)) return;
+      payload.type = 'jumpsel';
+      payload.selText = text;
+      payload.x = r.left;
+      payload.y = r.bottom + 6;
+      postToParent(payload);
+    }, 0);
+  }, true);
+
   function watchImagesForRealign(){
     var imgs = document.querySelectorAll('img');
     for (var i = 0; i < imgs.length; i++){
@@ -5359,6 +5488,454 @@ html[data-diff-side="before"] [data-diff-attr]{ box-shadow: inset 0 0 0 100vmax 
       const MD_TOC_INS_SEL = 'ins.diffins, ins.diffmod';
       const MD_TOC_DEL_SEL = 'del.diffdel, del.diffmod';
       const MD_TOC_MARK_SEL = MD_TOC_INS_SEL + ', ' + MD_TOC_DEL_SEL;
+
+      // ---- Jumping from a Rich View block back to the line that produced it ----
+      // Reached by right-click, deliberately: left-click belongs to the pasted document
+      // (its links, its tabs, its accordions), and taking it would break the page we are
+      // supposed to be showing faithfully. Shift+right-click is left alone so the
+      // browser's own menu -- copy, save image, inspect -- stays reachable, and so does a
+      // right-click anywhere we cannot map to a block.
+      const jumpMenu = document.getElementById('jumpMenu');
+      const jumpBeforeBtn = document.getElementById('jumpBefore');
+      const jumpAfterBtn = document.getElementById('jumpAfter');
+      let jumpCtx = null;          // what the currently open menu would jump to
+      let jumpDecorations = null;  // the highlight left on the line we landed on
+
+      // Resolving a block to a line of source.
+      //
+      // Counting blocks does not work: the diff splits them. A table whose rows changed
+      // comes back as the table plus several <del> blocks of its own, so the rendered
+      // output of all-cases carries 62 top-level blocks against 48 in the source, and any
+      // index-based correspondence drifts from the first split onward. marked's token
+      // offsets describe the source faithfully but cannot be attached to output that no
+      // longer lines up with it one for one.
+      //
+      // So the text is looked up in the source instead, with a cursor that only ever moves
+      // forward. Order is the one thing that does survive the diff -- blocks come out in
+      // document order on both sides -- and a forward cursor turns that into the
+      // disambiguator: a heading that appears three times resolves to the third one once
+      // the two before it have been passed.
+      //
+      // Rendered text is not source text (inline markup sits in the middle of it, a table
+      // renders as its cell values and nothing else), so each block is tried at a few
+      // lengths, longest first. A long needle is exact on its own; a short one leans on the
+      // cursor for its accuracy.
+      // Long first. The floor matters as much as the tiers: a five-character needle taken
+      // from a sixty-character block will match almost anything, and the page's own wrapper
+      // -- whose text is the whole document -- matched the <title> that way and dragged
+      // every unresolved block under it to line 6.
+      // Eight is where this document stopped lying: the wrapper's text opens with the
+      // product name, the <title> holds the same six characters, and a six-character needle
+      // put every unplaceable block on line 6. Eight characters no longer match it, while a
+      // heading like "CASE 04・カード" -- eleven characters and perfectly distinctive --
+      // still does. The span each block is searched within is the real guard; this is only
+      // to stop the vaguest needles from being tried at all.
+      const JUMP_NEEDLE_LENGTHS = [40, 24, 16, 12, 8];
+      const JUMP_NEEDLE_MIN = 8;
+
+      function jumpNeedles(text){
+        const out = [];
+        const whole = text.trim();
+        for (const n of JUMP_NEEDLE_LENGTHS){
+          if (text.length < n) continue;
+          const cut = text.slice(0, n).trim();
+          if (cut.length >= JUMP_NEEDLE_MIN && out.indexOf(cut) === -1) out.push(cut);
+        }
+        // A block shorter than the floor is allowed to match on all of itself -- there is
+        // nothing vaguer to fall back to, and the whole of a short string is still exact.
+        if (whole.length >= 4 && out.indexOf(whole) === -1) out.push(whole);
+        return out;
+      }
+
+      // The same lines with their tags taken out. Rendered text runs straight through
+      // markup -- <span class="n">01</span>情報テーブル reads as "01情報テーブル" -- so a
+      // needle that is plainly on the line can still fail to appear in it verbatim.
+      // Two ways, because rendering does both: <span>01</span>情報 reads as "01情報" with
+      // the tags simply gone, while <td>a</td><td>b</td> reads with a gap between the cells.
+      function bareLines(lines){
+        return {
+          tight: lines.map((l) => l.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()),
+          loose: lines.map((l) => l.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()),
+        };
+      }
+
+      // Find `text` between lines lo (inclusive) and hi (exclusive).
+      function findJumpLine(lines, bare, text, lo, hi){
+        for (const needle of jumpNeedles(text)){
+          for (let i = lo; i < hi; i++){
+            if (lines[i].indexOf(needle) !== -1
+              || bare.tight[i].indexOf(needle) !== -1
+              || bare.loose[i].indexOf(needle) !== -1) return i;
+          }
+        }
+        // Nothing matched as one run of characters. A table is the reason: it renders as its
+        // cell values with nothing between them, while the source has them separated by
+        // pipes, so no prefix of the rendered text ever appears verbatim. Fall back to "a
+        // line holding these few words, in this order" -- weak on its own at this length,
+        // which is why it is only reached inside a span the blocks around it have already
+        // pinned down.
+        // Two words at least: one word of a language that does not space its words is the
+        // whole string again, and one short word on its own matches far too much.
+        const words = text.split(' ').filter(Boolean);
+        for (let take = Math.min(3, words.length); take >= 2; take--){
+          const want = words.slice(0, take);
+          for (let i = lo; i < hi; i++){
+            for (const hay of [lines[i], bare.tight[i], bare.loose[i]]){
+              let at = 0, ok = true;
+              for (const w of want){
+                const hit = hay.indexOf(w, at);
+                if (hit === -1){ ok = false; break; }
+                at = hit + w.length;
+              }
+              if (ok) return i;
+            }
+          }
+        }
+        return null;
+      }
+
+      // Resolve a tree of blocks against a source, each child confined to the span its
+      // parent occupies.
+      //
+      // Flattening to the outermost blocks was tried first and is worse than it sounds: a
+      // page that wraps everything in one container has exactly one outermost block, so
+      // every click in the document lands on it, and its text -- the whole page -- matched
+      // the <title>. Measured on all-cases-rich: 44 blocks, 1 outermost, every jump landing
+      // on line 6.
+      //
+      // Descending instead makes the nesting do the work. A child is looked for only between
+      // where its parent begins and where the parent's next sibling begins, so a bad match
+      // cannot drag anything outside that span, and the deeper the block the tighter the
+      // window it is found in. A block that cannot be found in its span stays unresolved:
+      // the one thing worse than not jumping is jumping somewhere unrelated.
+      function resolveJumpTree(nodes, src){
+        const lines = (src || '').split('\n');
+        const bare = bareLines(lines);
+        const n = nodes.length;
+        const line = new Array(n).fill(null);
+        const end = new Array(n).fill(lines.length);
+        const kids = [];
+        const roots = [];
+        for (let i = 0; i < n; i++) kids.push([]);
+        for (let i = 0; i < n; i++){
+          const par = nodes[i].parent;
+          if (par >= 0 && par < n) kids[par].push(i); else roots.push(i);
+        }
+        const walk = (sibs, lo, hi) => {
+          let cursor = lo;
+          for (const i of sibs){
+            if (!nodes[i].text) continue;
+            const at = findJumpLine(lines, bare, nodes[i].text, cursor, hi);
+            if (at === null) continue;
+            line[i] = at + 1;
+            cursor = at + 1;
+          }
+          for (let k = 0; k < sibs.length; k++){
+            const i = sibs[k];
+            let stop = hi;
+            for (let m = k + 1; m < sibs.length; m++){
+              if (line[sibs[m]]){ stop = line[sibs[m]] - 1; break; }
+            }
+            end[i] = stop;
+            if (kids[i].length) walk(kids[i], line[i] ? line[i] - 1 : lo, stop);
+          }
+        };
+        walk(roots, 0, lines.length);
+        return { line: line, end: end, parent: nodes.map((x) => x.parent) };
+      }
+
+      // The block's own line, or the nearest ancestor that has one: landing on the section a
+      // block belongs to is a fair answer when the block itself cannot be placed.
+      function jumpLineFor(resolved, idx){
+        let i = idx;
+        while (i >= 0 && i < resolved.line.length){
+          // Standing in for a block with the section that holds it is useful. Standing in
+          // for it with the element that wraps the entire page is not -- that is how every
+          // unplaceable block ended up pointing at the same line near the top of the file.
+          const isWrapper = i !== idx && resolved.parent[i] < 0;
+          if (resolved.line[i] && !isWrapper) return { line: resolved.line[i], end: resolved.end[i] };
+          i = resolved.parent[i];
+        }
+        return { line: null, end: 0 };
+      }
+
+      let mdJumpProbe = null;   // the merged diff HTML, parsed, so a block can be read on both sides
+      let mdJumpLines = null;   // { before: [line|null], after: [line|null] } per merged block index
+      let mdJumpBuiltFrom = null;
+
+      function buildMdJumpIndex(){
+        if (mdJumpBuiltFrom === mdDiffedHtml) return;
+        mdJumpBuiltFrom = mdDiffedHtml;
+        mdJumpProbe = null;
+        mdJumpLines = null;
+        if (!mdDiffedHtml) return;
+        const probe = document.createElement('div');
+        probe.innerHTML = mdDiffedHtml;
+        mdJumpProbe = probe;
+        const blocks = Array.from(probe.children);
+        // The Markdown View numbers only the pane's direct children, so this tree is flat --
+        // every block a root. resolveJumpTree takes that as the degenerate case.
+        const asNodes = (side) => blocks.map((el) => ({ text: jumpTextOf(el, side), parent: -1 }));
+        mdJumpLines = {
+          before: resolveJumpTree(asNodes('before'), beforeModel ? beforeModel.getValue() : ''),
+          after: resolveJumpTree(asNodes('after'), afterModel ? afterModel.getValue() : ''),
+        };
+      }
+
+      // The text a block has on one side: strip the marks belonging to the other side.
+      // On a split pane one side is already gone, which is exactly what we want there.
+      function jumpTextOf(el, side){
+        if (!el) return '';
+        const clone = el.cloneNode(true);
+        clone.querySelectorAll(side === 'before' ? MD_TOC_INS_SEL : MD_TOC_DEL_SEL).forEach(n => n.remove());
+        clone.querySelectorAll('[data-align-spacer]').forEach(n => n.remove());
+        return (clone.textContent || '').replace(/\s+/g, ' ').trim();
+      }
+
+      function flashEditorLine(editor, line){
+        const spec = [{
+          range: new monaco.Range(line, 1, line, 1),
+          options: { isWholeLine: true, className: 'jump-flash-line',
+                     linesDecorationsClassName: 'jump-flash-gutter' },
+        }];
+        try {
+          if (jumpDecorations && jumpDecorations.clear) jumpDecorations.clear();
+          jumpDecorations = editor.createDecorationsCollection
+            ? editor.createDecorationsCollection(spec)
+            : { ids: editor.deltaDecorations([], spec), clear(){ editor.deltaDecorations(this.ids, []); } };
+          setTimeout(() => { if (jumpDecorations && jumpDecorations.clear) jumpDecorations.clear(); }, 1600);
+        } catch (e) {}
+      }
+
+      // Look for the selected text only inside the block it came from. Searching past the
+      // block -- let alone from the top of the file -- is how a common word ends up sending
+      // someone to an unrelated line.
+      function refineBySelection(model, fromLine, toLine, sel){
+        const want = (sel || '').replace(/\s+/g, ' ').trim();
+        if (!model || !want || !fromLine) return null;
+        const lines = model.getValue().split('\n');
+        const from = Math.max(0, fromLine - 1);
+        const to = Math.min(lines.length, Math.max(from + 1, toLine || from + 1));
+        for (const needle of [want].concat(jumpNeedles(want))){
+          if (!needle) continue;
+          for (let i = from; i < to; i++) if (lines[i].indexOf(needle) !== -1) return i + 1;
+        }
+        return null;
+      }
+
+      function jumpToSource(side){
+        const ctx = jumpCtx;
+        closeJumpMenu();
+        if (!ctx) return;
+        const model = side === 'before' ? beforeModel : afterModel;
+        const editor = side === 'before' ? diffOrig : diffMod;
+        if (!model || !editor) return;
+        const blockLine = side === 'before' ? ctx.beforeLine : ctx.afterLine;
+        const blockEnd = side === 'before' ? ctx.beforeEnd : ctx.afterEnd;
+        // A selection says exactly which part of the block was meant, so it beats the
+        // block's own line -- within the block, never beyond it.
+        const line = refineBySelection(model, blockLine, blockEnd, ctx.selText) || blockLine;
+        if (!line) return;
+        // Leaving the Rich View re-lays out the editor, so reveal on the next turn --
+        // revealing into a container that has not been measured yet scrolls to the wrong
+        // place, or to nowhere at all.
+        restoreMonacoView();
+        setTimeout(() => {
+          try {
+            editor.revealLineInCenter(line);
+            editor.setPosition({ lineNumber: line, column: 1 });
+            editor.focus();
+            flashEditorLine(editor, line);
+          } catch (e) {}
+        }, 60);
+      }
+
+      let jumpOpenedAt = 0;
+
+      function closeJumpMenu(){
+        if (jumpMenu) jumpMenu.style.display = 'none';
+        jumpCtx = null;
+      }
+
+      // Selecting by dragging scrolls the view when the pointer nears an edge, and the last
+      // of those scroll events can land a frame or two AFTER the mouse is released -- so the
+      // menu opens and is shut again by the tail of the drag that asked for it. Scrolls that
+      // arrive while the menu is this new are the drag finishing, not the reader moving on.
+      const JUMP_SCROLL_GRACE_MS = 400;
+      function closeJumpMenuOnScroll(){
+        if (Date.now() - jumpOpenedAt < JUMP_SCROLL_GRACE_MS) return;
+        closeJumpMenu();
+      }
+
+      function openJumpMenu(clientX, clientY, ctx, opts){
+        if (!jumpMenu) return;
+        // The hint is about the right-click route. When the menu came up on its own after a
+        // selection, saying it would be answering a question nobody asked.
+        const hint = jumpMenu.querySelector('.jump-menu-hint');
+        if (hint) hint.style.display = (opts && opts.hint === false) ? 'none' : '';
+        const hasBefore = !!(ctx.beforeLine || ctx.beforeText);
+        const hasAfter = !!(ctx.afterLine || ctx.afterText);
+        if (!hasBefore && !hasAfter) return;
+        jumpCtx = ctx;
+        jumpBeforeBtn.disabled = !hasBefore;
+        jumpAfterBtn.disabled = !hasAfter;
+        jumpMenu.style.visibility = 'hidden';
+        jumpMenu.style.display = 'block';
+        const r = jumpMenu.getBoundingClientRect();
+        const bar = document.querySelector('.toolbar');
+        // Never let it sit under the toolbar: a block near the top of the frame puts the
+        // click's y inside the bar, and the menu came up unclickable behind it.
+        const top = bar ? bar.getBoundingClientRect().bottom + 4 : 8;
+        const x = Math.min(clientX, window.innerWidth - r.width - 8);
+        const y = Math.min(clientY, window.innerHeight - r.height - 8);
+        jumpMenu.style.left = Math.max(8, x) + 'px';
+        jumpMenu.style.top = Math.max(top, y) + 'px';
+        jumpMenu.style.visibility = '';
+        jumpOpenedAt = Date.now();
+      }
+
+      if (jumpMenu){
+        jumpBeforeBtn.addEventListener('click', () => jumpToSource('before'));
+        jumpAfterBtn.addEventListener('click', () => jumpToSource('after'));
+        document.addEventListener('mousedown', (e) => {
+          if (jumpMenu.style.display === 'block' && !jumpMenu.contains(e.target)) closeJumpMenu();
+        }, true);
+        document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeJumpMenu(); });
+        window.addEventListener('resize', closeJumpMenu);
+        window.addEventListener('scroll', closeJumpMenuOnScroll, true);
+      }
+
+      // HTML View: the blocks live inside a sandboxed iframe with no allow-same-origin, so
+      // the click comes back by postMessage and the menu is placed over the frame from
+      // here. Which document a frame stands for decides which entries are on offer: the
+      // left frame holds only the before text, the right only the after, and the
+      // single-column frame holds both, so it can offer both.
+      window.addEventListener('message', (e) => {
+        const data = e.data;
+        if (!data || data.__htmlAlign !== true) return;
+        if (data.type === 'jumpclose'){ closeJumpMenu(); return; }
+        if (data.type !== 'jumpctx' && data.type !== 'jumpsel') return;
+        let frame = null;
+        for (const f of [htmlDiffFrame, htmlDiffFrameLeft, htmlDiffFrameRight]){
+          if (f && f.contentWindow === e.source){ frame = f; break; }
+        }
+        if (!frame) return;
+        const side = frame === htmlDiffFrameLeft ? 'before'
+          : frame === htmlDiffFrameRight ? 'after' : null;
+        const parents = data.parent || [];
+        const nodes = (texts) => (texts || []).map((t, i) => ({ text: t, parent: parents[i] == null ? -1 : parents[i] }));
+        const beforeLines = side === 'after' ? null
+          : resolveJumpTree(nodes(data.before), beforeModel ? beforeModel.getValue() : '');
+        const afterLines = side === 'before' ? null
+          : resolveJumpTree(nodes(data.after), afterModel ? afterModel.getValue() : '');
+        const b = beforeLines ? jumpLineFor(beforeLines, data.ord) : { line: null, end: 0 };
+        const a = afterLines ? jumpLineFor(afterLines, data.ord) : { line: null, end: 0 };
+        const r = frame.getBoundingClientRect();
+        if (!b.line && !a.line) return;
+        openJumpMenu(r.left + (data.x || 0), r.top + (data.y || 0), {
+          beforeLine: b.line, beforeEnd: b.end,
+          afterLine: a.line, afterEnd: a.end,
+          selText: data.selText || '',
+        }, { hint: data.type !== 'jumpctx' });
+      });
+
+      // Markdown View: the blocks live in this document, so the event arrives directly.
+      function mdJumpCtxFor(node, selText){
+        const block = node && node.closest ? node.closest('[data-sync-index]') : null;
+        if (!block || !richDiffViewer.contains(block)) return null;
+        buildMdJumpIndex();
+        const idx = Number(block.dataset.syncIndex);
+        const mapped = mdJumpLines
+          ? { before: jumpLineFor(mdJumpLines.before, idx), after: jumpLineFor(mdJumpLines.after, idx) }
+          : { before: { line: null, end: 0 }, after: { line: null, end: 0 } };
+        // In split view the pane already decides the side; in single view the block holds
+        // both, so both are offered.
+        const pane = block.parentElement;
+        const onlyBefore = pane && pane.classList && pane.classList.contains('md-split-left');
+        const onlyAfter = pane && pane.classList && pane.classList.contains('md-split-right');
+        const merged = mdJumpProbe ? mdJumpProbe.children[idx] : null;
+        const src = merged || block;
+        const ctx = {
+          beforeLine: onlyAfter ? null : mapped.before.line,
+          beforeEnd: mapped.before.end,
+          afterLine: onlyBefore ? null : mapped.after.line,
+          afterEnd: mapped.after.end,
+          selText: selText || '',
+        };
+        // Only offer a side we can actually place. Guessing from the whole file is exactly
+        // what sent people to unrelated lines.
+        if (!ctx.beforeLine && !ctx.afterLine) return null;
+        return ctx;
+      }
+
+      // A selection is a statement of intent -- someone dragged across exactly the words
+      // they care about -- so the menu comes to them rather than waiting to be summoned.
+      // Read on mouseup, not on selectionchange, so it appears once at the end of the drag
+      // instead of flickering along with it.
+      // Any non-empty selection counts. A plain click leaves the selection collapsed and is
+      // already ignored, which is the accidental case worth guarding against; dragging
+      // across even one character is deliberate. A floor above that only means a rule to
+      // remember -- a one-character particle would silently do nothing.
+      const JUMP_SEL_MIN = 1;
+
+      // Which block a selection belongs to. The common ancestor is the obvious answer and
+      // the wrong one as soon as the selection crosses a block boundary: two paragraphs
+      // share the pane, which is not a block, and the menu would simply never appear.
+      // Where the selection STARTS is both a valid answer and always inside a block.
+      function blockOfSelection(range, root){
+        const candidates = [range.startContainer, range.commonAncestorContainer, range.endContainer];
+        for (let node of candidates){
+          if (node && node.nodeType === 3) node = node.parentElement;
+          if (!node || !node.closest || !root.contains(node)) continue;
+          const block = node.closest('[data-sync-index]');
+          if (block && root.contains(block)) return block;
+        }
+        return null;
+      }
+
+      function selectionJumpTarget(root){
+        const sel = window.getSelection && window.getSelection();
+        if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+        const text = String(sel).replace(/\s+/g, ' ').trim();
+        if (text.length < JUMP_SEL_MIN) return null;
+        const range = sel.getRangeAt(0);
+        const block = blockOfSelection(range, root);
+        if (!block) return null;
+        // A selection that ends on a line break can report an empty box; fall back to the
+        // block's own, which at least puts the menu somewhere sensible.
+        let rect = range.getBoundingClientRect();
+        if (!rect || (!rect.width && !rect.height)) rect = block.getBoundingClientRect();
+        if (!rect || (!rect.width && !rect.height)) return null;
+        return { node: block, text, rect };
+      }
+
+      if (richDiffViewer){
+        richDiffViewer.addEventListener('contextmenu', (e) => {
+          if (e.shiftKey || richViewMode !== 'markdown') return;
+          const target = selectionJumpTarget(richDiffViewer);
+          const ctx = mdJumpCtxFor(e.target, target ? target.text : '');
+          if (!ctx) return;
+          e.preventDefault();
+          openJumpMenu(e.clientX, e.clientY, ctx);
+        });
+        // On the document, not the viewer: a drag that starts on the text and is released
+        // past its edge -- over the index, the toolbar, the gap between panes -- never
+        // delivers a mouseup to the viewer at all, and the menu would silently not appear.
+        document.addEventListener('mouseup', (e) => {
+          if (e.button !== 0 || richViewMode !== 'markdown' || !isRichDiffView) return;
+          if (jumpMenu && jumpMenu.contains(e.target)) return;
+          // Let the selection settle before reading it: on mouseup the browser has not
+          // necessarily finished updating it yet.
+          setTimeout(() => {
+            const target = selectionJumpTarget(richDiffViewer);
+            if (!target){ closeJumpMenu(); return; }
+            const ctx = mdJumpCtxFor(target.node, target.text);
+            if (!ctx) return;
+            openJumpMenu(target.rect.left, target.rect.bottom + 6, ctx, { hint: false });
+          }, 0);
+        });
+      }
+
 
       // Extract an element's "before form" and "after form". If the element itself is
       // the target (e.g. a paragraph added/deleted in its entirety -- HtmlDiff
