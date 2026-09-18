@@ -361,20 +361,25 @@
        by postMessage and the menu is positioned over it from out here. */
     .jump-menu {
       position: fixed; z-index: 2100; display: none; min-width: 210px; padding: 4px;
-      background: var(--panel, #1c2128); color: var(--fg, #e6edf3);
-      border: 1px solid var(--border, #30363d); border-radius: 8px;
-      box-shadow: 0 8px 28px rgba(0,0,0,.45); font-size: 12px; user-select: none;
+      /* The theme's own variables, the ones applyTheme writes. It used to name variables
+         this page does not define, so it only ever showed its dark fallbacks and stayed
+         dark under a light theme. */
+      background: var(--bg-panel); color: var(--text-main);
+      border: 1px solid var(--border-color); border-radius: 8px;
+      box-shadow: 0 8px 28px rgba(0, 0, 0, .35); font-size: 12px; user-select: none;
     }
     .jump-menu button {
       display: block; width: 100%; padding: 7px 10px; text-align: left;
       background: none; border: 0; border-radius: 5px; color: inherit;
       font: inherit; cursor: pointer; white-space: nowrap;
     }
-    .jump-menu button:hover:not(:disabled) { background: var(--hover, rgba(255,255,255,.08)); }
+    /* Grey at low alpha reads as a highlight over either a light or a dark panel, which
+       saves inventing a hover colour per theme. */
+    .jump-menu button:hover:not(:disabled) { background: rgba(127, 127, 127, .22); }
     .jump-menu button:disabled { opacity: .38; cursor: default; }
     .jump-menu .jump-menu-hint {
-      padding: 5px 10px 4px; opacity: .55; font-size: 11px; white-space: nowrap;
-      border-top: 1px solid var(--border, #30363d); margin-top: 4px;
+      padding: 5px 10px 4px; color: var(--text-muted); font-size: 11px; white-space: nowrap;
+      border-top: 1px solid var(--border-color); margin-top: 4px;
     }
     /* The line landed on. Lives long enough to find with the eye, then goes away. */
     .jump-flash-line { background: rgba(88,166,255,.22); }
@@ -3044,6 +3049,43 @@
   function innermostBlock(el){
     return el && el.closest ? el.closest('[data-sync-index]') : null;
   }
+
+  // What the pointer was actually on, which is finer than the block holding it. The diff's
+  // units stop where the diff needs them to -- a page that marks whole cards does not make
+  // a unit of the <pre> inside one -- so a click on code used to answer with the card's
+  // heading. Climb from the click until there is enough text to search with.
+  // Inside a <pre>, the line under the pointer. Preformatted text keeps its newlines but
+  // puts nothing around them, so climbing from a token reaches the whole block and nothing
+  // in between; reading the text either side of the click recovers the line pointed at.
+  function preLineText(target, pre){
+    try {
+      var full = pre.textContent || '';
+      var r = document.createRange();
+      r.selectNodeContents(pre);
+      if (target.nodeType === 3) r.setEnd(target, 0); else r.setEndBefore(target);
+      var upto = r.toString();
+      var start = upto.lastIndexOf('\\n') + 1;
+      var nl = full.indexOf('\\n', upto.length);
+      return full.slice(start, nl === -1 ? full.length : nl).trim();
+    } catch (e) { return ''; }
+  }
+
+  function jumpHitText(target, block){
+    var el = target && target.nodeType === 3 ? target.parentElement : target;
+    var pre = el && el.closest ? el.closest('pre') : null;
+    if (pre && block.contains(pre)){
+      var only = preLineText(target, pre);
+      if (only) return only.slice(0, 60);
+    }
+    var best = '';
+    while (el){
+      var t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+      if (t){ best = t; if (t.length >= 8) break; }
+      if (el === block) break;
+      el = el.parentElement;
+    }
+    return best.slice(0, 60);
+  }
   // Every block, in document order, each pointing at its enclosing block. The parent needs
   // the nesting: a child is placed inside the span its parent occupies, which is what keeps
   // a match from wandering off, and what makes a deep block resolve precisely.
@@ -3078,6 +3120,7 @@
     if (!payload) return;
     var sel = window.getSelection && window.getSelection();
     payload.selText = sel && !sel.isCollapsed ? String(sel).replace(/\s+/g, ' ').trim() : '';
+    payload.hitText = jumpHitText(e.target, block);
     payload.type = 'jumpctx';
     payload.x = e.clientX;
     payload.y = e.clientY;
@@ -5609,8 +5652,7 @@ html[data-diff-side="before"] [data-diff-attr]{ box-shadow: inset 0 0 0 100vmax 
       // window it is found in. A block that cannot be found in its span stays unresolved:
       // the one thing worse than not jumping is jumping somewhere unrelated.
       function resolveJumpTree(nodes, src){
-        const lines = (src || '').split('\n');
-        const bare = bareLines(lines);
+        const { lines, bare } = jumpLinesOf(src);
         const n = nodes.length;
         const line = new Array(n).fill(null);
         const end = new Array(n).fill(lines.length);
@@ -5682,6 +5724,51 @@ html[data-diff-side="before"] [data-diff-attr]{ box-shadow: inset 0 0 0 100vmax 
         };
       }
 
+      // What the pointer was actually on, which is finer than the block it belongs to.
+      // The diff's units stop where the diff needs them to -- in a page that marks whole
+      // cards, a <pre> inside one is not a unit at all -- so a click on code answered with
+      // the card's heading. Climbing from the click until there is enough text to search
+      // with gives something specific to look for inside the block's span.
+      const JUMP_HIT_MIN = 8;
+      const JUMP_HIT_MAX = 60;
+
+      // Inside a <pre>, the line under the pointer. Preformatted text keeps its newlines but
+      // puts nothing around them -- highlighted code is a run of <span>s with bare line
+      // breaks between -- so climbing the tree from a token reaches the whole block and
+      // nothing in between. Reading the text either side of the click recovers the one line
+      // that was pointed at. Measured on all-cases-rich: clicking `timeout_ms` answered with
+      // the paragraph above the block, which mentions it by name, instead of the code line.
+      function preLineText(target, pre){
+        try {
+          const full = pre.textContent || '';
+          const r = (target.ownerDocument || document).createRange();
+          r.selectNodeContents(pre);
+          if (target.nodeType === 3) r.setEnd(target, 0); else r.setEndBefore(target);
+          const upto = r.toString();
+          const start = upto.lastIndexOf('\n') + 1;
+          const nl = full.indexOf('\n', upto.length);
+          return full.slice(start, nl === -1 ? full.length : nl).trim();
+        } catch (e) { return ''; }
+      }
+
+      function jumpHitText(target, block){
+        let el = target && target.nodeType === 3 ? target.parentElement : target;
+        while (el && el !== block && !block.contains(el)) el = el.parentElement;
+        const pre = el && el.closest ? el.closest('pre') : null;
+        if (pre && block.contains(pre)){
+          const line = preLineText(target, pre);
+          if (line) return line.slice(0, JUMP_HIT_MAX);
+        }
+        let best = '';
+        while (el){
+          const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+          if (t){ best = t; if (t.length >= JUMP_HIT_MIN) break; }
+          if (el === block) break;
+          el = el.parentElement;
+        }
+        return best.slice(0, JUMP_HIT_MAX);
+      }
+
       // The text a block has on one side: strip the marks belonging to the other side.
       // On a split pane one side is already gone, which is exactly what we want there.
       function jumpTextOf(el, side){
@@ -5707,20 +5794,34 @@ html[data-diff-side="before"] [data-diff-attr]{ box-shadow: inset 0 0 0 100vmax 
         } catch (e) {}
       }
 
-      // Look for the selected text only inside the block it came from. Searching past the
-      // block -- let alone from the top of the file -- is how a common word ends up sending
-      // someone to an unrelated line.
-      function refineBySelection(model, fromLine, toLine, sel){
-        const want = (sel || '').replace(/\s+/g, ' ').trim();
+      // Look for the text only inside the block it came from. Searching past the block --
+      // let alone from the top of the file -- is how a common word ends up sending someone
+      // to an unrelated line.
+      // Splitting and stripping the whole source on every click would be wasteful, and the
+      // source only changes when the document does.
+      const jumpLineCache = new Map();
+      function jumpLinesOf(src){
+        let hit = jumpLineCache.get(src);
+        if (!hit){
+          const lines = (src || '').split('\n');
+          hit = { lines: lines, bare: bareLines(lines) };
+          if (jumpLineCache.size > 4) jumpLineCache.clear();
+          jumpLineCache.set(src, hit);
+        }
+        return hit;
+      }
+
+      function refineWithin(model, fromLine, toLine, text){
+        const want = (text || '').replace(/\s+/g, ' ').trim();
         if (!model || !want || !fromLine) return null;
-        const lines = model.getValue().split('\n');
+        // Through findJumpLine, so this sees the same things resolution does: a line with
+        // its tags taken out, which is the only way code survives -- highlighted source is
+        // chopped into <span>s, so "resource \"aws_ecs_service\"" appears nowhere verbatim.
+        const { lines, bare } = jumpLinesOf(model.getValue());
         const from = Math.max(0, fromLine - 1);
         const to = Math.min(lines.length, Math.max(from + 1, toLine || from + 1));
-        for (const needle of [want].concat(jumpNeedles(want))){
-          if (!needle) continue;
-          for (let i = from; i < to; i++) if (lines[i].indexOf(needle) !== -1) return i + 1;
-        }
-        return null;
+        const at = findJumpLine(lines, bare, want, from, to);
+        return at === null ? null : at + 1;
       }
 
       function jumpToSource(side){
@@ -5734,7 +5835,10 @@ html[data-diff-side="before"] [data-diff-attr]{ box-shadow: inset 0 0 0 100vmax 
         const blockEnd = side === 'before' ? ctx.beforeEnd : ctx.afterEnd;
         // A selection says exactly which part of the block was meant, so it beats the
         // block's own line -- within the block, never beyond it.
-        const line = refineBySelection(model, blockLine, blockEnd, ctx.selText) || blockLine;
+        // What was selected beats what was merely pointed at, and both beat the block.
+        const line = refineWithin(model, blockLine, blockEnd, ctx.selText)
+          || refineWithin(model, blockLine, blockEnd, ctx.hitText)
+          || blockLine;
         if (!line) return;
         // Leaving the Rich View re-lays out the editor, so reveal on the next turn --
         // revealing into a container that has not been measured yet scrolls to the wrong
@@ -5836,11 +5940,12 @@ html[data-diff-side="before"] [data-diff-attr]{ box-shadow: inset 0 0 0 100vmax 
           beforeLine: b.line, beforeEnd: b.end,
           afterLine: a.line, afterEnd: a.end,
           selText: data.selText || '',
+          hitText: data.hitText || '',
         }, { hint: data.type !== 'jumpctx' });
       });
 
       // Markdown View: the blocks live in this document, so the event arrives directly.
-      function mdJumpCtxFor(node, selText){
+      function mdJumpCtxFor(node, selText, hitTarget){
         const block = node && node.closest ? node.closest('[data-sync-index]') : null;
         if (!block || !richDiffViewer.contains(block)) return null;
         buildMdJumpIndex();
@@ -5861,6 +5966,7 @@ html[data-diff-side="before"] [data-diff-attr]{ box-shadow: inset 0 0 0 100vmax 
           afterLine: onlyBefore ? null : mapped.after.line,
           afterEnd: mapped.after.end,
           selText: selText || '',
+          hitText: hitTarget ? jumpHitText(hitTarget, block) : '',
         };
         // Only offer a side we can actually place. Guessing from the whole file is exactly
         // what sent people to unrelated lines.
@@ -5913,7 +6019,7 @@ html[data-diff-side="before"] [data-diff-attr]{ box-shadow: inset 0 0 0 100vmax 
         richDiffViewer.addEventListener('contextmenu', (e) => {
           if (e.shiftKey || richViewMode !== 'markdown') return;
           const target = selectionJumpTarget(richDiffViewer);
-          const ctx = mdJumpCtxFor(e.target, target ? target.text : '');
+          const ctx = mdJumpCtxFor(e.target, target ? target.text : '', e.target);
           if (!ctx) return;
           e.preventDefault();
           openJumpMenu(e.clientX, e.clientY, ctx);
