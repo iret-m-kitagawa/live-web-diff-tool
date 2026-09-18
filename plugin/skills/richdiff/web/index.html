@@ -355,6 +355,30 @@
        writer). This variable is also folded into .rich-diff-viewer's left
        padding and .md-resizer's position calc above. */
 
+    /* The rows carry the toolbar's own Inline / Split control rather than a pair of
+       selects. Showing the same control the toolbar shows is what makes the panel
+       self-explanatory: there is nothing to say about how the two relate, because they are
+       visibly the same thing. */
+    .settings-panel {
+      position: fixed; z-index: 2100; display: none; padding: 8px;
+      background: var(--bg-panel); color: var(--text-main);
+      border: 1px solid var(--border-color); border-radius: 8px;
+      box-shadow: 0 8px 28px rgba(0, 0, 0, .35); font-size: 12px;
+    }
+    /* Named, because three pairs of buttons on their own do not say what they decide.
+       "Default" is the whole explanation: this is the mode each view starts in, and
+       pressing Inline / Split in the toolbar sets it for the view you are looking at. */
+    .settings-head {
+      padding: 1px 4px 7px; margin-bottom: 6px; color: var(--text-muted);
+      border-bottom: 1px solid var(--border-color);
+    }
+    .settings-row {
+      display: flex; align-items: center; justify-content: space-between; gap: 20px;
+      padding: 3px 4px;
+    }
+    .settings-row + .settings-row { margin-top: 2px; }
+    .settings-label { color: var(--text-muted); white-space: nowrap; }
+
     /* Right-click menu for jumping from a block in a Rich View to the line that
        produced it. Drawn in this document, never inside the HTML View's iframe: the
        iframe is sandboxed without allow-same-origin, so it reports the click position
@@ -682,6 +706,9 @@
         <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M7.775 3.275a.75.75 0 001.06 1.06l1.25-1.25a2 2 0 112.83 2.83l-2.5 2.5a2 2 0 01-2.83 0 .75.75 0 00-1.06 1.06 3.5 3.5 0 004.95 0l2.5-2.5a3.5 3.5 0 00-4.95-4.95l-1.25 1.25zm-4.69 9.64a2 2 0 010-2.83l2.5-2.5a2 2 0 012.83 0 .75.75 0 001.06-1.06 3.5 3.5 0 00-4.95 0l-2.5 2.5a3.5 3.5 0 004.95 4.95l1.25-1.25a.75.75 0 00-1.06-1.06l-1.25 1.25a2 2 0 01-2.83 0z"></path></svg>
         Copy Diff URL
       </button>
+      <button class="btn" id="settingsBtn" title="Default View" aria-haspopup="true" aria-expanded="false">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 008 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 004.6 15a1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 009 4.6a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06A1.65 1.65 0 0019.4 9c.14.63.7 1.08 1.51 1H21a2 2 0 110 4h-.09c-.81-.08-1.37.37-1.51 1z"/></svg>
+      </button>
     </div>
   </div>
   <div class="toast" id="toast">Diff URL copied to clipboard!</div>
@@ -702,6 +729,30 @@
       <div id="mdTocResizer" class="md-toc-resizer" title="目次の幅を変える"></div>
     </div>
     <div id="richDiffViewer" class="rich-diff-viewer markdown-body"></div>
+    <div id="settingsPanel" class="settings-panel" role="dialog" aria-label="Default View">
+      <div class="settings-head">Default View</div>
+      <div class="settings-row">
+        <span class="settings-label">Code View</span>
+        <div class="view-mode-group" role="group" data-settings-for="text">
+          <button type="button" class="btn view-mode-btn" data-mode="inline">Inline</button>
+          <button type="button" class="btn view-mode-btn" data-mode="split">Split</button>
+        </div>
+      </div>
+      <div class="settings-row">
+        <span class="settings-label">Markdown View</span>
+        <div class="view-mode-group" role="group" data-settings-for="markdown">
+          <button type="button" class="btn view-mode-btn" data-mode="inline">Inline</button>
+          <button type="button" class="btn view-mode-btn" data-mode="split">Split</button>
+        </div>
+      </div>
+      <div class="settings-row">
+        <span class="settings-label">HTML View</span>
+        <div class="view-mode-group" role="group" data-settings-for="html">
+          <button type="button" class="btn view-mode-btn" data-mode="inline">Inline</button>
+          <button type="button" class="btn view-mode-btn" data-mode="split">Split</button>
+        </div>
+      </div>
+    </div>
     <div id="jumpMenu" class="jump-menu" role="menu" aria-label="ソースへジャンプ">
       <button type="button" id="jumpBefore" role="menuitem">変更前のソースへジャンプ</button>
       <button type="button" id="jumpAfter" role="menuitem">変更後のソースへジャンプ</button>
@@ -4000,7 +4051,37 @@ html[data-diff-side="before"] [data-diff-attr]{ box-shadow: inset 0 0 0 100vmax 
     // The single-column / side-by-side choice is held in this one variable, shared across
     // Monaco / Markdown View / HTML View (toggled with the toolbar's Inline / Split button.
     // false = side-by-side, true = single-column/inline).
+    // Inline / split is per view, not one switch for all three. Reading a Markdown diff
+    // in one column while wanting HTML side by side is an ordinary combination, and before
+    // this the two fought over a single flag. isInlineView stays as "the mode of whichever
+    // view is open", because that is what the rest of the file asks it; switching views
+    // reseats it from the map below.
     let isInlineView = false;
+    const VIEW_KEYS = ['text', 'markdown', 'html'];
+    const SETTINGS_KEY = 'diffToolSettings';
+    // Two things, deliberately kept apart. defaultInline is what the settings panel edits
+    // and what is stored: where each view starts. viewInline is where each view actually
+    // is right now, seeded from the defaults at load and moved only by the toolbar. A panel
+    // that says "Default" must not reach out and change the screen, or it is not a default
+    // at all -- it is a second set of Inline / Split buttons wearing the wrong label.
+    const defaultInline = { text: false, markdown: false, html: false };
+    const viewInline = { text: false, markdown: false, html: false };
+
+    function loadSettings(){
+      let saved = null;
+      try { saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}'); } catch (e) { saved = null; }
+      const inline = saved && typeof saved === 'object' ? saved.inline : null;
+      if (inline && typeof inline === 'object'){
+        for (const k of VIEW_KEYS) if (typeof inline[k] === 'boolean') defaultInline[k] = inline[k];
+      }
+      for (const k of VIEW_KEYS) viewInline[k] = defaultInline[k];
+    }
+
+    function saveSettings(){
+      try { localStorage.setItem(SETTINGS_KEY, JSON.stringify({ inline: { ...defaultInline } })); } catch (e) {}
+    }
+
+    loadSettings();
     let isRichDiffView = false;
     let richViewMode = null; // 'markdown' | 'html' | null -- which Rich View is open (null when none is)
     let mdDiffedHtml = null; // sanitized diff HTML, built once by openMarkdownView; reused across single/split
@@ -4604,6 +4685,7 @@ html[data-diff-side="before"] [data-diff-attr]{ box-shadow: inset 0 0 0 100vmax 
         diffEditorContainer.style.left = '';
         diffEditorContainer.style.visibility = '';
 
+        applyViewInline('text');
         richDiffViewer.style.display = 'none';
         hideMdToc(); // Also clear the TOC; don't leave its scroll subscription behind either
         htmlDiffFrame.style.display = 'none';
@@ -6693,6 +6775,8 @@ html[data-diff-side="before"] [data-diff-attr]{ box-shadow: inset 0 0 0 100vmax 
       // untouched for output that is already balanced).
       function openMarkdownView() {
         try {
+          // Before drawing, so the render reads this view's own inline/split answer.
+          applyViewInline('markdown');
           const bText = beforeModel.getValue();
           const aText = afterModel.getValue();
 
@@ -6746,6 +6830,7 @@ html[data-diff-side="before"] [data-diff-attr]{ box-shadow: inset 0 0 0 100vmax 
       // previous render does not linger. When opening from the button, the return value can
       // be ignored.
       async function openHtmlView() {
+        applyViewInline('html');
         const bText = beforeModel.getValue();
         const aText = afterModel.getValue();
 
@@ -6834,7 +6919,93 @@ html[data-diff-side="before"] [data-diff-attr]{ box-shadow: inset 0 0 0 100vmax 
 
       // Select whichever side was pressed. Pressing the same one again does nothing (to
       // avoid the wasted work of redrawing the Markdown / HTML View).
+      const currentViewKey = () => richViewMode || 'text';
+
+      // ---- Settings ----
+      // The panel and the toolbar's Inline / Split are the same setting seen two ways: the
+      // toolbar changes the view you are looking at, the panel changes any of the three
+      // without having to open them. Keeping one source of truth means there is never a
+      // stored default quietly disagreeing with what is on screen.
+      // var, not const: applyViewInline runs during start-up and calls syncSettingsPanel,
+      // which would hit the temporal dead zone of a const declared further down.
+      var settingsBtn = document.getElementById('settingsBtn');
+      var settingsPanel = document.getElementById('settingsPanel');
+      var settingsGroups = settingsPanel
+        ? VIEW_KEYS.reduce((m, k) => {
+            m[k] = settingsPanel.querySelector('[data-settings-for="' + k + '"]');
+            return m;
+          }, {})
+        : null;
+
+      function syncSettingsPanel(){
+        if (!settingsGroups) return;
+        for (const k of VIEW_KEYS){
+          const group = settingsGroups[k];
+          if (!group) continue;
+          const want = defaultInline[k] ? 'inline' : 'split';
+          group.querySelectorAll('[data-mode]').forEach((b) => {
+            b.classList.toggle('active', b.dataset.mode === want);
+          });
+        }
+      }
+
+      function closeSettings(){
+        if (!settingsPanel) return;
+        settingsPanel.style.display = 'none';
+        if (settingsBtn) settingsBtn.setAttribute('aria-expanded', 'false');
+      }
+
+      function openSettings(){
+        if (!settingsPanel || !settingsBtn) return;
+        syncSettingsPanel();
+        settingsPanel.style.visibility = 'hidden';
+        settingsPanel.style.display = 'block';
+        const b = settingsBtn.getBoundingClientRect();
+        const r = settingsPanel.getBoundingClientRect();
+        settingsPanel.style.left = Math.max(8, Math.min(b.right - r.width, window.innerWidth - r.width - 8)) + 'px';
+        settingsPanel.style.top = (b.bottom + 6) + 'px';
+        settingsPanel.style.visibility = '';
+        settingsBtn.setAttribute('aria-expanded', 'true');
+      }
+
+      if (settingsBtn && settingsPanel){
+        settingsBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (settingsPanel.style.display === 'block') closeSettings(); else openSettings();
+        });
+        for (const k of VIEW_KEYS){
+          const group = settingsGroups && settingsGroups[k];
+          if (!group) continue;
+          group.querySelectorAll('[data-mode]').forEach((b) => {
+            b.addEventListener('click', () => setDefaultInline(k, b.dataset.mode === 'inline'));
+          });
+        }
+        document.addEventListener('mousedown', (e) => {
+          if (settingsPanel.style.display !== 'block') return;
+          if (settingsPanel.contains(e.target) || settingsBtn.contains(e.target)) return;
+          closeSettings();
+        }, true);
+        document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSettings(); });
+        window.addEventListener('resize', closeSettings);
+      }
+      syncSettingsPanel();
+
+      // Put isInlineView and the toolbar where the given view left them. Called when
+      // switching views, so each one keeps its own answer; deliberately does not redraw a
+      // Rich View, since the caller is about to draw it anyway.
+      function applyViewInline(key){
+        isInlineView = !!viewInline[key];
+        inlineViewBtn.classList.toggle('active', isInlineView);
+        splitViewBtn.classList.toggle('active', !isInlineView);
+        if (typeof diffEditor !== 'undefined' && diffEditor) {
+          diffEditor.updateOptions({ renderSideBySide: !isInlineView });
+        }
+        syncSettingsPanel();
+      }
+
+      // The toolbar moves the view you are looking at, and only for this session.
       function setViewMode(inline) {
+        viewInline[currentViewKey()] = inline;
         if (isInlineView === inline) return;
         isInlineView = inline;
         inlineViewBtn.classList.toggle('active', isInlineView);
@@ -6845,10 +7016,20 @@ html[data-diff-side="before"] [data-diff-attr]{ box-shadow: inset 0 0 0 100vmax 
         updatePlaceholders(); rebuildChangeActions();
 
         // If the Markdown View / HTML View is open, match its single-column <-> split
-        // state as well. Since the state is shared via isInlineView, it is enough to just
-        // redraw whichever one is open (the diff is not retaken).
+        // state as well (the diff is not retaken).
         if (richViewMode === 'markdown') renderMarkdownView();
         else if (richViewMode === 'html') renderHtmlView();
+      }
+
+      // The panel sets where a view will start. The view on screen is left exactly where it
+      // is -- that is the whole point of calling this a default. Any other view takes the
+      // new value straight away, so opening it shows the change rather than making someone
+      // reload to find out whether the setting did anything.
+      function setDefaultInline(key, inline) {
+        defaultInline[key] = inline;
+        if (key !== currentViewKey()) viewInline[key] = inline;
+        saveSettings();
+        syncSettingsPanel();
       }
 
       inlineViewBtn.addEventListener('click', () => setViewMode(true));
@@ -6902,6 +7083,10 @@ html[data-diff-side="before"] [data-diff-attr]{ box-shadow: inset 0 0 0 100vmax 
         });
       }
       setTimeout(() => { setupEditorDrop(diffOrig, beforeModel); setupEditorDrop(diffMod, afterModel); }, 100);
+      // Seat the text view at whatever the settings say before anything is restored: the
+      // Rich Views seat themselves when they open, but nothing opens the text view, so its
+      // stored answer would never have been applied.
+      applyViewInline('text');
       loadFromUrl();
       // When ?token= is present (opened from a local server the CLI started), loadFromServer()
       // pours in the content, so auto-restore is not done (it would overwrite the content
