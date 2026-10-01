@@ -2105,45 +2105,42 @@
       groups.forEach((g, gi) => {
         for (let b = 0; b < g.ins.length; b++) if (!usedIns.has(key(gi, b))) markInserted(g.ins[b], tally);
       });
+      //    The pairs this run produced fix where everything else goes: a deletion belongs
+      //    after the element its nearest paired predecessor was paired with, and before the
+      //    one its nearest paired successor was paired with. Within such a gap, the j-th
+      //    deletion goes where the j-th addition of the gap is -- the two stand at the same
+      //    place in the sequence. Measured on a chip whose two <span class="num"> both
+      //    changed and nothing paired, so the whole run is one gap: chaining each deletion
+      //    off the one inserted before it piled them up at the head, "カスタマー 13 32 件 /
+      //    アナリスト 件" against "カスタマー 13 件 / アナリスト 32 件" in the before
+      //    document. Counting from the start of the RUN instead of the gap goes wrong as
+      //    soon as an earlier deletion has shifted the positions: measured on a test spec
+      //    with steps 4 and 12 removed, step 12 was drawn after step 13. Only pairs made
+      //    inside this run count as fixed points; a deletion paired with an addition in
+      //    another run is drawn over there, and the deletions after it here must not follow.
       groups.forEach((g, gi) => {
-        let cursor = null;
-        for (let a = 0; a < g.del.length; a++){
+        const mateAt = g.del.map((el, a) => {
           const mate = pairedDel.get(key(gi, a));
-          if (mate){ cursor = mate; continue; }
+          return mate ? g.ins.indexOf(mate) : -1;
+        });
+        const here = (el) => !!el && el.parentNode === newParent;
+        let lo = 0, j = 0; // the gap's first addition, and deletions placed in the gap so far
+        for (let a = 0; a < g.del.length; a++){
+          if (pairedDel.has(key(gi, a))){
+            if (mateAt[a] >= 0){ lo = mateAt[a] + 1; j = 0; }
+            continue;
+          }
+          let hi = g.ins.length;
+          for (let k = a + 1; k < g.del.length; k++) if (mateAt[k] >= 0){ hi = mateAt[k]; break; }
           let at = null;
-          // The deletion run and the addition run stand at the same place in the sequence, so
-          // the a-th deletion belongs where the a-th addition is. Take that first, ahead of
-          // the adjacency clue below: when nothing in the run paired up, the clue is the
-          // deletion inserted just before, and chaining off it packs the whole run together at
-          // the head. Measured on a chip whose two <span class="num"> both changed, inside an
-          // inline-flex parent (so the spans count as blocks and go through this path, while
-          // the text between them does not): the before pane rendered "カスタマー 13 32 件 /
-          // アナリスト 件" -- both numbers piled up at the first slot and the second slot left
-          // bare -- against "カスタマー 13 件 / アナリスト 32 件" in the before document.
-          for (let k = a; k < g.ins.length; k++){
-            if (g.ins[k] && g.ins[k].parentNode === newParent){ at = g.ins[k]; break; }
-          }
-          if (at){ /* positioned */ }
-          else if (cursor && cursor.parentNode === newParent) at = cursor.nextSibling;
-          else {
-            for (let k = a + 1; k < g.del.length; k++){
-              const nxt = pairedDel.get(key(gi, k));
-              if (nxt && nxt.parentNode === newParent){ at = nxt; break; }
-            }
-            // When not a single element got matched, place it right before
-            // the addition element that landed at the same position. The
-            // deletion run and addition run point at the same position in
-            // the sequence, so this keeps the ordering correct. Without
-            // this, it would get appended to the end of the parent, and
-            // inside a <p>, just the <em> would jump to the end of the sentence.
-            if (!at){
-              for (let k = 0; k < g.ins.length; k++){
-                if (g.ins[k] && g.ins[k].parentNode === newParent){ at = g.ins[k]; break; }
-              }
-            }
-            if (!at && g.before && g.before.parentNode === newParent) at = g.before;
-          }
-          cursor = insertDeletedChild(newParent, g.del[a], at, tally) || cursor;
+          if (lo + j < hi && here(g.ins[lo + j])) at = g.ins[lo + j];
+          else if (hi < g.ins.length && here(g.ins[hi])) at = g.ins[hi];
+          // Past the last addition of the run, the deletion still stands before whatever
+          // follows the run. Without this it would be appended to the end of the parent,
+          // and inside a <p>, just the <em> would jump to the end of the sentence.
+          else if (here(g.before)) at = g.before;
+          j++;
+          insertDeletedChild(newParent, g.del[a], at, tally);
         }
       });
     }
