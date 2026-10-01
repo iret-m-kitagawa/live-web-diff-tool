@@ -1362,6 +1362,26 @@
       return m;
     }
 
+    // An attribute value as the browser sees it; undefined where it has no effect at all.
+    // class="" and no class are the same thing to the page, and so are class="a b" and
+    // class="b  a", style="" and no style, style="color:red" and style="color: red;". A
+    // page built by a script writes these freely -- class="${cond ? 'hand' : ''}" leaves
+    // class="" on every ordinary row -- and compared as text they read as changes: measured
+    // on the user's test spec, whose new version stopped writing class="" on its rows, every
+    // row of all six tables was tinted on both sides with nothing visibly different.
+    function attrValueKey(name, v){
+      if (v === undefined) return undefined;
+      if (name === 'class'){
+        const t = Array.from(new Set(v.split(/\s+/).filter(Boolean))).sort().join(' ');
+        return t || undefined;
+      }
+      if (name === 'style'){
+        const t = v.split(';').map((d) => d.trim().replace(/\s*:\s*/, ':').replace(/\s+/g, ' ')).filter(Boolean).join(';');
+        return t || undefined;
+      }
+      return v;
+    }
+
     function diffAttributes(oldEl, newEl, tally){
       if (!oldEl || !newEl || newEl.nodeType !== 1 || oldEl.nodeType !== 1) return;
       // Excluded because putting a box around the entire body would frame the whole screen
@@ -1375,12 +1395,9 @@
       // changed (h3 -> h2, ul -> ol). With no other clue when the text is
       // the same, promoting a heading's level would otherwise go unshown.
       if (oldEl.tagName !== newEl.tagName) names.add('tagName');
-      om.forEach((v, k) => { if (nm.get(k) !== v) names.add(k); });
-      nm.forEach((v, k) => { if (om.get(k) !== v) names.add(k); });
+      om.forEach((v, k) => { if (attrValueKey(k, nm.get(k)) !== attrValueKey(k, v)) names.add(k); });
+      nm.forEach((v, k) => { if (attrValueKey(k, om.get(k)) !== attrValueKey(k, v)) names.add(k); });
       if (!names.size) return;
-
-      // Don't include the values (a style attribute or a long URL would break the display) -- keep only the names of the attributes that changed.
-      newEl.setAttribute('data-diff-attr', Array.from(names).sort().join(','));
 
       // The DOM this function annotates (newEl belongs to newDoc) is the one and only
       // merged document: buildHtmlDiffOutput serializes newDoc once into the `single`
@@ -1407,8 +1424,21 @@
       if (Object.keys(oldValues).length) {
         newEl.setAttribute('data-diff-attr-old', JSON.stringify(oldValues));
       }
+
+      // The table itself, its row groups, rows and columns are not filled for an attribute
+      // change. A fill across a whole row is how a row that was added or removed reads, and
+      // spending it on anything else makes rows that were neither look as if they were:
+      // measured on the user's test spec, where twelve rows lost class="hand" -- whose only
+      // effect is a 3px bar on the first cell -- and came out filled red and green like
+      // rows that were removed and added. The old value is stashed above all the same, so
+      // the before pane draws the row as it was and the two panes show the difference.
+      if (TABLE_PARTS.has(newEl.tagName) && oldEl.tagName === newEl.tagName) return;
+
+      // Don't include the values (a style attribute or a long URL would break the display) -- keep only the names of the attributes that changed.
+      newEl.setAttribute('data-diff-attr', Array.from(names).sort().join(','));
       tally.attrs = (tally.attrs || 0) + 1;
     }
+    const TABLE_PARTS = new Set(['TABLE', 'THEAD', 'TBODY', 'TFOOT', 'TR', 'COLGROUP', 'COL']);
 
     /* ---------- 6. Recursive diff, level by level ---------- */
     // This used to flatten the DOM into a flat array of "units" (block
