@@ -1615,10 +1615,111 @@
       const aid = a.getAttribute && a.getAttribute('id');
       if (aid && b.getAttribute && aid === b.getAttribute('id')) return 1;
       if (a.tagName === 'TR' && b.tagName === 'TR'){
+        const f = rowFieldSimilarity(a, b);
+        if (f !== null) return f;
         const r = rowPairTexts(a, b);
         if (r) return tokenOverlap(r.fa, r.fb);
       }
       return tokenOverlap(norm(a.textContent), norm(b.textContent));
+    }
+
+    // Two rows are the same record when their fields agree, not when their text shares
+    // the most characters. Counted over the whole row, the long cells decide: the first
+    // step of a test spec carries the scenario's long 前提条件, so when that step was
+    // removed and the next one moved up into first place, the removed step and its
+    // successor shared that whole premise and won over the true pair -- the same step
+    // with the same テスト観点, 操作, 期待結果 and ユースケース, differing only in the
+    // premise. Bag-of-characters overlap made it worse: two unrelated Japanese sentences
+    // share most of their kana and punctuation, so unrelated rows scored 0.4-0.6. Measured
+    // on the user's たたき2 S2 table: the removed アラートの通知 scored 0.89 against
+    // 一覧のタブと表示範囲, the step's true counterpart 0.78.
+    // So each column shared by both tables is scored on its own, by character bigrams
+    // (which need the characters in the same order), and weighed by how much it tells rows
+    // apart: a column that reads 正常系 on every row agrees for every pair and says
+    // nothing. The first column is left out -- this is the score for runs where that
+    // column was found not to identify rows. Null when the columns cannot be lined up.
+    function rowFieldSimilarity(oldTr, newTr){
+      if (hasSpans(oldTr) || hasSpans(newTr)) return null;
+      const oldTable = oldTr.closest('table'), newTable = newTr.closest('table');
+      if (!oldTable || !newTable) return null;
+      const cm = columnMap(oldTable, newTable);
+      if (!cm) return null;
+      const w = columnWeights(oldTable, newTable, cm);
+      const ca = rowCells(oldTr), cb = rowCells(newTr);
+      let num = 0, den = 0;
+      cm.cols.forEach((col, k) => {
+        if (col.o <= 0 || col.n <= 0 || !w[k]) return;
+        if (!ca[col.o] || !cb[col.n]) return;
+        num += w[k] * bigramDice(norm(ca[col.o].textContent), norm(cb[col.n].textContent));
+        den += w[k];
+      });
+      return den ? num / den : null;
+    }
+
+    function rowCells(tr){
+      const out = [];
+      for (let c = tr.firstElementChild; c; c = c.nextElementSibling)
+        if (c.tagName === 'TD' || c.tagName === 'TH') out.push(c);
+      return out;
+    }
+
+    // Per column of the merged column order: how different a row's value is from the next
+    // row's, on average over both tables. Near 1 for a column of names, 0 for a column
+    // that repeats one value -- and near 0 as well for a column whose values differ only
+    // by a running number, like 「S2-05 まで完了していること」. Counting distinct values
+    // would have rated that one fully identifying, and it identifies nothing: once the
+    // steps are renumbered it agrees exactly with the neighbouring row, so it pulled each
+    // step towards the wrong partner. Neighbours are what a row is confused with, so they
+    // are what is compared.
+    const tableColWeights = new WeakMap();
+    function columnWeights(oldTable, newTable, cm){
+      let w = tableColWeights.get(newTable);
+      if (w) return w;
+      const bodyRows = (table) => {
+        const out = [];
+        for (const tr of table.querySelectorAll('tr')){
+          if (tr.closest('table') !== table) continue;
+          const cells = rowCells(tr);
+          if (cells.length && cells[0].tagName === 'TD') out.push(cells); // not a header row
+        }
+        return out;
+      };
+      const spread = (rows, idx) => {
+        if (rows.length < 2) return 1;
+        let sum = 0;
+        for (let i = 0; i + 1 < rows.length; i++){
+          const x = rows[i][idx], y = rows[i + 1][idx];
+          sum += 1 - bigramDice(x ? norm(x.textContent) : '', y ? norm(y.textContent) : '');
+        }
+        return sum / (rows.length - 1);
+      };
+      const ro = bodyRows(oldTable), rn = bodyRows(newTable);
+      w = cm.cols.map((col) => col.o < 0 || col.n < 0 ? 0 : (spread(ro, col.o) + spread(rn, col.n)) / 2);
+      tableColWeights.set(newTable, w);
+      return w;
+    }
+
+    // Dice coefficient over character bigrams, whitespace ignored.
+    function bigramDice(x, y){
+      if (x === y) return 1;
+      const grams = (s) => {
+        const cs = Array.from(s.replace(/\s+/g, ''));
+        if (cs.length < 2) return cs;
+        const out = [];
+        for (let i = 0; i + 1 < cs.length; i++) out.push(cs[i] + cs[i + 1]);
+        return out;
+      };
+      const gx = grams(x), gy = grams(y);
+      if (!gx.length && !gy.length) return 1;
+      if (!gx.length || !gy.length) return 0;
+      const left = new Map();
+      for (const g of gx) left.set(g, (left.get(g) || 0) + 1);
+      let hit = 0;
+      for (const g of gy){
+        const k = left.get(g);
+        if (k){ hit++; left.set(g, k - 1); }
+      }
+      return 2 * hit / (gx.length + gy.length);
     }
 
     // The text nodeSimilarity treats as an element's identity: a row's first cell, a
