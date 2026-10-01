@@ -1607,6 +1607,89 @@
       return { ia: ta[0], ib: tb[0], fa: ta.join(' '), fb: tb.join(' ') };
     }
 
+    // Similarity on content alone: nodeSimilarity with the identity half taken out. Used
+    // for a run whose "identity" column turns out not to identify anything (see
+    // identityTrustworthy).
+    function contentSimilarity(a, b){
+      if (!sameTagFamily(a, b)) return 0;
+      const aid = a.getAttribute && a.getAttribute('id');
+      if (aid && b.getAttribute && aid === b.getAttribute('id')) return 1;
+      if (a.tagName === 'TR' && b.tagName === 'TR'){
+        const r = rowPairTexts(a, b);
+        if (r) return tokenOverlap(r.fa, r.fb);
+      }
+      return tokenOverlap(norm(a.textContent), norm(b.textContent));
+    }
+
+    // The text nodeSimilarity treats as an element's identity: a row's first cell, a
+    // card's heading. Empty when the element has nothing separate from its full text.
+    function pairIdentity(el){
+      if (el.tagName === 'TR'){
+        for (let c = el.firstElementChild; c; c = c.nextElementSibling)
+          if (c.tagName === 'TD' || c.tagName === 'TH') return norm(c.textContent);
+        return '';
+      }
+      const id = identityText(el);
+      return id && id !== norm(el.textContent) ? id : '';
+    }
+
+    // Is the identity column of this run actually identifying records?
+    // Weighting the first cell half of the score is right for a real key -- a row keyed
+    // "在庫確認" whose values all changed is still that row -- and exactly wrong for a
+    // running number. Remove one step from a numbered test spec and every step after it
+    // is renumbered: S1-04 is now S1-03, and "S1-04" on the after side belongs to the step
+    // that used to be S1-05. Matching on it paired every row with its neighbour, deleted
+    // the wrong row outright, and filled the rest with marks for content that never
+    // changed. Measured on a 15-step table with one step dropped: the step that was
+    // actually removed came out "changed", the step after it came out deleted, and 12
+    // rows were marked against the wrong partner.
+    // The tell is in the data: rows that share an identity text but share little else,
+    // while each of them has a much better match elsewhere on content. When that is the
+    // story for most of the rows that share an identity, the column is a position, not a
+    // key, and the run is paired on content.
+    function identityTrustworthy(dels, inss, content){
+      let same = 0, contradicted = 0;
+      for (let a = 0; a < dels.length; a++){
+        const id = pairIdentity(dels[a]);
+        if (!id) continue;
+        for (let b = 0; b < inss.length; b++){
+          if (pairIdentity(inss[b]) !== id) continue;
+          same++;
+          const here = content(a, b);
+          let best = 0;
+          for (let k = 0; k < inss.length; k++) if (k !== b) best = Math.max(best, content(a, k));
+          if (best >= 0.6 && best - here >= 0.3) contradicted++;
+          break;
+        }
+      }
+      return !(same >= 2 && contradicted * 2 >= same);
+    }
+
+    // The best set of pairs that never cross: if a is paired before a', its partner comes
+    // before a''s partner. sim[a][b] is a score, or -1 where the pair is not allowed.
+    // Maximises the total score -- the weighted form of a longest common subsequence.
+    function alignRuns(sim, m, n){
+      const dp = [];
+      for (let a = 0; a <= m; a++) dp.push(new Float64Array(n + 1));
+      for (let a = m - 1; a >= 0; a--){
+        for (let b = n - 1; b >= 0; b--){
+          let best = dp[a + 1][b] > dp[a][b + 1] ? dp[a + 1][b] : dp[a][b + 1];
+          const s = sim[a][b];
+          if (s >= 0 && s + dp[a + 1][b + 1] >= best) best = s + dp[a + 1][b + 1];
+          dp[a][b] = best;
+        }
+      }
+      const pairs = [];
+      let a = 0, b = 0;
+      while (a < m && b < n){
+        const s = sim[a][b];
+        if (s >= 0 && Math.abs(dp[a][b] - (s + dp[a + 1][b + 1])) < 1e-9){ pairs.push([a, b]); a++; b++; }
+        else if (dp[a + 1][b] >= dp[a][b + 1]) a++;
+        else b++;
+      }
+      return pairs;
+    }
+
     function nodeSimilarity(a, b){
       if (!sameTagFamily(a, b)) return 0;
       // An id carried by both sides names the same element in both documents. That is the
@@ -1805,16 +1888,39 @@
         }
       };
 
-      // 1) First, best match within the same run. The threshold varies with how easily a mismatch could happen.
-      const near = [];
+      // 1) Within each run, the best pairs that never cross. The threshold varies with how
+      //    easily a mismatch could happen.
+      //    Pairing greedily by score let pairs cross, and a paired old element is drawn at
+      //    its partner's position -- so a crossing pair reordered the BEFORE pane, showing
+      //    the before document in an order it does not have. Measured on the renumbered
+      //    test spec: S1-15 drawn right after S1-06, S1-11 ahead of S1-10. A non-crossing
+      //    alignment keeps both documents' order by construction; an element that really
+      //    swapped places and changed comes out as a deletion here and an addition there,
+      //    which is what happened to it.
       groups.forEach((g, gi) => {
-        for (let a = 0; a < g.del.length; a++)
-          for (let b = 0; b < g.ins.length; b++){
-            const sc = nodeSimilarity(g.del[a], g.ins[b]);
-            if (sc >= pairThresholdFor(newParent, g.ins[b].tagName)) near.push({ gi: gi, a: a, gj: gi, b: b, sc: sc });
+        const m = g.del.length, n = g.ins.length;
+        if (!m || !n) return;
+        const memo = new Map();
+        const content = (a, b) => {
+          const k = a * n + b;
+          if (!memo.has(k)) memo.set(k, contentSimilarity(g.del[a], g.ins[b]));
+          return memo.get(k);
+        };
+        const trust = identityTrustworthy(g.del, g.ins, content);
+        const sim = [];
+        for (let a = 0; a < m; a++){
+          const row = new Array(n);
+          for (let b = 0; b < n; b++){
+            const sc = trust ? nodeSimilarity(g.del[a], g.ins[b]) : content(a, b);
+            row[b] = sc >= pairThresholdFor(newParent, g.ins[b].tagName) ? sc : -1;
           }
+          sim.push(row);
+        }
+        for (const [a, b] of alignRuns(sim, m, n)){
+          pairedDel.set(key(gi, a), g.ins[b]); usedIns.add(key(gi, b));
+          diffNode(g.del[a], g.ins[b], tally, depth + 1);
+        }
       });
-      settle(near);
 
       // 2) Next, elements that "moved and also changed content" across
       //    runs. Wrongly linking these would collapse two different things
@@ -2182,7 +2288,24 @@
       // <del>Out of service</del> + an inserted badge + a deleted badge.
       // When a text diff was applied, inline children are excluded from the matching below.
       let ownTextEdited = false;
+      const oldHasText = visibleNorm(ownText(oldEl)) !== '';
+      const newHasText = visibleNorm(ownText(newEl)) !== '';
       if (ownText(oldEl).trim() || ownText(newEl).trim()) ownTextEdited = diffOwnText(oldEl, newEl, tally);
+
+      // 1a. An attribute that changed together with content appearing or disappearing is
+      // part of that change, not a change of its own. A coverage cell going from
+      // <td class="hit">●</td> to <td class="">: the class only ever styled the ●. Tinting
+      // it painted the now-empty after cell green and, the other way round, an empty before
+      // cell red -- colour on a blank cell, which reads as "something was added here" where
+      // nothing was. The ● carries its own deletion or insertion mark. Only the tint goes:
+      // data-diff-attr-old stays, so the before pane still gets the old class back.
+      if (ownTextEdited && oldHasText !== newHasText && newEl.hasAttribute('data-diff-attr')){
+        const names = newEl.getAttribute('data-diff-attr').split(',');
+        if (names.indexOf('tagName') === -1){
+          newEl.removeAttribute('data-diff-attr');
+          tally.attrs = Math.max(0, (tally.attrs || 0) - 1);
+        }
+      }
 
       // 1b. Inline children are excluded from the matching below, but their
       // attribute changes are still picked up here. Leaving them excluded
