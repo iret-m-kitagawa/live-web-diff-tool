@@ -954,6 +954,14 @@
       'table-header-group','table-row-group','table-footer-group','table-caption','none'
     ]);
 
+    // Elements whose content the parser hands over as raw text. Putting an <ins> inside one
+    // does not mark anything: the browser has no markup to parse there, so the tag reaches
+    // the reader as characters. They are boundaries whatever their display says -- a
+    // <textarea> computes to inline-block, so without this its text counted as its PARENT's
+    // own text and the parent's own edit wrapped a range that fell inside the box. Measured
+    // on edge-cases: both panes rendered the literal string
+    // '<ins data-diff="ins">と部門コード</ins>' inside the <textarea>.
+    const RAW_TEXT_TAGS = new Set(['TEXTAREA', 'TITLE']);
     let boundaryEls = null;    // Set<Element> -- elements judged to be boundaries
     let classifiedDocs = null; // Set<Document> -- documents already classified
 
@@ -973,6 +981,7 @@
 
     function isBlockEl(el){
       if (!el || el.nodeType !== 1) return false;
+      if (RAW_TEXT_TAGS.has(el.tagName)) return true;
       // For an element in an already-classified document, trust that result (not present = inline)
       if (classifiedDocs && classifiedDocs.has(el.ownerDocument)) return boundaryEls.has(el);
       return BLOCK_TAGS.has(el.tagName);
@@ -1213,6 +1222,18 @@
       const oldText = oldEl ? ownText(oldEl) : '';
       const newText = ownText(newEl);
       if (oldText === newText) return false;
+      // Stash the old text for the before pane to put back, and tint the element rather
+      // than marking inside it -- the same shape as an attribute change: each pane shows
+      // its own value, and the tint says this is the one that differs.
+      if (RAW_TEXT_TAGS.has(newEl.tagName)){
+        newEl.setAttribute('data-diff-old-value', oldText);
+        newEl.setAttribute('data-diff-value', '');
+        newEl.setAttribute('data-diff-row', 'changed');
+        tally.del += norm(oldText).length;
+        tally.add += norm(newText).length;
+        tally.blocks++;
+        return true;
+      }
       // If only whitespace placement differs, there's no visible change, so
       // show nothing. When nesting depth changed, only the indentation
       // shifted, leaving empty ins/del elements dangling. pre / code are
@@ -1444,14 +1465,29 @@
       return el.tagName + ' ' + t;
     }
 
+    // Does anything inside this element count as a block?
+    function holdsBlockDescendant(el){
+      for (let c = el.firstElementChild; c; c = c.nextElementSibling){
+        if (isBlockEl(c) || holdsBlockDescendant(c)) return true;
+      }
+      return false;
+    }
+
     function diffableChildren(el, blockOnly){
       const out = [];
       for (let c = el.firstElementChild; c; c = c.nextElementSibling){
         if (c.tagName === 'SCRIPT' || c.tagName === 'STYLE') continue;
         // Excluded: elements we inserted ourselves for the diff display
         if (c.hasAttribute('data-diff') || c.hasAttribute('data-diff-block')) continue;
-        // Excluded: inline elements already handled by the parent's text diff (see the explanation below)
-        if (blockOnly && !isBlockEl(c)) continue;
+        // Excluded: inline elements already handled by the parent's text diff (see the
+        // explanation below) -- but only when that is actually true. ownText() stops at
+        // blocks, so an inline element that CONTAINS blocks never had its content counted
+        // in the parent's text, and skipping it here loses everything inside it.
+        // An inline-flex chip is exactly this shape: the browser blockifies its children
+        // for being flex items while the chip itself stays inline, so with the parent's own
+        // text edited the chip was dropped and never descended into -- the before pane
+        // rendered the AFTER document's numbers with no marker anywhere.
+        if (blockOnly && !isBlockEl(c) && !holdsBlockDescendant(c)) continue;
         out.push(c);
       }
       return out;
@@ -1569,6 +1605,235 @@
       }
       if (!ta.length) return null;
       return { ia: ta[0], ib: tb[0], fa: ta.join(' '), fb: tb.join(' ') };
+    }
+
+    // Similarity on content alone: nodeSimilarity with the identity half taken out. Used
+    // for a run whose "identity" column turns out not to identify anything (see
+    // identityTrustworthy).
+    function contentSimilarity(a, b){
+      if (!sameTagFamily(a, b)) return 0;
+      const aid = a.getAttribute && a.getAttribute('id');
+      if (aid && b.getAttribute && aid === b.getAttribute('id')) return 1;
+      if (a.tagName === 'TR' && b.tagName === 'TR'){
+        const f = rowFieldSimilarity(a, b);
+        if (f !== null) return f;
+        const r = rowPairTexts(a, b);
+        if (r) return tokenOverlap(r.fa, r.fb);
+      }
+      return tokenOverlap(norm(a.textContent), norm(b.textContent));
+    }
+
+    // Two rows are the same record when their fields agree, not when their text shares
+    // the most characters. Counted over the whole row, the long cells decide: the first
+    // step of a test spec carries the scenario's long 前提条件, so when that step was
+    // removed and the next one moved up into first place, the removed step and its
+    // successor shared that whole premise and won over the true pair -- the same step
+    // with the same テスト観点, 操作, 期待結果 and ユースケース, differing only in the
+    // premise. Bag-of-characters overlap made it worse: two unrelated Japanese sentences
+    // share most of their kana and punctuation, so unrelated rows scored 0.4-0.6. Measured
+    // on the user's たたき2 S2 table: the removed アラートの通知 scored 0.89 against
+    // 一覧のタブと表示範囲, the step's true counterpart 0.78.
+    // So each column shared by both tables is scored on its own, by character bigrams
+    // (which need the characters in the same order), and weighed by how much it tells rows
+    // apart: a column that reads 正常系 on every row agrees for every pair and says
+    // nothing. The first column is left out -- this is the score for runs where that
+    // column was found not to identify rows. Null when the columns cannot be lined up.
+    function rowFieldSimilarity(oldTr, newTr){
+      if (hasSpans(oldTr) || hasSpans(newTr)) return null;
+      const oldTable = oldTr.closest('table'), newTable = newTr.closest('table');
+      if (!oldTable || !newTable) return null;
+      const cm = columnMap(oldTable, newTable);
+      if (!cm) return null;
+      const w = columnWeights(oldTable, newTable, cm);
+      const ca = rowCells(oldTr), cb = rowCells(newTr);
+      let num = 0, den = 0;
+      cm.cols.forEach((col, k) => {
+        if (col.o <= 0 || col.n <= 0 || !w[k]) return;
+        if (!ca[col.o] || !cb[col.n]) return;
+        num += w[k] * bigramDice(norm(ca[col.o].textContent), norm(cb[col.n].textContent));
+        den += w[k];
+      });
+      return den ? num / den : null;
+    }
+
+    function rowCells(tr){
+      const out = [];
+      for (let c = tr.firstElementChild; c; c = c.nextElementSibling)
+        if (c.tagName === 'TD' || c.tagName === 'TH') out.push(c);
+      return out;
+    }
+
+    // Per column of the merged column order: how different a row's value is from the next
+    // row's, on average over both tables. Near 1 for a column of names, 0 for a column
+    // that repeats one value -- and near 0 as well for a column whose values differ only
+    // by a running number, like 「S2-05 まで完了していること」. Counting distinct values
+    // would have rated that one fully identifying, and it identifies nothing: once the
+    // steps are renumbered it agrees exactly with the neighbouring row, so it pulled each
+    // step towards the wrong partner. Neighbours are what a row is confused with, so they
+    // are what is compared.
+    const tableColWeights = new WeakMap();
+    function columnWeights(oldTable, newTable, cm){
+      let w = tableColWeights.get(newTable);
+      if (w) return w;
+      const bodyRows = (table) => {
+        const out = [];
+        for (const tr of table.querySelectorAll('tr')){
+          if (tr.closest('table') !== table) continue;
+          const cells = rowCells(tr);
+          if (cells.length && cells[0].tagName === 'TD') out.push(cells); // not a header row
+        }
+        return out;
+      };
+      const spread = (rows, idx) => {
+        if (rows.length < 2) return 1;
+        let sum = 0;
+        for (let i = 0; i + 1 < rows.length; i++){
+          const x = rows[i][idx], y = rows[i + 1][idx];
+          sum += 1 - bigramDice(x ? norm(x.textContent) : '', y ? norm(y.textContent) : '');
+        }
+        return sum / (rows.length - 1);
+      };
+      const ro = bodyRows(oldTable), rn = bodyRows(newTable);
+      w = cm.cols.map((col) => col.o < 0 || col.n < 0 ? 0 : (spread(ro, col.o) + spread(rn, col.n)) / 2);
+      tableColWeights.set(newTable, w);
+      return w;
+    }
+
+    // Dice coefficient over character bigrams, whitespace ignored.
+    function bigramDice(x, y){
+      if (x === y) return 1;
+      const grams = (s) => {
+        const cs = Array.from(s.replace(/\s+/g, ''));
+        if (cs.length < 2) return cs;
+        const out = [];
+        for (let i = 0; i + 1 < cs.length; i++) out.push(cs[i] + cs[i + 1]);
+        return out;
+      };
+      const gx = grams(x), gy = grams(y);
+      if (!gx.length && !gy.length) return 1;
+      if (!gx.length || !gy.length) return 0;
+      const left = new Map();
+      for (const g of gx) left.set(g, (left.get(g) || 0) + 1);
+      let hit = 0;
+      for (const g of gy){
+        const k = left.get(g);
+        if (k){ hit++; left.set(g, k - 1); }
+      }
+      return 2 * hit / (gx.length + gy.length);
+    }
+
+    // The text nodeSimilarity treats as an element's identity: a row's first cell, a
+    // card's heading. Empty when the element has nothing separate from its full text.
+    function pairIdentity(el){
+      if (el.tagName === 'TR'){
+        for (let c = el.firstElementChild; c; c = c.nextElementSibling)
+          if (c.tagName === 'TD' || c.tagName === 'TH') return norm(c.textContent);
+        return '';
+      }
+      const id = identityText(el);
+      return id && id !== norm(el.textContent) ? id : '';
+    }
+
+    // Is the identity column of this run actually identifying records?
+    // Weighting the first cell half of the score is right for a real key -- a row keyed
+    // "在庫確認" whose values all changed is still that row -- and exactly wrong for a
+    // running number. Remove one step from a numbered test spec and every step after it
+    // is renumbered: S1-04 is now S1-03, and "S1-04" on the after side belongs to the step
+    // that used to be S1-05. Matching on it paired every row with its neighbour, deleted
+    // the wrong row outright, and filled the rest with marks for content that never
+    // changed. Measured on a 15-step table with one step dropped: the step that was
+    // actually removed came out "changed", the step after it came out deleted, and 12
+    // rows were marked against the wrong partner.
+    // The tell is in the data: rows that share an identity text but share little else,
+    // while each of them has a much better match elsewhere on content. When that is the
+    // story for most of the rows that share an identity, the column is a position, not a
+    // key, and the run is paired on content.
+    // Does a row container number its rows -- a common prefix and a number going up by
+    // exactly one, S2-01, S2-02, S2-03 ...? Returns how many rows it has when it does.
+    // Several prefixes are allowed (one table can hold more than one series), but only as
+    // long runs: "mail-01", "app-02", "db-03" is three one-row series, which is a column of
+    // names that happen to end in digits, not a running number.
+    function runningNumberRows(container){
+      if (!container) return -1;
+      let rows = 0, matched = 0, prevPrefix = null, prevNum = 0;
+      const prefixes = new Set();
+      for (let tr = container.firstElementChild; tr; tr = tr.nextElementSibling){
+        if (tr.tagName !== 'TR') continue;
+        let first = null;
+        for (let c = tr.firstElementChild; c; c = c.nextElementSibling){
+          if (c.tagName === 'TD' || c.tagName === 'TH'){ first = c; break; }
+        }
+        if (!first || first.tagName !== 'TD') continue; // a header row
+        rows++;
+        const m = /^(.*?)(\d+)$/.exec(norm(first.textContent));
+        if (!m) continue;
+        matched++;
+        const prefix = m[1], n = Number(m[2]);
+        if (prefix === prevPrefix){
+          if (n !== prevNum + 1) return -1;
+        } else {
+          prefixes.add(prefix);
+        }
+        prevPrefix = prefix; prevNum = n;
+      }
+      if (matched < 3 || matched < rows * 0.8) return -1;
+      if (prefixes.size > Math.max(1, Math.floor(matched / 4))) return -1;
+      return rows;
+    }
+
+    function identityTrustworthy(dels, inss, content, oldParent, newParent){
+      // The structural tell first, because it does not depend on how alike the rows read.
+      // A running number on both sides with a different number of rows can only mean the
+      // rows were renumbered: a stable key loses a row and leaves a gap (01, 03, 04), it
+      // does not close up. Without this the decision rested on the content check below
+      // alone, and in a spec where two neighbouring steps are about the same thing (both
+      // go through 「親チケットの変更」) the scores sat right at its threshold -- the
+      // identity column was trusted, and the removed step was paired with the step that
+      // inherited its number.
+      if (dels[0] && dels[0].tagName === 'TR' && inss[0] && inss[0].tagName === 'TR'){
+        const ro = runningNumberRows(oldParent), rn = runningNumberRows(newParent);
+        if (ro >= 0 && rn >= 0 && ro !== rn) return false;
+      }
+      let same = 0, contradicted = 0;
+      for (let a = 0; a < dels.length; a++){
+        const id = pairIdentity(dels[a]);
+        if (!id) continue;
+        for (let b = 0; b < inss.length; b++){
+          if (pairIdentity(inss[b]) !== id) continue;
+          same++;
+          const here = content(a, b);
+          let best = 0;
+          for (let k = 0; k < inss.length; k++) if (k !== b) best = Math.max(best, content(a, k));
+          if (best >= 0.6 && best - here >= 0.3) contradicted++;
+          break;
+        }
+      }
+      return !(same >= 2 && contradicted * 2 >= same);
+    }
+
+    // The best set of pairs that never cross: if a is paired before a', its partner comes
+    // before a''s partner. sim[a][b] is a score, or -1 where the pair is not allowed.
+    // Maximises the total score -- the weighted form of a longest common subsequence.
+    function alignRuns(sim, m, n){
+      const dp = [];
+      for (let a = 0; a <= m; a++) dp.push(new Float64Array(n + 1));
+      for (let a = m - 1; a >= 0; a--){
+        for (let b = n - 1; b >= 0; b--){
+          let best = dp[a + 1][b] > dp[a][b + 1] ? dp[a + 1][b] : dp[a][b + 1];
+          const s = sim[a][b];
+          if (s >= 0 && s + dp[a + 1][b + 1] >= best) best = s + dp[a + 1][b + 1];
+          dp[a][b] = best;
+        }
+      }
+      const pairs = [];
+      let a = 0, b = 0;
+      while (a < m && b < n){
+        const s = sim[a][b];
+        if (s >= 0 && Math.abs(dp[a][b] - (s + dp[a + 1][b + 1])) < 1e-9){ pairs.push([a, b]); a++; b++; }
+        else if (dp[a + 1][b] >= dp[a][b + 1]) a++;
+        else b++;
+      }
+      return pairs;
     }
 
     function nodeSimilarity(a, b){
@@ -1769,16 +2034,39 @@
         }
       };
 
-      // 1) First, best match within the same run. The threshold varies with how easily a mismatch could happen.
-      const near = [];
+      // 1) Within each run, the best pairs that never cross. The threshold varies with how
+      //    easily a mismatch could happen.
+      //    Pairing greedily by score let pairs cross, and a paired old element is drawn at
+      //    its partner's position -- so a crossing pair reordered the BEFORE pane, showing
+      //    the before document in an order it does not have. Measured on the renumbered
+      //    test spec: S1-15 drawn right after S1-06, S1-11 ahead of S1-10. A non-crossing
+      //    alignment keeps both documents' order by construction; an element that really
+      //    swapped places and changed comes out as a deletion here and an addition there,
+      //    which is what happened to it.
       groups.forEach((g, gi) => {
-        for (let a = 0; a < g.del.length; a++)
-          for (let b = 0; b < g.ins.length; b++){
-            const sc = nodeSimilarity(g.del[a], g.ins[b]);
-            if (sc >= pairThresholdFor(newParent, g.ins[b].tagName)) near.push({ gi: gi, a: a, gj: gi, b: b, sc: sc });
+        const m = g.del.length, n = g.ins.length;
+        if (!m || !n) return;
+        const memo = new Map();
+        const content = (a, b) => {
+          const k = a * n + b;
+          if (!memo.has(k)) memo.set(k, contentSimilarity(g.del[a], g.ins[b]));
+          return memo.get(k);
+        };
+        const trust = identityTrustworthy(g.del, g.ins, content, g.del[0].parentNode, newParent);
+        const sim = [];
+        for (let a = 0; a < m; a++){
+          const row = new Array(n);
+          for (let b = 0; b < n; b++){
+            const sc = trust ? nodeSimilarity(g.del[a], g.ins[b]) : content(a, b);
+            row[b] = sc >= pairThresholdFor(newParent, g.ins[b].tagName) ? sc : -1;
           }
+          sim.push(row);
+        }
+        for (const [a, b] of alignRuns(sim, m, n)){
+          pairedDel.set(key(gi, a), g.ins[b]); usedIns.add(key(gi, b));
+          diffNode(g.del[a], g.ins[b], tally, depth + 1);
+        }
       });
-      settle(near);
 
       // 2) Next, elements that "moved and also changed content" across
       //    runs. Wrongly linking these would collapse two different things
@@ -1817,45 +2105,42 @@
       groups.forEach((g, gi) => {
         for (let b = 0; b < g.ins.length; b++) if (!usedIns.has(key(gi, b))) markInserted(g.ins[b], tally);
       });
+      //    The pairs this run produced fix where everything else goes: a deletion belongs
+      //    after the element its nearest paired predecessor was paired with, and before the
+      //    one its nearest paired successor was paired with. Within such a gap, the j-th
+      //    deletion goes where the j-th addition of the gap is -- the two stand at the same
+      //    place in the sequence. Measured on a chip whose two <span class="num"> both
+      //    changed and nothing paired, so the whole run is one gap: chaining each deletion
+      //    off the one inserted before it piled them up at the head, "カスタマー 13 32 件 /
+      //    アナリスト 件" against "カスタマー 13 件 / アナリスト 32 件" in the before
+      //    document. Counting from the start of the RUN instead of the gap goes wrong as
+      //    soon as an earlier deletion has shifted the positions: measured on a test spec
+      //    with steps 4 and 12 removed, step 12 was drawn after step 13. Only pairs made
+      //    inside this run count as fixed points; a deletion paired with an addition in
+      //    another run is drawn over there, and the deletions after it here must not follow.
       groups.forEach((g, gi) => {
-        let cursor = null;
-        for (let a = 0; a < g.del.length; a++){
+        const mateAt = g.del.map((el, a) => {
           const mate = pairedDel.get(key(gi, a));
-          if (mate){ cursor = mate; continue; }
+          return mate ? g.ins.indexOf(mate) : -1;
+        });
+        const here = (el) => !!el && el.parentNode === newParent;
+        let lo = 0, j = 0; // the gap's first addition, and deletions placed in the gap so far
+        for (let a = 0; a < g.del.length; a++){
+          if (pairedDel.has(key(gi, a))){
+            if (mateAt[a] >= 0){ lo = mateAt[a] + 1; j = 0; }
+            continue;
+          }
+          let hi = g.ins.length;
+          for (let k = a + 1; k < g.del.length; k++) if (mateAt[k] >= 0){ hi = mateAt[k]; break; }
           let at = null;
-          // The deletion run and the addition run stand at the same place in the sequence, so
-          // the a-th deletion belongs where the a-th addition is. Take that first, ahead of
-          // the adjacency clue below: when nothing in the run paired up, the clue is the
-          // deletion inserted just before, and chaining off it packs the whole run together at
-          // the head. Measured on a chip whose two <span class="num"> both changed, inside an
-          // inline-flex parent (so the spans count as blocks and go through this path, while
-          // the text between them does not): the before pane rendered "カスタマー 13 32 件 /
-          // アナリスト 件" -- both numbers piled up at the first slot and the second slot left
-          // bare -- against "カスタマー 13 件 / アナリスト 32 件" in the before document.
-          for (let k = a; k < g.ins.length; k++){
-            if (g.ins[k] && g.ins[k].parentNode === newParent){ at = g.ins[k]; break; }
-          }
-          if (at){ /* positioned */ }
-          else if (cursor && cursor.parentNode === newParent) at = cursor.nextSibling;
-          else {
-            for (let k = a + 1; k < g.del.length; k++){
-              const nxt = pairedDel.get(key(gi, k));
-              if (nxt && nxt.parentNode === newParent){ at = nxt; break; }
-            }
-            // When not a single element got matched, place it right before
-            // the addition element that landed at the same position. The
-            // deletion run and addition run point at the same position in
-            // the sequence, so this keeps the ordering correct. Without
-            // this, it would get appended to the end of the parent, and
-            // inside a <p>, just the <em> would jump to the end of the sentence.
-            if (!at){
-              for (let k = 0; k < g.ins.length; k++){
-                if (g.ins[k] && g.ins[k].parentNode === newParent){ at = g.ins[k]; break; }
-              }
-            }
-            if (!at && g.before && g.before.parentNode === newParent) at = g.before;
-          }
-          cursor = insertDeletedChild(newParent, g.del[a], at, tally) || cursor;
+          if (lo + j < hi && here(g.ins[lo + j])) at = g.ins[lo + j];
+          else if (hi < g.ins.length && here(g.ins[hi])) at = g.ins[hi];
+          // Past the last addition of the run, the deletion still stands before whatever
+          // follows the run. Without this it would be appended to the end of the parent,
+          // and inside a <p>, just the <em> would jump to the end of the sentence.
+          else if (here(g.before)) at = g.before;
+          j++;
+          insertDeletedChild(newParent, g.del[a], at, tally);
         }
       });
     }
@@ -2146,7 +2431,24 @@
       // <del>Out of service</del> + an inserted badge + a deleted badge.
       // When a text diff was applied, inline children are excluded from the matching below.
       let ownTextEdited = false;
+      const oldHasText = visibleNorm(ownText(oldEl)) !== '';
+      const newHasText = visibleNorm(ownText(newEl)) !== '';
       if (ownText(oldEl).trim() || ownText(newEl).trim()) ownTextEdited = diffOwnText(oldEl, newEl, tally);
+
+      // 1a. An attribute that changed together with content appearing or disappearing is
+      // part of that change, not a change of its own. A coverage cell going from
+      // <td class="hit">●</td> to <td class="">: the class only ever styled the ●. Tinting
+      // it painted the now-empty after cell green and, the other way round, an empty before
+      // cell red -- colour on a blank cell, which reads as "something was added here" where
+      // nothing was. The ● carries its own deletion or insertion mark. Only the tint goes:
+      // data-diff-attr-old stays, so the before pane still gets the old class back.
+      if (ownTextEdited && oldHasText !== newHasText && newEl.hasAttribute('data-diff-attr')){
+        const names = newEl.getAttribute('data-diff-attr').split(',');
+        if (names.indexOf('tagName') === -1){
+          newEl.removeAttribute('data-diff-attr');
+          tally.attrs = Math.max(0, (tally.attrs || 0) - 1);
+        }
+      }
 
       // 1b. Inline children are excluded from the matching below, but their
       // attribute changes are still picked up here. Leaving them excluded
@@ -3431,8 +3733,9 @@ a[data-diff-nolink]{ cursor: pointer; }
        one thing given up here.
    Lighter than the add/remove fills on purpose: this element was edited, not added or
    removed wholesale, and the document's own colour has to stay readable underneath. */
-[data-diff-attr]{ box-shadow: inset 0 0 0 100vmax rgba(26,159,71,.26) !important; }
-html[data-diff-side="before"] [data-diff-attr]{ box-shadow: inset 0 0 0 100vmax rgba(229,50,45,.26) !important; }
+[data-diff-attr],[data-diff-value]{ box-shadow: inset 0 0 0 100vmax rgba(26,159,71,.26) !important; }
+html[data-diff-side="before"] [data-diff-attr],
+html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax rgba(229,50,45,.26) !important; }
 #__diff_removed__{ margin-top:2rem; padding:1rem; }
 /* The marker for diff-only display. Blocks and attributes already have their own green/red
    border, so this is restricted to data-diff-row (elements with a character-level change
@@ -5210,6 +5513,9 @@ html[data-diff-side="before"] [data-diff-attr]{ box-shadow: inset 0 0 0 100vmax 
           });
           doc.querySelectorAll('script[data-diff-old-script]').forEach(el => {
             el.textContent = el.getAttribute('data-diff-old-script');
+          });
+          doc.querySelectorAll('[data-diff-old-value]').forEach(el => {
+            el.textContent = el.getAttribute('data-diff-old-value');
           });
           doc.querySelectorAll('template[data-diff-old-template]').forEach(el => {
             el.innerHTML = el.getAttribute('data-diff-old-template');
