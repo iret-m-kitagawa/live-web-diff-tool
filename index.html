@@ -1647,7 +1647,52 @@
     // while each of them has a much better match elsewhere on content. When that is the
     // story for most of the rows that share an identity, the column is a position, not a
     // key, and the run is paired on content.
-    function identityTrustworthy(dels, inss, content){
+    // Does a row container number its rows -- a common prefix and a number going up by
+    // exactly one, S2-01, S2-02, S2-03 ...? Returns how many rows it has when it does.
+    // Several prefixes are allowed (one table can hold more than one series), but only as
+    // long runs: "mail-01", "app-02", "db-03" is three one-row series, which is a column of
+    // names that happen to end in digits, not a running number.
+    function runningNumberRows(container){
+      if (!container) return -1;
+      let rows = 0, matched = 0, prevPrefix = null, prevNum = 0;
+      const prefixes = new Set();
+      for (let tr = container.firstElementChild; tr; tr = tr.nextElementSibling){
+        if (tr.tagName !== 'TR') continue;
+        let first = null;
+        for (let c = tr.firstElementChild; c; c = c.nextElementSibling){
+          if (c.tagName === 'TD' || c.tagName === 'TH'){ first = c; break; }
+        }
+        if (!first || first.tagName !== 'TD') continue; // a header row
+        rows++;
+        const m = /^(.*?)(\d+)$/.exec(norm(first.textContent));
+        if (!m) continue;
+        matched++;
+        const prefix = m[1], n = Number(m[2]);
+        if (prefix === prevPrefix){
+          if (n !== prevNum + 1) return -1;
+        } else {
+          prefixes.add(prefix);
+        }
+        prevPrefix = prefix; prevNum = n;
+      }
+      if (matched < 3 || matched < rows * 0.8) return -1;
+      if (prefixes.size > Math.max(1, Math.floor(matched / 4))) return -1;
+      return rows;
+    }
+
+    function identityTrustworthy(dels, inss, content, oldParent, newParent){
+      // The structural tell first, because it does not depend on how alike the rows read.
+      // A running number on both sides with a different number of rows can only mean the
+      // rows were renumbered: a stable key loses a row and leaves a gap (01, 03, 04), it
+      // does not close up. Without this the decision rested on the content check below
+      // alone, and in a spec where two neighbouring steps are about the same thing (both
+      // go through 「親チケットの変更」) the scores sat right at its threshold -- the
+      // identity column was trusted, and the removed step was paired with the step that
+      // inherited its number.
+      if (dels[0] && dels[0].tagName === 'TR' && inss[0] && inss[0].tagName === 'TR'){
+        const ro = runningNumberRows(oldParent), rn = runningNumberRows(newParent);
+        if (ro >= 0 && rn >= 0 && ro !== rn) return false;
+      }
       let same = 0, contradicted = 0;
       for (let a = 0; a < dels.length; a++){
         const id = pairIdentity(dels[a]);
@@ -1906,7 +1951,7 @@
           if (!memo.has(k)) memo.set(k, contentSimilarity(g.del[a], g.ins[b]));
           return memo.get(k);
         };
-        const trust = identityTrustworthy(g.del, g.ins, content);
+        const trust = identityTrustworthy(g.del, g.ins, content, g.del[0].parentNode, newParent);
         const sim = [];
         for (let a = 0; a < m; a++){
           const row = new Array(n);
