@@ -4092,8 +4092,9 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
       //   diffing that same pair cell by cell:                8
       // So when a paired row's two sides have the same cell count, diff cell by cell and
       // rebuild the row -- the column count then cannot change. When the counts differ (a
-      // column was added or removed), the column mapping isn't knowable here, so keep the
-      // whole-row diff. Named mdCellsOf, not cellsOf, since cellsOf (used by the HTML View
+      // column was added or removed), the columns are lined up by their headers first (see
+      // pairRowByColumns below); the whole-row diff is left only for a table whose columns
+      // cannot be lined up. Named mdCellsOf, not cellsOf, since cellsOf (used by the HTML View
       // engine) excludes already-marked cells, which doesn't apply to this raw pre-diff row.
       const mdCellsOf = (tr) => Array.from(tr.children).filter((c) => c.tagName === 'TD' || c.tagName === 'TH');
       // Numbers each paired row within this table (thead and tbody share the counter, so
@@ -4103,9 +4104,33 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
       // pairRow, so they never get this attribute, which is how alignSplitPanes tells
       // "paired" from "one-sided" apart.
       let rowCounter = 0;
+      // A column added or removed: line the columns up by their headers (the HTML View's
+      // columnMap, which also recognises a renamed column) and diff cell by cell, as for
+      // equal counts. A cell of a column only one side has is that side's alone -- marked
+      // data-md-only, so the other pane drops the cell and draws its own table with its own
+      // columns. The whole-row diff used to handle this, and on a heavily rewritten row it
+      // lost track of the cell boundaries: measured on the user's API table, which gained a
+      // 検討要否 column, the CP026 row came back with 10 cells against a 9-column header in
+      // both panes, every cell after the new column pushed one place to the right -- and
+      // the before pane showed the new column as an empty one it never had.
+      const colMap = columnMap(bTable, aTable);
+      const pairRowByColumns = (bc, ac, shell) => {
+        shell.innerHTML = colMap.cols.map((col) => {
+          if (col.o >= 0 && col.n >= 0) return HtmlDiff.execute(bc[col.o].outerHTML, ac[col.n].outerHTML);
+          if (col.n >= 0) return HtmlDiff.execute('', markMdOnly(ac[col.n], 'ins'));
+          return HtmlDiff.execute(markMdOnly(bc[col.o], 'del'), '');
+        }).join('\n');
+        return shell.outerHTML;
+      };
       const pairRow = (bTr, aTr) => {
         const bc = mdCellsOf(bTr), ac = mdCellsOf(aTr);
         const rowId = String(++rowCounter);
+        if (bc.length && bc.length !== ac.length && colMap
+            && bc.length === colMap.oldCols && ac.length === colMap.newCols) {
+          const shell = aTr.cloneNode(false);
+          shell.setAttribute('data-md-row', rowId);
+          return pairRowByColumns(bc, ac, shell);
+        }
         if (!bc.length || bc.length !== ac.length) {
           // Whole-row fallback. Stamping data-md-row by giving bTr/aTr the attribute
           // before diffing would make the two opening <tr> tags textually differ, and
