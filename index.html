@@ -1203,6 +1203,10 @@
     // Headings alone switch to the old/new side-by-side layout at a lower threshold.
     const HEADING_REPLACE_RATIO = 0.3;
     const CELL_REPLACE_RATIO = 0.2;
+    // A cell counts as a short value -- the kind CELL_REPLACE_RATIO is for -- up to this
+    // many meaningful tokens on its longer side. Past it the cell holds a sentence, and a
+    // sentence is marked character by character like any other text.
+    const CELL_VALUE_MAX_TOKS = 12;
     const HEADING_TAGS = new Set(['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'DT', 'CAPTION', 'LEGEND', 'SUMMARY']);
 
     // Build a clone of the old element, preserving its look, for showing as
@@ -1279,9 +1283,20 @@
       // ratio, so even two completely unrelated sentences would fail to
       // clear the threshold and end up interleaved word by word.
       const meaningful = t => /\S/.test(t);
-      let changedToks = 0;
-      for (const op of ops) if (op.op !== 0) for (const t of op.items) if (meaningful(t)) changedToks++;
-      const totalToks = oldToks.filter(meaningful).length + newToks.filter(meaningful).length;
+      let changedToks = 0, insToks = 0, delToks = 0;
+      for (const op of ops) if (op.op !== 0) for (const t of op.items) if (meaningful(t)){
+        changedToks++;
+        if (op.op === 1) insToks++; else delToks++;
+      }
+      const oldLen = oldToks.filter(meaningful).length, newLen = newToks.filter(meaningful).length;
+      const totalToks = oldLen + newLen;
+      // Text that was only added to, or only cut, has nothing to interleave: the old text
+      // stands as it was and the addition (or the cut) is marked where it happened. Replacing
+      // the whole thing threw away exactly what the reader wants to see -- measured on the
+      // user's test spec, a 前提条件 that had one sentence appended
+      // (「…であること。」 + 「調査用のファイルを用意していること。」) came out entirely red
+      // on one side and entirely green on the other.
+      const oneSided = !insToks || !delToks;
       const parent = newEl.parentNode;
       const canSplit = parent && parent.nodeType === 1
         && canHold(parent.tagName, oldEl ? oldEl.tagName : newEl.tagName);
@@ -1295,11 +1310,14 @@
       // inside the cell.
       // The threshold can be set lower here because a cell has few tokens,
       // so even a small edit produces a large change ratio. A cell
-      // containing a long sentence still gets mixed at the character level as before.
+      // containing a sentence is held to the ordinary ratio instead: at 0.2 a sentence
+      // with a clause reworded was replaced wholesale, which hid which words changed.
+      // Still replaced inside the cell when it does go, since a cell cannot be split.
       const plainCell = (newEl.tagName === 'TD' || newEl.tagName === 'TH')
         && !newEl.firstElementChild && oldEl && !oldEl.firstElementChild;
-      if (plainCell && oldToks.length && newToks.length && totalToks > 0
-          && changedToks / totalToks > CELL_REPLACE_RATIO){
+      const cellRatio = Math.max(oldLen, newLen) <= CELL_VALUE_MAX_TOKS ? CELL_REPLACE_RATIO : REPLACE_RATIO;
+      if (plainCell && !oneSided && oldToks.length && newToks.length && totalToks > 0
+          && changedToks / totalToks > cellRatio){
         const doc = newEl.ownerDocument;
         const d = doc.createElement('del'); d.dataset.diff = 'del'; d.textContent = oldText;
         const i = doc.createElement('ins'); i.dataset.diff = 'ins'; i.textContent = newText;
@@ -1309,7 +1327,7 @@
         return true;
       }
       const ratio = HEADING_TAGS.has(newEl.tagName) ? HEADING_REPLACE_RATIO : REPLACE_RATIO;
-      if (canSplit && !holdsBlocks && oldToks.length && newToks.length && totalToks > 0
+      if (canSplit && !holdsBlocks && !oneSided && oldToks.length && newToks.length && totalToks > 0
           && changedToks / totalToks > ratio){
         const clone = ownTextClone(oldEl, newEl.ownerDocument);
         clone.setAttribute('data-diff-block', 'del');
