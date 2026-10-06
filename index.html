@@ -162,6 +162,14 @@
       --color-accent-fg: #0969da;
       --color-neutral-muted: rgba(175, 184, 193, 0.2);
     }
+    /* The colour scheme follows the tool's theme, not the OS. github-markdown-css sets
+       color-scheme on .markdown-body from prefers-color-scheme, so with the OS in dark mode
+       and the Light theme chosen, the panel was white while the browser drew everything it
+       styles itself -- the text selection above all -- in its dark scheme: a slate band
+       under dark text. The selection itself is left to the browser; only the scheme it is
+       drawn for is set. */
+    [data-theme*="light"] .markdown-body { color-scheme: light; }
+    body:not([data-theme*="light"]) .markdown-body { color-scheme: dark; }
     .rich-diff-viewer > *:first-child { margin-top: 0 !important; }
     .rich-diff-viewer > *:last-child { margin-bottom: 0 !important; }
 
