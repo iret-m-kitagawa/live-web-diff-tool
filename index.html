@@ -414,8 +414,6 @@
       border-top: 1px solid var(--border-color); margin-top: 4px;
     }
     /* The line landed on. Lives long enough to find with the eye, then goes away. */
-    .jump-flash-line { background: rgba(88,166,255,.22); }
-    .jump-flash-gutter { background: rgba(88,166,255,.45); }
     .md-toc {
       display: none; position: absolute; top: 0; bottom: 0; left: 0;
       width: var(--md-toc-w); overflow: hidden; z-index: 130;
@@ -2704,8 +2702,6 @@
       return;
     }
     t.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    t.classList.add('diff-flash');
-    setTimeout(function(){ t.classList.remove('diff-flash'); }, 900);
   }, true);
 
   // Among the deleted blocks, the ones that handed off their id to the new-side
@@ -3892,11 +3888,6 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
 .diff-only p:not([data-diff-row]):not([data-diff-block]):not([data-diff-attr]),
 .diff-only pre:not([data-diff-row]):not([data-diff-block]):not([data-diff-attr]),
 .diff-only blockquote:not([data-diff-row]):not([data-diff-block]):not([data-diff-attr]){ display:none; }
-/* !important because the flash target can itself be a marked element -- a deleted block
-   with an id, say -- and the flash must win for as long as it is applied. */
-.diff-flash{ animation:diffFlash .8s ease-out !important; }
-@keyframes diffFlash{ 0%{filter:brightness(1)} 35%{filter:brightness(2.1)} 100%{filter:brightness(1)} }
-@media (prefers-reduced-motion:reduce){ .diff-flash{ animation:none !important; outline:2px solid #c39a5f } }
 `;
     }
     /* ===================== end ported rich-html-diff engine ===================== */
@@ -6300,7 +6291,6 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
       const jumpBeforeBtn = document.getElementById('jumpBefore');
       const jumpAfterBtn = document.getElementById('jumpAfter');
       let jumpCtx = null;          // what the currently open menu would jump to
-      let jumpDecorations = null;  // the highlight left on the line we landed on
 
       // Resolving a block to a line of source.
       //
@@ -6537,21 +6527,6 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
         return (clone.textContent || '').replace(/\s+/g, ' ').trim();
       }
 
-      function flashEditorLine(editor, line){
-        const spec = [{
-          range: new monaco.Range(line, 1, line, 1),
-          options: { isWholeLine: true, className: 'jump-flash-line',
-                     linesDecorationsClassName: 'jump-flash-gutter' },
-        }];
-        try {
-          if (jumpDecorations && jumpDecorations.clear) jumpDecorations.clear();
-          jumpDecorations = editor.createDecorationsCollection
-            ? editor.createDecorationsCollection(spec)
-            : { ids: editor.deltaDecorations([], spec), clear(){ editor.deltaDecorations(this.ids, []); } };
-          setTimeout(() => { if (jumpDecorations && jumpDecorations.clear) jumpDecorations.clear(); }, 1600);
-        } catch (e) {}
-      }
-
       // Look for the text only inside the block it came from. Searching past the block --
       // let alone from the top of the file -- is how a common word ends up sending someone
       // to an unrelated line.
@@ -6607,7 +6582,6 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
             editor.revealLineInCenter(line);
             editor.setPosition({ lineNumber: line, column: 1 });
             editor.focus();
-            flashEditorLine(editor, line);
           } catch (e) {}
         }, 60);
       }
