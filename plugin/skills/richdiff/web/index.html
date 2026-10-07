@@ -414,8 +414,6 @@
       border-top: 1px solid var(--border-color); margin-top: 4px;
     }
     /* The line landed on. Lives long enough to find with the eye, then goes away. */
-    .jump-flash-line { background: rgba(88,166,255,.22); }
-    .jump-flash-gutter { background: rgba(88,166,255,.45); }
     .md-toc {
       display: none; position: absolute; top: 0; bottom: 0; left: 0;
       width: var(--md-toc-w); overflow: hidden; z-index: 130;
@@ -2704,8 +2702,6 @@
       return;
     }
     t.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    t.classList.add('diff-flash');
-    setTimeout(function(){ t.classList.remove('diff-flash'); }, 900);
   }, true);
 
   // Among the deleted blocks, the ones that handed off their id to the new-side
@@ -3661,6 +3657,69 @@
     }
   }
 
+  // ---- Diff jump (previous / next change) ----
+  // The parent cannot read this document (opaque origin), so the list of places worth
+  // stopping at has to be built here and sent up as plain numbers. A stop is the
+  // innermost block holding a mark, never the whole chunk: landing on the top of a
+  // long list or table when the change is near its bottom would leave nothing visibly
+  // changed on screen.
+  var JUMP_MARK_SEL = 'ins[data-diff], del[data-diff], [data-diff-block], [data-diff-attr], [data-diff-value]';
+  var JUMP_MEDIA_SEL = 'img, svg, video, canvas';
+  var JUMP_BLOCK_DISPLAY = { 'block': 1, 'list-item': 1, 'flex': 1, 'grid': 1, 'table': 1, 'flow-root': 1 };
+  // A mark with no letter, digit or image (e.g. only the newline between blocks) changes
+  // nothing on screen, so jumping to it would look like the button did nothing.
+  function jumpMarkHasContent(el){
+    return /[\\p{L}\\p{N}]/u.test(el.textContent || '')
+      || el.matches(JUMP_MEDIA_SEL) || !!el.querySelector(JUMP_MEDIA_SEL);
+  }
+  function jumpStopUnitOf(mark){
+    var el = mark;
+    while (el && el !== document.body && el !== document.documentElement){
+      if (el.hasAttribute('data-diff-block')) return el;
+      // Inside a table cell the unit is the row, so several changed cells of one row are one stop.
+      if (el.tagName === 'TR') return el;
+      var d = '';
+      try { d = getComputedStyle(el).display; } catch (err) {}
+      if (JUMP_BLOCK_DISPLAY[d]) return el;
+      el = el.parentElement;
+    }
+    // Reached body without finding a block: the mark itself is the closest we can point at.
+    return mark;
+  }
+  // Every distinct stop element with its document-coordinate top (unsorted, not collapsed).
+  function jumpStopEntries(){
+    var seen = [], out = [];
+    Array.prototype.forEach.call(document.querySelectorAll(JUMP_MARK_SEL), function(mark){
+      if (mark.closest('[data-align-spacer]')) return;
+      if (!jumpMarkHasContent(mark)) return;
+      if (!mark.getClientRects().length) return;
+      var unit = jumpStopUnitOf(mark);
+      if (!unit || unit.hasAttribute('data-align-spacer') || seen.indexOf(unit) >= 0) return;
+      seen.push(unit);
+      out.push({ el: unit, y: unit.getBoundingClientRect().top + window.scrollY });
+    });
+    return out;
+  }
+  function jumpStops(){
+    var ys = jumpStopEntries().map(function(s){ return s.y; }).sort(function(a, b){ return a - b; });
+    // Collapse stops that land at nearly the same height: one change reads as one stop.
+    return ys.filter(function(y, i){ return i === 0 || Math.abs(y - ys[i - 1]) >= 4; });
+  }
+  window.addEventListener('message', function(e){
+    if (e.source !== window.parent) return;
+    var data = e.data;
+    if (!data || data.__htmlJump !== true) return;
+    if (data.type === 'stops'){
+      parent.postMessage({ __htmlJump: true, type: 'stops', req: data.req,
+        stops: jumpStops(), scrollY: window.scrollY }, '*');
+    } else if (data.type === 'scrollTo'){
+      // Instant, not smooth: the button gets pressed in quick succession, and a smooth scroll
+      // would make the next press read a position that is still moving. No flash on landing,
+      // the same as the Markdown View's jump: the marks themselves show where the change is.
+      window.scrollTo({ top: Math.max(0, Number(data.y) - 16) });
+    }
+  });
+
   window.addEventListener('message', function(e){
     // Accept instructions only from the parent. Ignore messages from windows
     // of unknown origin (the parent side uses the same reasoning, checking
@@ -3829,11 +3888,6 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
 .diff-only p:not([data-diff-row]):not([data-diff-block]):not([data-diff-attr]),
 .diff-only pre:not([data-diff-row]):not([data-diff-block]):not([data-diff-attr]),
 .diff-only blockquote:not([data-diff-row]):not([data-diff-block]):not([data-diff-attr]){ display:none; }
-/* !important because the flash target can itself be a marked element -- a deleted block
-   with an id, say -- and the flash must win for as long as it is applied. */
-.diff-flash{ animation:diffFlash .8s ease-out !important; }
-@keyframes diffFlash{ 0%{filter:brightness(1)} 35%{filter:brightness(2.1)} 100%{filter:brightness(1)} }
-@media (prefers-reduced-motion:reduce){ .diff-flash{ animation:none !important; outline:2px solid #c39a5f } }
 `;
     }
     /* ===================== end ported rich-html-diff engine ===================== */
@@ -4841,10 +4895,10 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
       //   Monaco     ... only for the side-by-side split. Single-column has no defined
       //                  line-level jump target
       //   Markdown   ... shown for both single-column and side-by-side
-      //   HTML View  ... not supported yet, so never shown
+      //   HTML View  ... shown for both single-column and side-by-side
       function updateJumpControlsVisibility() {
         if (!jumpControls) return;
-        const show = isRichDiffView ? richViewMode === 'markdown' : !isInlineView;
+        const show = isRichDiffView ? (richViewMode === 'markdown' || richViewMode === 'html') : !isInlineView;
         jumpControls.style.display = show ? 'flex' : 'none';
       }
 
@@ -6237,7 +6291,6 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
       const jumpBeforeBtn = document.getElementById('jumpBefore');
       const jumpAfterBtn = document.getElementById('jumpAfter');
       let jumpCtx = null;          // what the currently open menu would jump to
-      let jumpDecorations = null;  // the highlight left on the line we landed on
 
       // Resolving a block to a line of source.
       //
@@ -6474,21 +6527,6 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
         return (clone.textContent || '').replace(/\s+/g, ' ').trim();
       }
 
-      function flashEditorLine(editor, line){
-        const spec = [{
-          range: new monaco.Range(line, 1, line, 1),
-          options: { isWholeLine: true, className: 'jump-flash-line',
-                     linesDecorationsClassName: 'jump-flash-gutter' },
-        }];
-        try {
-          if (jumpDecorations && jumpDecorations.clear) jumpDecorations.clear();
-          jumpDecorations = editor.createDecorationsCollection
-            ? editor.createDecorationsCollection(spec)
-            : { ids: editor.deltaDecorations([], spec), clear(){ editor.deltaDecorations(this.ids, []); } };
-          setTimeout(() => { if (jumpDecorations && jumpDecorations.clear) jumpDecorations.clear(); }, 1600);
-        } catch (e) {}
-      }
-
       // Look for the text only inside the block it came from. Searching past the block --
       // let alone from the top of the file -- is how a common word ends up sending someone
       // to an unrelated line.
@@ -6544,7 +6582,6 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
             editor.revealLineInCenter(line);
             editor.setPosition({ lineNumber: line, column: 1 });
             editor.focus();
-            flashEditorLine(editor, line);
           } catch (e) {}
         }, 60);
       }
@@ -7044,6 +7081,109 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
         mdJumpLastScroll = mdScrollTo(target, false);
       }
 
+      // ========== HTML View diff jump ==========
+      // Same behaviour as mdJumpToDiff, but the stops cannot be read from here: the frames
+      // are sandboxed without allow-same-origin, so each one measures its own marks
+      // (ANCHOR_SCRIPT) and reports plain y values; this side only merges and scrolls.
+      // The target is remembered by its y (not an element) together with the scroll position it
+      // settled at, so "have we moved since landing" works the same way as in the Markdown View.
+      let htmlJumpReq = 0;
+      let htmlJumpLastY = null;       // y (in scroll-area coordinates) of the stop we landed on
+      let htmlJumpLastScroll = -1;
+      function resetHtmlJumpState() {
+        htmlJumpReq += 1;             // also drops replies still in flight
+        htmlJumpLastY = null;
+        htmlJumpLastScroll = -1;
+      }
+
+      // Ask the given frames for their stops. Resolves with a Map frame -> reply once every
+      // frame has answered, or after 800 ms with whatever arrived (a frame that is still
+      // loading, or whose script broke, must not freeze the button).
+      function htmlJumpCollect(frames) {
+        const req = ++htmlJumpReq;
+        return new Promise((resolve) => {
+          const got = new Map();
+          let timer = null;
+          const done = () => {
+            window.removeEventListener('message', onMsg);
+            clearTimeout(timer);
+            resolve(got);
+          };
+          const onMsg = (e) => {
+            const d = e.data;
+            if (!d || d.__htmlJump !== true || d.type !== 'stops' || d.req !== req) return;
+            const f = frames.find((fr) => fr.contentWindow === e.source);
+            if (!f) return;
+            got.set(f, d);
+            if (got.size === frames.length) done();
+          };
+          window.addEventListener('message', onMsg);
+          timer = setTimeout(done, 800);
+          frames.forEach((f) => {
+            try { f.contentWindow.postMessage({ __htmlJump: true, type: 'stops', req }, '*'); } catch (err) {}
+          });
+        });
+      }
+
+      // Merge per-pane y lists into one sorted list, collapsing stops within 4px. In split
+      // view the same change shows in both panes at the same height (they are height-aligned),
+      // so it must count once.
+      function htmlJumpMerge(lists) {
+        const all = [].concat(...lists).sort((a, b) => a - b);
+        return all.filter((y, i) => i === 0 || Math.abs(y - all[i - 1]) >= 4);
+      }
+
+      // Same selection as mdJumpToDiff. `pos` is the current scroll position and `ys` are
+      // the stops in the same coordinates as the scroll area's content.
+      function htmlJumpPick(ys, pos, dir) {
+        const last = htmlJumpLastY === null ? -1 : ys.findIndex((y) => Math.abs(y - htmlJumpLastY) < 4);
+        const parked = last >= 0 && Math.abs(pos - htmlJumpLastScroll) < 2;
+        if (parked) return ys[(last + (dir === 'next' ? 1 : -1) + ys.length) % ys.length];
+        // The judgment line sits MD_TOC_JUMP_MARGIN below the top because that is where a target lands.
+        const line = pos + MD_TOC_JUMP_MARGIN;
+        if (dir === 'next') {
+          const next = ys.find((y) => y > line + 2);
+          return next === undefined ? ys[0] : next;
+        }
+        const prevs = ys.filter((y) => y < line - 2);
+        return prevs.length ? prevs[prevs.length - 1] : ys[ys.length - 1];
+      }
+
+      async function htmlJumpToDiff(dir) {
+        if (htmlSplitActive) {
+          // Split: the container scrolls (the frames are as tall as their content), and the two
+          // panes each hold only their own side of a change, so both are asked and merged.
+          const frames = [htmlDiffFrameLeft, htmlDiffFrameRight];
+          const got = await htmlJumpCollect(frames);
+          if (!htmlSplitActive) return;
+          const cTop = htmlSplitContainer.getBoundingClientRect().top;
+          const offOf = (f) => f.getBoundingClientRect().top - cTop + htmlSplitContainer.scrollTop;
+          const lists = frames.filter((f) => got.has(f)).map((f) => {
+            const off = offOf(f); // frame top in scroll-area coordinates
+            return got.get(f).stops.map((y) => y + off);
+          });
+          const ys = htmlJumpMerge(lists);
+          if (!ys.length) return;
+          const y = htmlJumpPick(ys, htmlSplitContainer.scrollTop, dir);
+          const max = Math.max(0, htmlSplitContainer.scrollHeight - htmlSplitContainer.clientHeight);
+          htmlSplitContainer.scrollTop = Math.max(0, Math.min(max, y - MD_TOC_JUMP_MARGIN));
+          htmlJumpLastY = y;
+          htmlJumpLastScroll = htmlSplitContainer.scrollTop;
+          return;
+        }
+        // Inline: the frame scrolls itself, so only it knows the position; the scroll is
+        // done inside it too (ANCHOR_SCRIPT) and we just remember where it should settle.
+        const got = await htmlJumpCollect([htmlDiffFrame]);
+        const r = got.get(htmlDiffFrame);
+        if (!r || htmlSplitActive) return;
+        const ys = htmlJumpMerge([r.stops]);
+        if (!ys.length) return;
+        const y = htmlJumpPick(ys, r.scrollY, dir);
+        htmlJumpLastY = y;
+        htmlJumpLastScroll = Math.max(0, y - MD_TOC_JUMP_MARGIN);
+        try { htmlDiffFrame.contentWindow.postMessage({ __htmlJump: true, type: 'scrollTo', y }, '*'); } catch (err) {}
+      }
+
       // Follow the container's scroll and treat the heading currently straddling the
       // screen's top edge as the current position. Items are ordered by document
       // appearance, so we only need to find the last one among those "already above the
@@ -7351,6 +7491,7 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
       // <-> split switch only needs to call this.
       function renderHtmlView() {
         if (htmlDiffedDocs === null) return;
+        resetHtmlJumpState(); // new document or new mode: the remembered landing no longer applies
         const split = !isInlineView;
 
         if (!split) {
@@ -7691,11 +7832,10 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
       beforeModel.onDidChangeContent(scheduleAutoSave); afterModel.onDidChangeContent(scheduleAutoSave);
 
       const jump = (dir) => {
-        // When the Markdown View is open, walk through the rendered blocks instead of
-        // Monaco lines (the HTML View is not supported yet, so the button itself is not
-        // shown).
+        // When a Rich View is open, walk through the rendered blocks instead of Monaco lines.
         if (isRichDiffView) {
           if (richViewMode === 'markdown') mdJumpToDiff(dir);
+          else if (richViewMode === 'html') htmlJumpToDiff(dir);
           return;
         }
         if (!diffEditor) return; const changes = diffEditor.getLineChanges(); if (!changes || changes.length === 0) return;
