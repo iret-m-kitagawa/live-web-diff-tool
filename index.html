@@ -1524,6 +1524,14 @@
     // Does anything inside this element count as a block?
     function holdsBlockDescendant(el){
       for (let c = el.firstElementChild; c; c = c.nextElementSibling){
+        // A <template> is display:none, so it is classified as a boundary, but it renders
+        // nothing in the flow and its children live in a separate fragment. Counting it
+        // made an inline element that merely carries one (a custom element whose shadow
+        // root arrives as a declarative <template shadowrootmode>) look like it holds a
+        // block, so the parent's text diff AND the element's own diff both marked the same
+        // edit: measured on web-platform-{before,after}.html (status-badge 開発中 ->
+        // レビュー中) the before pane read 開発開発中 (check_pane_fidelity web-platform).
+        if (c.tagName === 'TEMPLATE') continue;
         if (isBlockEl(c) || holdsBlockDescendant(c)) return true;
       }
       return false;
@@ -3704,6 +3712,25 @@
   });
 
   watchImagesForRealign();
+
+  // ---- Report how many diff marks survived the pasted document's own scripts ----
+  // The document's <script> elements run inside this pane, and a script that (re)builds part
+  // of the page at load (document.getElementById("scenarios").innerHTML = ...) replaces the
+  // marked DOM with fresh, unmarked markup. The parent counts the marks it handed this pane
+  // and compares with the count reported here; when fewer are left it re-renders with the
+  // document's scripts removed. Reported twice: once shortly after load, and once more at 2s
+  // for scripts that rebuild late (after a fetch, a timer). The selector is the same one the
+  // parent counts with. (Written inside a template literal: every backslash is doubled.)
+  var MARK_SEL = 'ins[data-diff], del[data-diff], [data-diff-block], [data-diff-attr], [data-diff-value]';
+  function reportMarks(){
+    try {
+      parent.postMessage({ __htmlMarks: true, count: document.body ? document.body.querySelectorAll(MARK_SEL).length : 0 }, '*');
+    } catch (err) {}
+  }
+  window.addEventListener('load', function(){
+    requestAnimationFrame(function(){ requestAnimationFrame(function(){ setTimeout(reportMarks, 300); }); });
+    setTimeout(reportMarks, 2000);
+  });
 })();`;
 
 
@@ -5139,9 +5166,161 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
       }
       function removeStage(f) { if (f && f.parentNode) f.parentNode.removeChild(f); }
 
+      // Stage 2 -- compare what the scripts build, not just what the HTML says. The pasted
+      // document's script can be the only source of its content: align-cases/scensrc-
+      // {before,after}.html are the source files of scensave, whose scenario containers are
+      // EMPTY in the static HTML and are filled by the script at load. The diff engine reads
+      // the static markup (the staging iframe has no allow-scripts), so it never saw that
+      // content at all and the panes showed unmarked, script-built tables on both sides.
+      // So each text that contains a script is rendered once in a throwaway frame, the DOM
+      // is read back after it settles (canvases frozen into images), and when that differs
+      // from the static markup the two SNAPSHOTS are diffed instead. A snapshot already
+      // holds what the script built, so the panes start in "scripts stopped" mode:
+      // re-running the building script over built content would rebuild or duplicate it.
+      // When neither document changes at load (scensave: the script rebuilds the very markup
+      // that is already there) the original texts are diffed exactly as before and Stage 1
+      // (the mark count the panes report) stays as the safety net.
+      //
+      // sandbox is "allow-scripts" only: an opaque origin, so the pasted script cannot reach
+      // this page. The result comes back by postMessage, matched on the frame's contentWindow
+      // and on a random nonce; null on timeout.
+      function snapshotDocument(html) {
+        return new Promise((resolve) => {
+          const nonce = Math.random().toString(36).slice(2) + Date.now().toString(36);
+          const script = '(function(){'
+            + 'var NONCE=' + JSON.stringify(nonce) + ';'
+            + 'var me=document.currentScript;'
+            + 'window.addEventListener("load",function(){'
+            + 'var done=false,timer=null,obs=null;'
+            + 'function go(){'
+            + 'if(done)return;done=true;'
+            + 'try{if(obs)obs.disconnect();}catch(e){}'
+            + 'clearTimeout(timer);'
+            // A canvas is not part of the markup, so it would come out blank: freeze it
+            // as an image of what it shows. A tainted canvas throws and is left alone.
+            + 'Array.prototype.slice.call(document.querySelectorAll("canvas")).forEach(function(c){'
+            + 'try{var img=document.createElement("img");img.src=c.toDataURL();'
+            + '["id","class","style","width","height"].forEach(function(n){if(c.hasAttribute(n))img.setAttribute(n,c.getAttribute(n));});'
+            + 'c.parentNode.replaceChild(img,c);}catch(e){}'
+            + '});'
+            + 'try{if(me&&me.parentNode)me.parentNode.removeChild(me);}catch(e){}'
+            // outerHTML leaves out shadow roots. Collect every OPEN root (recursing into
+            // each root for nested hosts) and let getHTML write them as declarative
+            // <template shadowrootmode>. getHTML serialises like innerHTML (children only),
+            // so the <html> start tag is written by hand. A CLOSED shadow root is not
+            // reachable from outside and is lost; so is everything when getHTML is missing.
+            + 'var el=document.documentElement,h;'
+            + 'try{'
+            + 'var roots=[];'
+            + '(function walk(r){var all=r.querySelectorAll("*");for(var i=0;i<all.length;i++){var sr=all[i].shadowRoot;if(sr){roots.push(sr);walk(sr);}}})(document);'
+            + 'if(typeof el.getHTML==="function"){'
+            + 'var open="<html";for(var k=0;k<el.attributes.length;k++){var at=el.attributes[k];open+=" "+at.name+\'="\'+at.value.replace(/&/g,"&amp;").replace(/"/g,"&quot;")+\'"\';}'
+            + 'h=open+">"+el.getHTML({shadowRoots:roots})+"</html>";'
+            + '}else h=el.outerHTML;'
+            + '}catch(e){h=el.outerHTML;}'
+            + 'parent.postMessage({__htmlSnapshot:true,nonce:NONCE,html:"<!DOCTYPE html>\\n"+h},"*");'
+            + '}'
+            // Quiet = 300ms without a mutation, but never later than 3s after load.
+            + 'try{obs=new MutationObserver(function(){clearTimeout(timer);timer=setTimeout(go,300);});'
+            + 'obs.observe(document.documentElement,{subtree:true,childList:true,attributes:true,characterData:true});}catch(e){}'
+            + 'timer=setTimeout(go,300);'
+            + 'setTimeout(go,3000);'
+            + '});'
+            + '})();';
+          const tag = '<script>' + script + '<' + '/script>';
+          const lower = html.toLowerCase();
+          const idx = lower.lastIndexOf('</' + 'body>');
+          const srcdoc = idx < 0 ? html + tag : html.slice(0, idx) + tag + html.slice(idx);
+
+          const f = document.createElement('iframe');
+          f.setAttribute('sandbox', 'allow-scripts');
+          f.setAttribute('aria-hidden', 'true');
+          f.setAttribute('tabindex', '-1');
+          f.style.cssText = 'position:absolute;left:-99999px;top:0;width:1200px;height:800px;border:0;visibility:hidden;';
+          // srcdoc before insertion, for the same about:blank load race as stageDocument.
+          f.srcdoc = srcdoc;
+
+          let timer = null;
+          const finish = (result) => {
+            window.removeEventListener('message', onMessage);
+            clearTimeout(timer);
+            removeStage(f);
+            resolve(result);
+          };
+          const onMessage = (e) => {
+            if (e.source !== f.contentWindow) return;
+            const d = e.data;
+            if (!d || d.__htmlSnapshot !== true || d.nonce !== nonce || typeof d.html !== 'string') return;
+            finish(renameShadowAttrs(d.html, 'data-diff-'));
+          };
+          window.addEventListener('message', onMessage);
+          timer = setTimeout(() => finish(null), 6000);
+          document.body.appendChild(f);
+        });
+      }
+
+      // Declarative shadow roots (<template shadowrootmode>) written by the snapshot would be
+      // attached as REAL shadow roots by the staging iframe's parser, and the merged
+      // document's serialization (outerHTML) then drops them again: the pane would get no
+      // shadow content at all. While the diff runs they are therefore renamed to
+      // data-diff-shadowrootmode (and the other shadowroot* flags), which makes them ordinary
+      // <template>s -- DOMParser never attaches declarative roots -- that the existing
+      // positional template stash (data-diff-old-template) already gives per side. The
+      // names are put back on the final strings (buildHtmlDiffOutput), so the pane's own
+      // parser attaches the roots. Their content carries no diff marker.
+      const SHADOW_ATTRS = ['shadowrootmode', 'shadowrootdelegatesfocus', 'shadowrootclonable', 'shadowrootserializable'];
+      function renameShadowAttrs(html, prefix) {
+        if (html.indexOf('shadowroot') < 0) return html;
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        doc.querySelectorAll('template').forEach(t => {
+          SHADOW_ATTRS.forEach(a => {
+            if (t.hasAttribute(a)) { t.setAttribute(prefix + a, t.getAttribute(a)); t.removeAttribute(a); }
+          });
+        });
+        return '<!DOCTYPE html>\n' + doc.documentElement.outerHTML;
+      }
+      function restoreShadowAttrs(html) {
+        if (html.indexOf('data-diff-shadowroot') < 0) return html;
+        return SHADOW_ATTRS.reduce((h, a) => h.split('data-diff-' + a + '=').join(a + '='), html);
+      }
+
+      // The text of a document's body with scripts out and whitespace collapsed -- what
+      // "the script changed the page" is decided on.
+      function normalizedBodyHtml(html) {
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        doc.querySelectorAll('script').forEach(n => n.remove());
+        // The snapshot script freezes every <canvas> into a PNG <img>, which is not the
+        // script changing the page: compare both forms as the same bare canvas. Without
+        // this, generated-content-{before,after}.html (a canvas painted by the script, plus
+        // template and shadow DOM that the markup never shows) switched to scripts-stopped
+        // mode and the panes lost their live canvas (check_beforepane_truth, section 4).
+        doc.querySelectorAll('canvas, img[src^="data:image/png"]').forEach(n => {
+          const c = doc.createElement('canvas');
+          ['id', 'class', 'style', 'width', 'height'].forEach(a => { if (n.hasAttribute(a)) c.setAttribute(a, n.getAttribute(a)); });
+          n.replaceWith(c);
+        });
+        return (doc.body ? doc.body.innerHTML : '').replace(/\s+/g, ' ').trim();
+      }
+
       async function renderHtmlDiffDocument(bText, aText) {
         let oldStage = null, newStage = null;
+        let scriptsStopped = false;
         try {
+          try {
+            const wantsSnap = (t) => /<script/i.test(t);
+            const [bSnap, aSnap] = await Promise.all([
+              wantsSnap(bText) ? snapshotDocument(bText) : null,
+              wantsSnap(aText) ? snapshotDocument(aText) : null
+            ]);
+            const bChanged = bSnap !== null && normalizedBodyHtml(bSnap) !== normalizedBodyHtml(bText);
+            const aChanged = aSnap !== null && normalizedBodyHtml(aSnap) !== normalizedBodyHtml(aText);
+            if (bChanged || aChanged) {
+              // A side whose snapshot is missing or equal is its own snapshot.
+              if (bChanged) bText = bSnap;
+              if (aChanged) aText = aSnap;
+              scriptsStopped = true;
+            }
+          } catch (e) { /* fall back to the original texts */ }
           oldStage = await stageDocument(bText);
           newStage = await stageDocument(aText);
           const oldDoc = oldStage.doc, newDoc = newStage.doc;
@@ -5151,7 +5330,9 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
           classifyBlockBoundaries(oldDoc);
           classifyBlockBoundaries(newDoc);
 
-          return buildHtmlDiffOutput(oldDoc, newDoc);
+          const out = buildHtmlDiffOutput(oldDoc, newDoc);
+          if (scriptsStopped) out.scriptsStopped = true;
+          return out;
         } finally {
           boundaryEls = null;
           classifiedDocs = null;
@@ -5523,11 +5704,15 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
         // right before the closing body tag.
         const navScript = newDoc.createElement('script');
         navScript.textContent = ANCHOR_SCRIPT;
+        // Marks this script as the tool's own (the document's scripts have no such
+        // attribute), so "scripts stopped" mode can remove the document's scripts and keep
+        // this one. stripHtmlSide reparses and re-serializes, which keeps attributes.
+        navScript.setAttribute('data-diff-tool', '');
 
         const html = '<!DOCTYPE html>\n' + newDoc.documentElement.outerHTML;
         const bodyClose = '</' + 'body>';
         const idx = html.lastIndexOf(bodyClose);
-        const single = idx < 0 ? html + navScript.outerHTML
+        let single = idx < 0 ? html + navScript.outerHTML
           : html.slice(0, idx) + navScript.outerHTML + html.slice(idx);
 
         // Both left and right displays are built on top of single (the HTML string as
@@ -5543,10 +5728,51 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
         // [data-diff-attr] (elements whose attributes alone changed) is in neither
         // selector -- the element itself exists both before and after, so it stays on
         // both sides.
-        const left = stripHtmlSide(single, '[data-diff-block="ins"], ins[data-diff="ins"], [data-diff-pad]', true /* isBeforeSide */);
-        const right = stripHtmlSide(single, '[data-diff-block="del"], del[data-diff="del"], [data-diff-pad]', false /* isBeforeSide */);
+        let left = stripHtmlSide(single, '[data-diff-block="ins"], ins[data-diff="ins"], [data-diff-pad]', true /* isBeforeSide */);
+        let right = stripHtmlSide(single, '[data-diff-block="del"], del[data-diff="del"], [data-diff-pad]', false /* isBeforeSide */);
 
-        return { single, left, right, maxFlowDepth };
+        // Put the shadowroot* attribute names back (see renameShadowAttrs). Done here, once,
+        // so the script-free variants derived later inherit them too.
+        single = restoreShadowAttrs(single);
+        left = restoreShadowAttrs(left);
+        right = restoreShadowAttrs(right);
+
+        // How many marks each variant carries as built. The pane's own script may overwrite
+        // them at load; the injected report (ANCHOR_SCRIPT) compares against these numbers.
+        const expect = {
+          single: countHtmlMarks(single),
+          left: countHtmlMarks(left),
+          right: countHtmlMarks(right)
+        };
+
+        return { single, left, right, maxFlowDepth, expect };
+      }
+
+      const HTML_MARK_SELECTOR = 'ins[data-diff], del[data-diff], [data-diff-block], [data-diff-attr], [data-diff-value]';
+      function countHtmlMarks(html) {
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        return doc.body ? doc.body.querySelectorAll(HTML_MARK_SELECTOR).length : 0;
+      }
+
+      // Stage 1 -- "scripts stopped" mode. Measured on align-cases/scensave-{before,after}.html
+      // (browser-saved pages: static tables plus the script that builds the same tables):
+      // the srcdoc handed to the left pane holds 95 marks inside #scenarios and the right 79,
+      // and once the panes have loaded there are 0, because the script assigns
+      // #scenarios.innerHTML and replaces every marked node with unmarked markup
+      // (check_marks_complete scensave: 186 unmarked places). The variant is therefore
+      // served again with every script that is not the tool's (data-diff-tool) removed.
+      function withoutDocumentScripts(html) {
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        doc.querySelectorAll('script:not([data-diff-tool])').forEach(n => n.remove());
+        return '<!DOCTYPE html>\n' + doc.documentElement.outerHTML;
+      }
+      // The variants the panes are given: the document's own, or (in scripts-stopped mode)
+      // the script-free ones, computed lazily and cached on the result.
+      function htmlVariant(docs, key) {
+        if (!docs.scriptsStopped) return docs[key];
+        if (!docs.stopped) docs.stopped = {};
+        if (docs.stopped[key] === undefined) docs.stopped[key] = withoutDocumentScripts(docs[key]);
+        return docs.stopped[key];
       }
 
       // Reparse single and strip elements matching selector, using the same idea as
@@ -7129,7 +7355,7 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
 
         if (!split) {
           // Single-column view: pour single into the single #htmlDiffFrame as before
-          htmlDiffFrame.srcdoc = htmlDiffedDocs.single;
+          htmlDiffFrame.srcdoc = htmlVariant(htmlDiffedDocs, 'single');
           htmlDiffFrame.style.display = 'block';
           htmlSplitContainer.classList.remove('visible');
           htmlDiffFrameLeft.removeAttribute('srcdoc');
@@ -7144,8 +7370,8 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
           // allow-scripts allow-popups only (allow-same-origin is not added).
           htmlDiffFrame.style.display = 'none';
           htmlDiffFrame.removeAttribute('srcdoc');
-          htmlDiffFrameLeft.srcdoc = htmlDiffedDocs.left;
-          htmlDiffFrameRight.srcdoc = htmlDiffedDocs.right;
+          htmlDiffFrameLeft.srcdoc = htmlVariant(htmlDiffedDocs, 'left');
+          htmlDiffFrameRight.srcdoc = htmlVariant(htmlDiffedDocs, 'right');
           htmlSplitContainer.classList.add('visible');
           // Since srcdoc was replaced, 'load' will eventually arrive from both iframes,
           // and each load handler will trigger scheduleHtmlRealign. Here it is enough to
@@ -7154,6 +7380,29 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
           htmlSplitActive = true;
         }
       }
+
+      // Stage 1's receiving end. The panes report how many diff marks they hold once the
+      // document's own scripts have had their go (see ANCHOR_SCRIPT). Fewer than the variant
+      // was built with means a script overwrote the marks, so the current result switches to
+      // scripts-stopped mode and is drawn again. Only a report from the frame's current
+      // document counts (its srcdoc must still be the variant this mode hands out, which
+      // drops reports from a render that has since been replaced), and once stopped
+      // nothing is checked again.
+      window.addEventListener('message', (e) => {
+        const key = e.source === htmlDiffFrame.contentWindow ? 'single'
+          : e.source === htmlDiffFrameLeft.contentWindow ? 'left'
+          : e.source === htmlDiffFrameRight.contentWindow ? 'right' : null;
+        if (!key) return;
+        const data = e.data;
+        if (!data || data.__htmlMarks !== true) return;
+        const docs = htmlDiffedDocs;
+        if (!docs || docs.scriptsStopped || !docs.expect) return;
+        const frame = key === 'single' ? htmlDiffFrame : key === 'left' ? htmlDiffFrameLeft : htmlDiffFrameRight;
+        if (frame.srcdoc !== docs[key]) return; // a report from an earlier render
+        if (typeof data.count !== 'number' || data.count >= docs.expect[key]) return;
+        docs.scriptsStopped = true;
+        renderHtmlView();
+      });
 
       // ---- Open the Markdown View ----
       // The order marked.parse -> HtmlDiff.execute -> DOMPurify.sanitize is invariant. In
