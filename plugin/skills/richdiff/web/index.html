@@ -7063,19 +7063,21 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
           // Move by index. Deciding purely by position gets stuck at the end of the
           // document -- there is no more room below for the scroll to move, so the next
           // chunk keeps being judged as "still further down" and we keep picking up the
-          // same spot. With an index we can count to the end and wrap around at the edge
-          // (same as the Monaco-side jump).
-          target = stops[(last + (dir === 'next' ? 1 : -1) + stops.length) % stops.length];
+          // same spot. With an index we can count to the end -- and stop there: pressing
+          // next on the last change used to wrap round to the first one, throwing the
+          // reader back to the top of a long document for pressing once too often.
+          target = stops[last + (dir === 'next' ? 1 : -1)];
         } else if (dir === 'next') {
           // The judgment line is aligned to MD_TOC_JUMP_MARGIN because the target lands
           // exactly at that position right after a jump. Measuring from the container's
           // top edge would pick the chunk we are currently on back up as "still further
           // down".
-          target = stops.find((el) => offsetOf(el) > MD_TOC_JUMP_MARGIN + 2) || stops[0];
+          target = stops.find((el) => offsetOf(el) > MD_TOC_JUMP_MARGIN + 2);
         } else {
           const prevs = stops.filter((el) => offsetOf(el) < MD_TOC_JUMP_MARGIN - 2);
-          target = prevs.length ? prevs[prevs.length - 1] : stops[stops.length - 1];
+          target = prevs[prevs.length - 1];
         }
+        if (!target) return; // already at the first / last change: stay put
 
         mdJumpLast = target;
         mdJumpLastScroll = mdScrollTo(target, false);
@@ -7138,15 +7140,20 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
       function htmlJumpPick(ys, pos, dir) {
         const last = htmlJumpLastY === null ? -1 : ys.findIndex((y) => Math.abs(y - htmlJumpLastY) < 4);
         const parked = last >= 0 && Math.abs(pos - htmlJumpLastScroll) < 2;
-        if (parked) return ys[(last + (dir === 'next' ? 1 : -1) + ys.length) % ys.length];
+        // Past either end there is nothing to go to: null, and the caller stays put (no
+        // wrapping round, the same as the Markdown View).
+        if (parked) {
+          const i = last + (dir === 'next' ? 1 : -1);
+          return i >= 0 && i < ys.length ? ys[i] : null;
+        }
         // The judgment line sits MD_TOC_JUMP_MARGIN below the top because that is where a target lands.
         const line = pos + MD_TOC_JUMP_MARGIN;
         if (dir === 'next') {
           const next = ys.find((y) => y > line + 2);
-          return next === undefined ? ys[0] : next;
+          return next === undefined ? null : next;
         }
         const prevs = ys.filter((y) => y < line - 2);
-        return prevs.length ? prevs[prevs.length - 1] : ys[ys.length - 1];
+        return prevs.length ? prevs[prevs.length - 1] : null;
       }
 
       async function htmlJumpToDiff(dir) {
@@ -7165,6 +7172,7 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
           const ys = htmlJumpMerge(lists);
           if (!ys.length) return;
           const y = htmlJumpPick(ys, htmlSplitContainer.scrollTop, dir);
+          if (y === null) return;
           const max = Math.max(0, htmlSplitContainer.scrollHeight - htmlSplitContainer.clientHeight);
           htmlSplitContainer.scrollTop = Math.max(0, Math.min(max, y - MD_TOC_JUMP_MARGIN));
           htmlJumpLastY = y;
@@ -7179,6 +7187,7 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
         const ys = htmlJumpMerge([r.stops]);
         if (!ys.length) return;
         const y = htmlJumpPick(ys, r.scrollY, dir);
+        if (y === null) return;
         htmlJumpLastY = y;
         htmlJumpLastScroll = Math.max(0, y - MD_TOC_JUMP_MARGIN);
         try { htmlDiffFrame.contentWindow.postMessage({ __htmlJump: true, type: 'scrollTo', y }, '*'); } catch (err) {}
@@ -7841,8 +7850,10 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
         if (!diffEditor) return; const changes = diffEditor.getLineChanges(); if (!changes || changes.length === 0) return;
         const modifiedEditor = diffEditor.getModifiedEditor(); const currentLine = modifiedEditor.getPosition().lineNumber;
         let target;
-        if(dir === 'next') target = changes.find(c => c.modifiedStartLineNumber > currentLine) || changes[0];
-        else { const prevs = changes.filter(c => c.modifiedStartLineNumber < currentLine); target = prevs.length > 0 ? prevs[prevs.length - 1] : changes[changes.length - 1]; }
+        // No wrapping round at either end: past the last change, next stays where it is.
+        if(dir === 'next') target = changes.find(c => c.modifiedStartLineNumber > currentLine);
+        else { const prevs = changes.filter(c => c.modifiedStartLineNumber < currentLine); target = prevs[prevs.length - 1]; }
+        if (!target) return;
         modifiedEditor.revealLineInCenter(target.modifiedStartLineNumber); modifiedEditor.setPosition({ lineNumber: target.modifiedStartLineNumber, column: 1 }); modifiedEditor.focus();
       };
       document.getElementById('nextDiffBtn').addEventListener('click', () => jump('next')); document.getElementById('prevDiffBtn').addEventListener('click', () => jump('prev'));
