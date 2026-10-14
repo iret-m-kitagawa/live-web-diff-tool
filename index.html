@@ -99,6 +99,21 @@
     }
     .btn:hover { background-color: var(--border-color); color: var(--text-main); }
     .btn.active { background-color: #0a84ff; color: #ffffff; border-color: #0a84ff; }
+    /* Shortcut hint for the Preview button. A custom element rather than title= so it can show
+       key caps and appear fast; fixed-positioned so the toolbar's own overflow can never clip
+       it, and themed with the same variables as .jump-menu so it follows every theme. */
+    .kbd-tip {
+      position: fixed; z-index: 2200; display: none; gap: 3px; align-items: center;
+      padding: 3px 5px; background: var(--bg-panel); color: var(--text-main);
+      border: 1px solid var(--border-color); border-radius: 6px;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, .3); pointer-events: none; user-select: none;
+    }
+    .kbd-tip.visible { display: flex; }
+    .kbd-tip kbd {
+      font: 600 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace; min-width: 14px;
+      padding: 2px 4px; text-align: center; color: var(--text-muted);
+      border: 1px solid var(--border-color); border-bottom-width: 2px; border-radius: 4px;
+    }
     /* Inline / Split is a binary choice, so the adjoining edges are joined to look like one piece. */
     .view-mode-group { display: flex; }
     .view-mode-group .view-mode-btn:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
@@ -678,12 +693,9 @@
       </select>
     </div>
     <div class="toolbar-right">
-      <button class="btn" id="richDiffBtn" title="Toggle Rich Markdown Diff">
+      <button class="btn" id="previewBtn" aria-keyshortcuts="Alt+T">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
-        <span id="richDiffBtnLabel">Markdown View</span>
-      </button>
-      <button class="btn" id="htmlViewBtn" title="Toggle Rich HTML Diff">
-        HTML View
+        <span id="previewBtnLabel">Preview Diff</span>
       </button>
       <button class="btn" id="swapBtn" title="Swap BEFORE and AFTER">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4L4 8l4 4M4 8h16M16 20l4-4-4-4M20 16H4"/></svg>
@@ -2681,6 +2693,14 @@
     // sandbox="allow-scripts allow-popups", so this can execute.
     // Also makes a deleted block that gave up its id move in and out together with its counterpart (see later in the file).
     const ANCHOR_SCRIPT = `(function(){
+  // Alt+T / Option+T toggles the preview. Keys pressed inside this sandboxed pane never reach
+  // the parent window, so report it. (Same condition as the parent's listener.)
+  window.addEventListener('keydown', function(e){
+    if (e.altKey && e.code === 'KeyT' && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.isComposing){
+      e.preventDefault();
+      parent.postMessage({ __htmlKey: 'togglePreview' }, '*');
+    }
+  }, true);
   function findTarget(raw){
     var id = String(raw || '').replace(/^#/, '');
     if (!id) return null;                     // href="#" goes to the top
@@ -4550,6 +4570,10 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
     let isRichDiffView = false;
     let richViewMode = null; // 'markdown' | 'html' | null -- which Rich View is open (null when none is)
     let mdDiffedHtml = null; // sanitized diff HTML, built once by openMarkdownView; reused across single/split
+    // The open/close functions live inside the editor-ready scope, out of reach of the restore
+    // code below (hash, sessionStorage, ?token=), so that scope fills these in once it exists.
+    // They replace clicking the old per-view buttons, which also honours the saved mode.
+    const richView = { openMarkdown: () => {}, openHtml: () => {}, close: () => {} };
     let htmlDiffedDocs = null; // {single, left, right}, built once by openHtmlView; reused across single/split
 
     const showToast = (msg) => {
@@ -4604,8 +4628,8 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
           const mode = d.vm || (d.l === 'html' ? 'html' : 'markdown');
           setTimeout(() => {
             if (isRichDiffView) return;
-            const btn = document.getElementById(mode === 'html' ? 'htmlViewBtn' : 'richDiffBtn');
-            if (btn) btn.click();
+            // Honour the saved mode as-is; do not re-detect from the text here.
+            if (mode === 'html') richView.openHtml(); else richView.openMarkdown();
           }, 150);
         }
       } catch (e) {}
@@ -4877,8 +4901,7 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
       });
 
       // ========== 👁️ Markdown View / HTML View functionality ==========
-      const richDiffBtn = document.getElementById('richDiffBtn');
-      const htmlViewBtn = document.getElementById('htmlViewBtn');
+      const previewBtn = document.getElementById('previewBtn');
       const diffEditorContainer = document.getElementById('diffEditor');
       const richDiffViewer = document.getElementById('richDiffViewer');
       const htmlDiffFrame = document.getElementById('htmlDiffFrame');
@@ -5165,8 +5188,7 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
         }
 
         changeActionsContainer.style.display = 'block';
-        richDiffBtn.classList.remove('active');
-        htmlViewBtn.classList.remove('active');
+        previewBtn.classList.remove('active');
         isRichDiffView = false;
         richViewMode = null;
         updateJumpControlsVisibility();
@@ -7596,8 +7618,7 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
           // richDiffViewer.style.display has already been set by renderMarkdownView to
           // match the current mode (block/flex)
 
-          richDiffBtn.classList.add('active');
-          htmlViewBtn.classList.remove('active');
+          previewBtn.classList.add('active');
           isRichDiffView = true;
           richViewMode = 'markdown';
           updateJumpControlsVisibility();
@@ -7657,8 +7678,7 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
           // The display of htmlDiffFrame / htmlSplitContainer has already been set by
           // renderHtmlView to match the current mode
 
-          htmlViewBtn.classList.add('active');
-          richDiffBtn.classList.remove('active');
+          previewBtn.classList.add('active');
           isRichDiffView = true;
           richViewMode = 'html';
           updateJumpControlsVisibility();
@@ -7672,15 +7692,81 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
         }
       }
 
-      richDiffBtn.addEventListener('click', () => {
-        if (isRichDiffView && richViewMode === 'markdown') { restoreMonacoView(); return; }
-        openMarkdownView();
+      // One button for both rich views. A full HTML document goes to the HTML View (its own
+      // <style>/<script>/layout is what the reader wants to see rendered); everything else,
+      // including Markdown that merely contains HTML snippets, goes to the Markdown View.
+      // Only the text decides, not the language select, which people leave on the wrong value.
+      // AFTER is the document being shown; BEFORE is used only when AFTER is blank.
+      function previewModeFor(bText, aText) {
+        let t = (aText && aText.trim()) ? aText : (bText || '');
+        t = t.replace(/^\uFEFF/, '');
+        for (;;) {
+          const u = t.replace(/^\s+/, '');
+          const m = /^<!--[\s\S]*?-->/.exec(u);
+          if (!m) { t = u; break; }
+          t = u.slice(m[0].length);
+        }
+        return /^(<!doctype\s+html\b|<html(?=[\s>]))/i.test(t) ? 'html' : 'markdown';
+      }
+
+      window.previewModeFor = previewModeFor; // exposed so the checks can probe the rule directly
+
+      function togglePreview() {
+        if (isRichDiffView) { restoreMonacoView(); return; }
+        if (previewModeFor(beforeModel.getValue(), afterModel.getValue()) === 'html') openHtmlView();
+        else openMarkdownView();
+      }
+      richView.openMarkdown = openMarkdownView;
+      richView.openHtml = openHtmlView;
+      richView.close = restoreMonacoView;
+      previewBtn.addEventListener('click', togglePreview);
+
+      // Option+T (Mac) / Alt+T. e.code, not e.key: Option+T types "\u2020" on a Mac. Capture phase
+      // on window so it wins over Monaco, which would otherwise insert the character.
+      window.addEventListener('keydown', (e) => {
+        if (e.altKey && e.code === 'KeyT' && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.isComposing) {
+          e.preventDefault(); e.stopPropagation();
+          togglePreview();
+        }
+      }, true);
+      // The HTML View's panes are sandboxed iframes: keys pressed inside them never reach this
+      // window, so ANCHOR_SCRIPT reports the shortcut by postMessage. Accept it only from our
+      // own panes.
+      window.addEventListener('message', (e) => {
+        const d = e.data;
+        if (!d || d.__htmlKey !== 'togglePreview') return;
+        if (e.source !== htmlDiffFrame.contentWindow && e.source !== htmlDiffFrameLeft.contentWindow
+            && e.source !== htmlDiffFrameRight.contentWindow) return;
+        togglePreview();
       });
 
-      htmlViewBtn.addEventListener('click', () => {
-        if (isRichDiffView && richViewMode === 'html') { restoreMonacoView(); return; }
-        openHtmlView();
-      });
+      // Tooltip showing the shortcut, as key caps (no wording). Shown after a short delay and
+      // dropped at once on leave / blur / click so it never lingers over the page.
+      (function () {
+        const isMac = /Mac/i.test((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '');
+        const tip = document.createElement('div');
+        tip.className = 'kbd-tip';
+        tip.setAttribute('role', 'tooltip');
+        (isMac ? ['\u2325', 'T'] : ['Alt', 'T']).forEach(k => {
+          const kb = document.createElement('kbd'); kb.textContent = k; tip.appendChild(kb);
+        });
+        document.body.appendChild(tip);
+        let timer = null;
+        const hide = () => { clearTimeout(timer); tip.classList.remove('visible'); };
+        const show = () => {
+          clearTimeout(timer);
+          timer = setTimeout(() => {
+            const r = previewBtn.getBoundingClientRect();
+            tip.classList.add('visible');
+            const w = tip.offsetWidth;
+            tip.style.top = (r.bottom + 6) + 'px';
+            tip.style.left = Math.max(4, Math.min(window.innerWidth - w - 4, r.left + r.width / 2 - w / 2)) + 'px';
+          }, 250);
+        };
+        previewBtn.addEventListener('mouseenter', show);
+        previewBtn.addEventListener('focus', () => { if (previewBtn.matches(':focus-visible')) show(); });
+        ['mouseleave', 'blur', 'click'].forEach(ev => previewBtn.addEventListener(ev, hide));
+      })();
 
       // ==============================================================
 
@@ -7973,8 +8059,8 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
                 const mode = d.vm || (d.l === 'html' ? 'html' : 'markdown');
                 setTimeout(() => {
                   if (isRichDiffView) return;
-                  const btn = document.getElementById(mode === 'html' ? 'htmlViewBtn' : 'richDiffBtn');
-                  if (btn) btn.click();
+                  // Honour the saved mode as-is; do not re-detect from the text here.
+                  if (mode === 'html') richView.openHtml(); else richView.openMarkdown();
                 }, 150);
               }
             } catch (e) {}
@@ -8006,8 +8092,7 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
       // while it stays open, the old View stays as-is and does not reflect the new
       // content.
       if (isRichDiffView) {
-        const activeBtn = document.getElementById(richViewMode === 'html' ? 'htmlViewBtn' : 'richDiffBtn');
-        if (activeBtn) activeBtn.click();
+        richView.close();
       }
 
       beforeModel.setValue(file.before || '');
@@ -8032,11 +8117,10 @@ html[data-diff-side="before"] [data-diff-value]{ box-shadow: inset 0 0 0 100vmax
         // Same as the existing hash restoration, check isRichDiffView to avoid clicking twice.
         setTimeout(() => {
           if (isRichDiffView) return;
-          const btn = document.getElementById(file.view === 'html' ? 'htmlViewBtn' : 'richDiffBtn');
-          if (btn) btn.click();
+          if (file.view === 'html') richView.openHtml(); else richView.openMarkdown();
         }, 150);
       }
-      // When view is 'text', press neither button and leave Monaco's raw text display as-is.
+      // When view is 'text', open neither view and leave Monaco's raw text display as-is.
     }
 
     function loadFromServer() {
